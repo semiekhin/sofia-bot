@@ -73,3 +73,9 @@ systemctl restart sofia-bot
 ## Документация
 - `PROJECT_HISTORY.md` — история проекта
 - `RESTORE.md` — восстановление
+
+## Дополнительная документация
+- `SOFIA_CURRENT_TASK.md` — текущие задачи и история сессий
+- `SOFIA_KNOWLEDGE.md` — важные знания, команды, решения
+- `PROJECT_HISTORY.md` — полная история проекта
+- `RESTORE.md` — восстановление
