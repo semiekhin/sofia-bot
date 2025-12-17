@@ -93,7 +93,7 @@ def save_message(chat_id, user_id, user_name, role, content, processed=0):
     conn.close()
     return message_id
 
-def get_conversation_history(chat_id, limit=30):
+def get_conversation_history(chat_id, limit=100):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('SELECT role, content FROM messages WHERE chat_id = ? ORDER BY timestamp DESC LIMIT ?', (chat_id, limit))
@@ -335,7 +335,7 @@ async def generate_response(chat_id, user_id, user_message, user_name, was_offli
         return client.responses.create(
             model="gpt-5.2",
             instructions=get_system_prompt(user_name),
-            input=messages[-20:],
+            input=messages,
             reasoning={"effort": "xhigh"},
             text={"verbosity": "low"},
         )
