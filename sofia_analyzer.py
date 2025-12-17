@@ -24,12 +24,13 @@ DB_PATH = "/opt/sofia-bot/sofia_conversations.db"
 PROMPT_PATH = "/opt/sofia-bot/sofia_prompt.py"
 BACKUP_DIR = "/opt/sofia-bot/backups"
 LOGS_DIR = "/opt/sofia-bot/analyzer_logs"
+LAST_ANALYSIS_FILE = "/opt/sofia-bot/last_analysis_time.txt"
 
 # Минимум оценок для анализа (ставим 1 для первого теста)
 MIN_FEEDBACK_COUNT = 1
 
 # Модель для анализа
-ANALYZER_MODEL = "gpt-5.1"
+ANALYZER_MODEL = "gpt-5.2"
 
 # ══════════════════════════════════════════════════════════════
 # ИНИЦИАЛИЗАЦИЯ
@@ -120,26 +121,71 @@ def send_telegram_file(filepath, caption=""):
 # СБОР ДАННЫХ
 # ══════════════════════════════════════════════════════════════
 
-def get_all_data():
-    """Получаем ВСЕ данные (для первого запуска берём всё, не только за 24ч)"""
+def get_last_analysis_time():
+    """Получаем время последнего анализа"""
+    try:
+        if os.path.exists(LAST_ANALYSIS_FILE):
+            with open(LAST_ANALYSIS_FILE, 'r') as f:
+                return f.read().strip()
+    except:
+        pass
+    return None
+
+
+def save_analysis_time():
+    """Сохраняем время текущего анализа"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(LAST_ANALYSIS_FILE, 'w') as f:
+        f.write(timestamp)
+    log(f"💾 Время анализа сохранено: {timestamp}")
+
+
+def get_new_data():
+    """Получаем только НОВЫЕ данные после последнего анализа"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     
-    # Все сообщения
-    c.execute('''
-        SELECT chat_id, user_name, role, content, timestamp 
-        FROM messages 
-        ORDER BY chat_id, timestamp
-    ''')
-    messages = c.fetchall()
+    last_time = get_last_analysis_time()
     
-    # Все feedback
-    c.execute('''
-        SELECT expert_name, rating, comment, context, timestamp 
-        FROM feedback_v2 
-        ORDER BY timestamp
-    ''')
-    feedback = c.fetchall()
+    if last_time:
+        log(f"📅 Последний анализ: {last_time}")
+        log(f"📥 Берём данные ПОСЛЕ {last_time}")
+        
+        # Сообщения после последнего анализа
+        c.execute('''
+            SELECT chat_id, user_name, role, content, timestamp 
+            FROM messages 
+            WHERE timestamp > ?
+            ORDER BY chat_id, timestamp
+        ''', (last_time,))
+        messages = c.fetchall()
+        
+        # Feedback после последнего анализа
+        c.execute('''
+            SELECT expert_name, rating, comment, context, timestamp 
+            FROM feedback_v2 
+            WHERE timestamp > ?
+            ORDER BY timestamp
+        ''', (last_time,))
+        feedback = c.fetchall()
+    else:
+        log("📅 Первый запуск — берём ВСЕ данные")
+        
+        # Все сообщения
+        c.execute('''
+            SELECT chat_id, user_name, role, content, timestamp 
+            FROM messages 
+            ORDER BY chat_id, timestamp
+        ''')
+        messages = c.fetchall()
+        
+        # Все feedback
+        c.execute('''
+            SELECT expert_name, rating, comment, context, timestamp 
+            FROM feedback_v2 
+            ORDER BY timestamp
+        ''')
+        feedback = c.fetchall()
     
     conn.close()
     
@@ -423,7 +469,7 @@ def main():
         
         # 2. Сбор данных
         log("\n[2/8] Сбор данных из базы...")
-        messages, feedback = get_all_data()
+        messages, feedback = get_new_data()
         
         if len(feedback) < MIN_FEEDBACK_COUNT:
             msg = f"⏸️ Недостаточно оценок: {len(feedback)} < {MIN_FEEDBACK_COUNT}"

@@ -16,11 +16,15 @@ from openai import OpenAI
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
 
+import os
+from dotenv import load_dotenv
 from sofia_prompt import get_system_prompt, BOT_NAME
 
+load_dotenv()
+
 # НАСТРОЙКИ
-TELEGRAM_TOKEN = "8409538626:AAGqB4bkk81dCZutNmLfTd95mi_4Ky19U5M"
-OPENAI_API_KEY = "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"
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 DB_PATH = "sofia_conversations.db"
 LOG_PATH = "sofia_bot.log"
@@ -329,11 +333,11 @@ async def generate_response(chat_id, user_id, user_message, user_name, was_offli
     
     def call_openai():
         return client.responses.create(
-            model="gpt-5-mini",
+            model="gpt-5.2",
             instructions=get_system_prompt(user_name),
             input=messages[-20:],
-            reasoning={"effort": "medium"},
-            text={"verbosity": "medium"},
+            reasoning={"effort": "xhigh"},
+            text={"verbosity": "low"},
         )
     
     try:

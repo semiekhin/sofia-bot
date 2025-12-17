@@ -7,3 +7,8 @@ __pycache__/
 backups/
 analyzer_logs/
 .DS_Store
+export_*.txt
+export_*.csv
+last_analysis_time.txt
+*.db
+*.log
