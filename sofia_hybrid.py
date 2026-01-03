@@ -272,6 +272,8 @@ def generate_response(history: list, last_message: str, action: dict, client_nam
 
 {question_instruction}
 
+ВАЖНО: НЕ повторяй вопросы, которые уже задавала! Клиент раздражается от повторов.
+
 Напиши ответ Софии (1-3 строки):
 """
     
