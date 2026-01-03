@@ -1,0 +1,3 @@
+# Sofia Hybrid Bot — зависимости
+openai>=1.0.0
+python-telegram-bot>=20.0
