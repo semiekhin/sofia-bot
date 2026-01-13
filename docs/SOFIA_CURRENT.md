@@ -3,32 +3,21 @@
 📅 **Последняя сессия:** 13 января 2026
 
 ## ✅ Что сделано
-- Extractor: добавлены синонимы локаций (море→coast, горы→mountains)
-- Extractor: добавлена обработка `location: "all"` для "все варианты"
-- Extractor: добавлена обработка `payment_type: "any"` для "не знаю"
-- Исправлен баг `payment_confidence` → `payment_type_confidence`
-- Extractor переведён с gpt-4o-mini на gpt-5.2 (Responses API)
-- Исправлен /start — теперь сбрасывает client_state
-- Инициализирован Git с правильным .gitignore (21 файл вместо 16000+)
-- Пополнен баланс Anthropic API ($25)
+- Исправлен баг WAIT: закомментирован should_skip_response (строки 465-470)
+- Убраны "записала/записал" из MEETING_MARKERS (строка 82)
+- Создана система PROJECT MEMORY SYSTEM (5 файлов в docs/)
+- Git почищен: добавлен .gitignore, удалены лишние файлы
 
 ## 🔄 Текущее состояние
-- ✅ Extractor корректно обрабатывает неявные ответы
-- ✅ Бот не зацикливается на location/payment_type
-- ✅ Git настроен, секреты защищены
-- ⚠️ Generator может игнорировать Planner и повторять вопросы
+- Бот перезапущен, фикс WAIT применён
+- GOOD rate после 10 января: 93.75% (но только 16 оценок — нужно больше данных)
+- Повторы: 0 жалоб (было 6)
 
 ## 🔜 Следующие шаги
-1. **Supervisor Agent** — проверка повторов через embeddings (2-3ч)
-2. Supervisor: проверка гендера/ЖК/цен/длины (2-3ч)
-3. Новый контрольный срез с тестировщиками
-
-## ⚠️ Открытые вопросы
-- Generator может игнорировать директивы Planner — нужен Supervisor
+1. Новый раунд тестирования (15-16 января) — нужно 50+ оценок для достоверности
+2. Актуализировать цены в PRICE_CATALOG (превентивно)
 
 ## 📁 Последние изменения
-- `extractor.py` — синонимы, all, any, gpt-5.2
-- `state_manager.py` — payment_type_confidence
-- `planner.py` — payment_type_confidence
-- `bot_server.py` — /start reset (строка 742)
-- `.gitignore` — создан
+- bot_server.py — закомментирован should_skip_response (465-470), убраны маркеры (82)
+- docs/ — 5 файлов PROJECT MEMORY SYSTEM
+- .gitignore — исключены .env, __pycache__, chroma_db, *.log, *.db
