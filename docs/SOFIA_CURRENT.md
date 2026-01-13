@@ -1,27 +1,34 @@
 # Текущий статус Sofia-GPT
 
-📅 **Последняя сессия:** 12 января 2026
+📅 **Последняя сессия:** 13 января 2026
 
 ## ✅ Что сделано
-- Исправлен баг WAIT: убрана проверка по тексту, теперь только через state.meeting_agreed
-- Убраны "записала/записал" из MEETING_MARKERS (вызывали ложные срабатывания)
-- Закомментирован блок should_skip_response в bot_server.py (строки 465-470)
-- Создан отчёт по тестированию 8-13 января: GOOD rate вырос с 64.8% до 93.75%
+- Extractor: добавлены синонимы локаций (море→coast, горы→mountains)
+- Extractor: добавлена обработка `location: "all"` для "все варианты"
+- Extractor: добавлена обработка `payment_type: "any"` для "не знаю"
+- Исправлен баг `payment_confidence` → `payment_type_confidence`
+- Extractor переведён с gpt-4o-mini на gpt-5.2 (Responses API)
+- Исправлен /start — теперь сбрасывает client_state
+- Инициализирован Git с правильным .gitignore (21 файл вместо 16000+)
+- Пополнен баланс Anthropic API ($25)
 
 ## 🔄 Текущее состояние
-- Бот работает в production (@humanAINeural_bot)
-- WAIT-логика работает только через Planner (проверяет state.meeting_agreed)
-- GOOD rate после изменений 10 января: **93.75%** (цель 80% достигнута)
-- Повторы вопросов: 0 жалоб (было 6)
+- ✅ Extractor корректно обрабатывает неявные ответы
+- ✅ Бот не зацикливается на location/payment_type
+- ✅ Git настроен, секреты защищены
+- ⚠️ Generator может игнорировать Planner и повторять вопросы
 
 ## 🔜 Следующие шаги
-1. Перезапустить бота: `systemctl restart sofia-gpt`
-2. Провести новый раунд тестирования (15-16 января)
-3. Актуализировать цены в PRICE_CATALOG (превентивно)
+1. **Supervisor Agent** — проверка повторов через embeddings (2-3ч)
+2. Supervisor: проверка гендера/ЖК/цен/длины (2-3ч)
+3. Новый контрольный срез с тестировщиками
 
 ## ⚠️ Открытые вопросы
-- Нужно ли обновлять цены? (жалоб после 10 января не было)
+- Generator может игнорировать директивы Planner — нужен Supervisor
 
 ## 📁 Последние изменения
-- `bot_server.py` — закомментирован блок should_skip_response (строки 465-470)
-- `bot_server.py` — убраны "записала/записал" из MEETING_MARKERS (строка 82)
+- `extractor.py` — синонимы, all, any, gpt-5.2
+- `state_manager.py` — payment_type_confidence
+- `planner.py` — payment_type_confidence
+- `bot_server.py` — /start reset (строка 742)
+- `.gitignore` — создан
