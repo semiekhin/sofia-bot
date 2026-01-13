@@ -127,8 +127,8 @@ def get_next_action(state: ClientState, message: str, extraction: dict = None) -
     # ═══════════════════════════════════════════════════════════════════════
     # ПРИОРИТЕТ 1: После договорённости — молчим на короткие подтверждения
     # ═══════════════════════════════════════════════════════════════════════
-    if state.meeting_agreed and is_short_confirmation(message):
-        return Action.WAIT
+#     if state.meeting_agreed and is_short_confirmation(message):
+#         return Action.WAIT
     
     # ═══════════════════════════════════════════════════════════════════════
     # ПРИОРИТЕТ 2: Клиент согласился на созвон — подтверждаем
