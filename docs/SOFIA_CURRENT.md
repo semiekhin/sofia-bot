@@ -1,42 +1,53 @@
 # Текущий статус Sofia-GPT
 
-📅 **Последняя сессия:** 13 января 2026, 20:30
+📅 **Последняя сессия:** 14 января 2026, 11:50
 
-## ✅ Что сделано (сессия 13.01)
-- Диагностика проблемы повторов (4+ раза один вопрос)
-- Анализ feedback_v2: выявлены 9 проблем
-- Создана система документации PROJECT MEMORY SYSTEM v1.0
-- Настроен GitHub remote: github.com/semiekhin/sofia-bot
-- Push всей кодовой базы на GitHub
+## ✅ Что сделано (14.01.2026)
 
-## 🔴 Критичные проблемы
+### Промпты
+- **EXTRACTOR_SYSTEM_PROMPT v2.0** — задеплоен в extractor.py
+  - Новые поля: answered_last_bot_question, answer_mode, target_slot, conversation_complete
+  - Работает корректно (проверено в логах)
+  
+- **sofia_prompt.py v4.7** — задеплоен
+  - Добавлен блок "РАБОТА С ACTION_CONTEXT"
+  - Таблица реакций по answer_mode
+  - Блок "ДЕЙСТВИЯ HELP_*"
+  - Правило №15 (не упоминать служебные слова)
+  - Функция get_system_prompt принимает action_context
 
-### 1. Повтор квалификационных вопросов (4+ раза)
-- **Пример:** "Что ближе по локации?" — 4 раза подряд
-- **Причина:** Planner не считает попытки, Extractor не понимает "не знаю"
-- **Решение:** Добавить ask_counts в state + лимит 2 попытки
-
-### 2. "Вы на связи?" спам
-- **Диалоги:** #155-157 в feedback_v2
-- **Статус:** Не диагностировано
-
-### 3. assistant сохраняется с user_id=0
-- **Эффект:** Ломает аналитику по пользователям
+### Код
+- **planner.py** — обновлён get_action_context()
+  - Добавлена передача: answered_last_bot_question, answer_mode, target_slot, conversation_complete
 
 ## 🔄 Текущее состояние
-- Бот: @humanAINeural_bot — работает
-- GOOD rate: 93.75%
-- GitHub: https://github.com/semiekhin/sofia-bot
+
+### Работает ✅
+- Extractor возвращает новые поля (answer_mode, target_slot)
+- Generator реагирует на answer_mode="unknown" — варьирует вопросы
+- action_context передаётся из Planner в Generator
+
+### Не работает ❌
+- **Planner застревает на слоте** — после 2+ "не знаю" продолжает ask_location (5 раз подряд)
+- Нет slot_attempts (счётчик попыток)
+- Нет HELP_* actions в Planner
 
 ## 🔜 Следующие шаги
-1. **КРИТИЧНО:** Добавить счётчик повторов (state_manager.py + planner.py)
-2. Найти источник "Вы на связи?" спама
-3. Исправить сохранение assistant с user_id=0
 
-## 📁 Последние изменения
-- `docs/SOFIA_CONTEXT.md` — обновлён под PROJECT MEMORY SYSTEM
-- `docs/SOFIA_CURRENT.md` — актуальный статус + 9 проблем
-- `docs/SOFIA_ARCHITECTURE.md` — схема с описанием багов
-- `docs/SOFIA_KNOWLEDGE.md` — решения и антипаттерны
-- `docs/SOFIA_TASKS.md` — задачи с приоритетами
-- `docs/SESSION_END_TEMPLATE.md` — инструкция завершения сессии
+### Приоритет 1: Лимит попыток в Planner
+1. state_manager.py — добавить slot_attempts
+2. planner.py — добавить HELP_* actions
+3. planner.py — логика: ASK (1 раз) → HELP (1 раз) → пропуск слота
+
+### Приоритет 2: Улучшить концовку
+- Не переспрашивать "куда отправить" если клиент уже сказал
+- Сократить подборку до 2-3 вариантов
+
+## 📁 Изменённые файлы (14.01.2026)
+- `extractor.py` — EXTRACTOR_SYSTEM_PROMPT v2.0
+- `sofia_prompt.py` — v4.7 (action_context, answer_mode, HELP_*)
+- `planner.py` — get_action_context() с новыми полями
+
+## 📊 Метрики
+- GOOD rate: ~93.75% (сохранился)
+- Повторы: Generator варьирует, но Planner шлёт одинаковый action

@@ -217,7 +217,12 @@ def get_action_context(action: Action, state: ClientState, extraction: dict = No
         "known_facts": {},
         "missing_fields": state.get_missing_fields(),
         "qualification_score": state.qualification_score,
-        "is_qualified": state.is_qualified()
+        "is_qualified": state.is_qualified(),
+        # NEW: поля из Extractor v2.0
+        "answered_last_bot_question": extraction.get("answered_last_bot_question"),
+        "answer_mode": extraction.get("answer_mode"),
+        "target_slot": extraction.get("target_slot"),
+        "conversation_complete": extraction.get("conversation_complete", False)
     }
     
     # Заполняем известные факты
