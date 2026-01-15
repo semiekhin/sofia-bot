@@ -1,53 +1,50 @@
 # Текущий статус Sofia-GPT
 
-📅 **Последняя сессия:** 14 января 2026, 11:50
+📅 **Последняя сессия:** 15 января 2026, 21:16
 
-## ✅ Что сделано (14.01.2026)
+## ✅ Что сделано (15.01.2026)
 
-### Промпты
-- **EXTRACTOR_SYSTEM_PROMPT v2.0** — задеплоен в extractor.py
-  - Новые поля: answered_last_bot_question, answer_mode, target_slot, conversation_complete
-  - Работает корректно (проверено в логах)
+### Исправлена проблема с payment_type
+- **extractor.py** — убрано правило "не знаю" = "any, confirmed"
+  - Теперь: "не знаю"/"надо условия смотреть" → `answer_mode: "deferred"`, `payment_type: null`
+  - "любой"/"без разницы" → `answer_mode: "value"`, `payment_type: "any", confirmed`
   
-- **sofia_prompt.py v4.7** — задеплоен
-  - Добавлен блок "РАБОТА С ACTION_CONTEXT"
-  - Таблица реакций по answer_mode
-  - Блок "ДЕЙСТВИЯ HELP_*"
-  - Правило №15 (не упоминать служебные слова)
-  - Функция get_system_prompt принимает action_context
+### Добавлен HELP_LPR
+- **planner.py** — добавлен `Action.HELP_LPR` в enum и `SLOT_TO_HELP`
+- Теперь все 5 слотов имеют HELP_* actions
 
-### Код
-- **planner.py** — обновлён get_action_context()
-  - Добавлена передача: answered_last_bot_question, answer_mode, target_slot, conversation_complete
+### Обновлены все HELP_* actions
+- **Новая логика:** объяснить ЗАЧЕМ важно → упростить выбор → если снова "не знаю" — не настаивать
+- HELP_GOAL: объясняет что под инвестиции и для себя разные объекты
+- HELP_LOCATION: (без изменений — море/горы работает)
+- HELP_BUDGET: объясняет сегменты (до 10 студии, 10-15 апартаменты, 15+ премиум)
+- HELP_PAYMENT: объясняет что от оплаты зависит выбор объектов
+- HELP_LPR: объясняет что на созвон лучше всех ЛПР позвать
+
+### Файлы изменены
+- `extractor.py` — блок "ОБОБЩАЮЩИЕ ОТВЕТЫ ПРО ОПЛАТУ"
+- `planner.py` — HELP_LPR + ACTION_DESCRIPTIONS для всех HELP_*
+- `sofia_prompt.py` — все блоки HELP_* с объяснениями
 
 ## 🔄 Текущее состояние
 
 ### Работает ✅
-- Extractor возвращает новые поля (answer_mode, target_slot)
-- Generator реагирует на answer_mode="unknown" — варьирует вопросы
-- action_context передаётся из Planner в Generator
+- Единая логика для всех слотов: ASK → HELP (с объяснением) → пропуск
+- Extractor различает "любой" (value) vs "не знаю" (unknown/deferred)
+- Generator объясняет зачем нужна информация перед переспросом
 
-### Не работает ❌
-- **Planner застревает на слоте** — после 2+ "не знаю" продолжает ask_location (5 раз подряд)
-- Нет slot_attempts (счётчик попыток)
-- Нет HELP_* actions в Planner
-
-## 🔜 Следующие шаги
-
-### Приоритет 1: Лимит попыток в Planner
-1. state_manager.py — добавить slot_attempts
-2. planner.py — добавить HELP_* actions
-3. planner.py — логика: ASK (1 раз) → HELP (1 раз) → пропуск слота
-
-### Приоритет 2: Улучшить концовку
-- Не переспрашивать "куда отправить" если клиент уже сказал
-- Сократить подборку до 2-3 вариантов
-
-## 📁 Изменённые файлы (14.01.2026)
-- `extractor.py` — EXTRACTOR_SYSTEM_PROMPT v2.0
-- `sofia_prompt.py` — v4.7 (action_context, answer_mode, HELP_*)
-- `planner.py` — get_action_context() с новыми полями
+### Логика квалификации
+```
+Слот пустой + attempts.ask == 0 → ASK_*
+Слот пустой + attempts.ask >= 1 + attempts.help == 0 → HELP_* (с объяснением)  
+Слот пустой + attempts.help >= 1 → пропуск, следующий слот
+```
 
 ## 📊 Метрики
-- GOOD rate: ~93.75% (сохранился)
-- Повторы: Generator варьирует, но Planner шлёт одинаковый action
+- Ожидаем снижение повторных вопросов
+- Ожидаем меньше раздражения клиентов ("я же сказал")
+
+## 🔜 Следующие шаги
+- Тестирование новой логики
+- Мониторинг логов на предмет правильной работы HELP_*
+- Добавление 40 новых диалогов в RAG

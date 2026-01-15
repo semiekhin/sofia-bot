@@ -25,6 +25,13 @@ class Action(Enum):
     ASK_FIRST_PAYMENT = "ask_first_payment" # Спросить первый взнос (ипотека)
     ASK_LPR = "ask_lpr"                     # Спросить ЛПР (с кем решает)
     
+    # Помощь с выбором (после unknown/refusal)
+    HELP_GOAL = "help_goal"                 # Помочь определить цель
+    HELP_LOCATION = "help_location"         # Помочь с локацией
+    HELP_BUDGET = "help_budget"             # Помочь с бюджетом
+    HELP_PAYMENT = "help_payment"           # Помочь со способом оплаты
+    HELP_LPR = "help_lpr"                   # Помочь с ЛПР
+    
     # Реактивные действия
     ANSWER_QUESTION = "answer_question"     # Ответить на вопрос клиента
     HANDLE_OBJECTION = "handle_objection"   # Обработать возражение
@@ -88,7 +95,27 @@ ACTION_DESCRIPTIONS = {
     Action.SEND_MATERIALS: """Отправить подборку материалов.
 Клиент квалифицирован и настаивает на материалах.""",
     
-    Action.FOLLOW_UP: """Напомнить о себе, если клиент не отвечал 10+ минут."""
+    Action.FOLLOW_UP: """Напомнить о себе, если клиент не отвечал 10+ минут.""",
+    
+    # HELP_* actions (упрощённый выбор после "не знаю")
+    Action.HELP_GOAL: """Клиент не знает цель. Объясни зачем важно и упрости:
+'Просто под инвестиции и для себя подбираем разные объекты. Что ближе: доход с аренды или для своего отдыха?'
+Если снова 'не знаю' — прими и иди дальше.""",
+    
+    Action.HELP_LOCATION: """Клиент не знает локацию. Предложи простой выбор:
+'Что ближе по духу — море или горы?'""",
+    
+    Action.HELP_BUDGET: """Клиент не знает бюджет. Объясни зачем важно и дай диапазоны:
+'В разных сегментах разные объекты — до 10 млн студии, 10-15 апартаменты, 15+ премиум. Что комфортнее?'
+Если снова 'не знаю' — прими и иди дальше.""",
+    
+    Action.HELP_PAYMENT: """Клиент не определился со способом оплаты. Объясни важность и упрости выбор:
+'Поняла. От способа оплаты сильно зависит выбор — есть варианты только за наличные, есть что под ипотеку не проходит. Как у вас: есть сумма на полную оплату, или смотрим с финансированием?'
+Если снова 'не знаю' — НЕ переспрашивай, прими и иди дальше.""",
+    
+    Action.HELP_LPR: """Клиент не ответил про ЛПР. Объясни зачем и спроси мягко:
+'Чтобы на созвон сразу всех позвать. Решение за вами одним, или с кем-то согласовать нужно?'
+Если уходит от ответа — не настаивай, иди дальше."""
 }
 
 
@@ -98,6 +125,29 @@ SHORT_CONFIRMATIONS = {
     "ясно", "угу", "+", "отлично", "супер", "класс", "👍",
     "принял", "принято", "договорились", "ага", "угум", "ок!",
     "хор", "да!", "ок.", "good", "yes", "ясненько", "понятненько"
+}
+
+
+# Порядок слотов для квалификации
+SLOT_ORDER = ["goal", "location", "budget", "payment_type", "first_payment", "lpr"]
+
+# Маппинг слот → ASK action
+SLOT_TO_ASK = {
+    "goal": Action.ASK_GOAL,
+    "location": Action.ASK_LOCATION,
+    "budget": Action.ASK_BUDGET,
+    "payment_type": Action.ASK_PAYMENT,
+    "first_payment": Action.ASK_FIRST_PAYMENT,
+    "lpr": Action.ASK_LPR,
+}
+
+# Маппинг слот → HELP action
+SLOT_TO_HELP = {
+    "goal": Action.HELP_GOAL,
+    "location": Action.HELP_LOCATION,
+    "budget": Action.HELP_BUDGET,
+    "payment_type": Action.HELP_PAYMENT,
+    "lpr": Action.HELP_LPR,
 }
 
 
@@ -167,33 +217,44 @@ def get_next_action(state: ClientState, message: str, extraction: dict = None) -
             return Action.DEFLECT_TO_CALL
     
     # ═══════════════════════════════════════════════════════════════════════
-    # ПРИОРИТЕТ 7: Квалификация по порядку
+    # ПРИОРИТЕТ 7: Квалификация с защитой от повторов
     # ═══════════════════════════════════════════════════════════════════════
     
-    # 7.1 Цель покупки
-    if not state.goal or state.goal_confidence != "confirmed":
-        return Action.ASK_GOAL
+    # Инициализируем slot_attempts если нет
+    if not hasattr(state, 'slot_attempts') or not state.slot_attempts:
+        state.slot_attempts = {s: {"ask": 0, "help": 0} for s in SLOT_ORDER}
     
-    # 7.2 Локация
-    if not state.location or state.location_confidence != "confirmed":
-        return Action.ASK_LOCATION
-    
-    # 7.3 Бюджет
-    if not state.budget or state.budget_confidence != "confirmed":
-        return Action.ASK_BUDGET
-    
-    # 7.4 Способ оплаты
-    if not state.payment_type or state.payment_type_confidence != "confirmed":
-        return Action.ASK_PAYMENT
-    
-    # 7.5 Первый взнос (только для ипотеки)
-    if state.payment_type == "mortgage":
-        if not state.first_payment or state.first_payment_confidence != "confirmed":
-            return Action.ASK_FIRST_PAYMENT
-    
-    # 7.6 ЛПР (кто принимает решение)
-    if not state.lpr or state.lpr_confidence != "confirmed":
-        return Action.ASK_LPR
+    for slot in SLOT_ORDER:
+        # Пропускаем first_payment если не ипотека
+        if slot == "first_payment" and state.payment_type != "mortgage":
+            continue
+        
+        # Проверяем заполнен ли слот
+        slot_value = getattr(state, slot, None)
+        slot_conf = getattr(state, f"{slot}_confidence", None)
+        
+        # Слот заполнен и подтверждён → следующий
+        if slot_value and slot_conf == "confirmed":
+            continue
+        
+        # Слот не заполнен — проверяем лимиты попыток
+        attempts = state.slot_attempts.get(slot, {"ask": 0, "help": 0})
+        
+        if attempts["ask"] == 0:
+            # Ещё не спрашивали → спрашиваем
+            return SLOT_TO_ASK[slot]
+        
+        elif attempts["ask"] >= 1 and attempts["help"] == 0:
+            # Спрашивали, но не помогали → помогаем (если есть HELP)
+            if slot in SLOT_TO_HELP:
+                return SLOT_TO_HELP[slot]
+            else:
+                # Нет HELP для этого слота → пропускаем
+                continue
+        
+        else:
+            # Исчерпали попытки → пропускаем слот
+            continue
     
     # ═══════════════════════════════════════════════════════════════════════
     # ПРИОРИТЕТ 8: Квалификация завершена — предлагаем созвон
@@ -310,6 +371,18 @@ def format_action_for_prompt(action: Action, context: dict) -> str:
         lines.append(f"ВРЕМЯ СОЗВОНА: {context['meeting_datetime']}")
     
     return "\n".join(lines)
+
+
+def increment_slot_attempt(state, slot: str, attempt_type: str = "ask"):
+    """
+    Увеличивает счётчик попыток для слота.
+    Вызывать из bot_server.py ПОСЛЕ выбора действия ASK_* или HELP_*.
+    """
+    if not hasattr(state, 'slot_attempts') or not state.slot_attempts:
+        state.slot_attempts = {s: {"ask": 0, "help": 0} for s in SLOT_ORDER}
+    
+    if slot in state.slot_attempts:
+        state.slot_attempts[slot][attempt_type] += 1
 
 
 # === ТЕСТЫ ===

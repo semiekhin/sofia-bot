@@ -7,6 +7,7 @@ state_manager.py — управление состоянием клиента
 """
 
 import sqlite3
+import json
 from dataclasses import dataclass, field
 from typing import Optional, Literal
 from datetime import datetime
@@ -55,6 +56,16 @@ class ClientState:
     # Мета
     updated_at: Optional[datetime] = None
     qualification_score: float = 0.0
+    
+    # Счётчики попыток по слотам (защита от повторов)
+    slot_attempts: dict = field(default_factory=lambda: {
+        "goal": {"ask": 0, "help": 0},
+        "location": {"ask": 0, "help": 0},
+        "budget": {"ask": 0, "help": 0},
+        "payment_type": {"ask": 0, "help": 0},
+        "first_payment": {"ask": 0, "help": 0},
+        "lpr": {"ask": 0, "help": 0}
+    })
     
     def is_qualified(self) -> bool:
         """Проверка полноты квалификации (минимум для созвона)"""
@@ -241,7 +252,8 @@ class StateManager:
             wants_materials=bool(row["wants_materials"]),
             mentioned_location=row["mentioned_location"],
             mentioned_price=row["mentioned_price"],
-            qualification_score=row["qualification_score"] or 0.0
+            qualification_score=row["qualification_score"] or 0.0,
+            slot_attempts=json.loads(row["slot_attempts"]) if row["slot_attempts"] else {}
         )
         return state
     
@@ -279,8 +291,9 @@ class StateManager:
                 first_payment, first_payment_confidence, lpr, lpr_confidence,
                 meeting_agreed, meeting_datetime, materials_sent,
                 current_question_type, current_objection, wants_materials,
-                mentioned_location, mentioned_price, updated_at, qualification_score
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                mentioned_location, mentioned_price, updated_at, qualification_score,
+                slot_attempts
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             state.user_id, state.goal, state.goal_confidence,
             state.location, state.location_confidence,
@@ -291,7 +304,8 @@ class StateManager:
             state.meeting_agreed, state.meeting_datetime, state.materials_sent,
             state.current_question_type, state.current_objection, state.wants_materials,
             state.mentioned_location, state.mentioned_price,
-            state.updated_at, state.qualification_score
+            state.updated_at, state.qualification_score,
+            json.dumps(state.slot_attempts)
         ))
         conn.commit()
         conn.close()

@@ -26,7 +26,7 @@ from rag_module import search_examples, format_examples_for_prompt, init_vector_
 # NEW: Agent Architecture
 from state_manager import StateManager, ClientState
 from extractor import extract_sync, merge_extraction_to_state
-from planner import get_next_action, get_action_context, format_action_for_prompt, Action
+from planner import get_next_action, get_action_context, format_action_for_prompt, Action, increment_slot_attempt
 
 # Детекторы отключены — управление через промпт + RAG
 # from detectors import ...
@@ -492,6 +492,16 @@ async def delayed_response(chat_id, user_id, user_name, context):
     action = get_next_action(client_state, combined_message, extraction)
     action_context = get_action_context(action, client_state, extraction)
     log(f"🎯 Planner: {action.value} → {action_context.get('action_description', '')[:50]}...")
+    
+    # 5.1 Увеличиваем счётчик попыток для слота
+    if action.value.startswith("ask_"):
+        slot = action.value.replace("ask_", "")
+        increment_slot_attempt(client_state, slot, "ask")
+        state_manager.update_state(user_id, {"slot_attempts": client_state.slot_attempts})
+    elif action.value.startswith("help_"):
+        slot = action.value.replace("help_", "")
+        increment_slot_attempt(client_state, slot, "help")
+        state_manager.update_state(user_id, {"slot_attempts": client_state.slot_attempts})
     
     # 6. Проверка WAIT от Planner
     if action == Action.WAIT:
