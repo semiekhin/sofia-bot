@@ -50,10 +50,10 @@ CURRENT
 
 ---
 
-## 2. Git коммит (если настроен remote)
+## 2. Git коммит и пуш (ОБЯЗАТЕЛЬНО)
 ```bash
 cd /opt/sofia-gpt
-git add docs/
+git add -A
 git commit -m "docs: сессия {ДД.ММ.ГГГГ} — {краткое описание}"
 git push
 ```
@@ -61,6 +61,8 @@ git push
 ---
 
 ## 3. Выдай блок для нового чата
+
+**ВАЖНО:** Ссылки на документацию даём с GitHub (raw), не с сервера!
 
 Формат:
 ```
@@ -70,9 +72,16 @@ git push
 Бот: @humanAINeural_bot
 Последняя сессия: {дата} — {что сделали}
 
-Загрузи документацию:
-cat /opt/sofia-gpt/docs/SOFIA_CONTEXT.md
-cat /opt/sofia-gpt/docs/SOFIA_CURRENT.md
+{Краткое описание главного изменения}
+
+TODO: {что нужно сделать}
+
+Документация на GitHub:
+https://raw.githubusercontent.com/semiekhin/sofia-bot/main/docs/SOFIA_CONTEXT.md
+https://raw.githubusercontent.com/semiekhin/sofia-bot/main/docs/SOFIA_CURRENT.md
+https://raw.githubusercontent.com/semiekhin/sofia-bot/main/docs/SOFIA_ARCHITECTURE.md
+https://raw.githubusercontent.com/semiekhin/sofia-bot/main/docs/SOFIA_KNOWLEDGE.md
+https://raw.githubusercontent.com/semiekhin/sofia-bot/main/docs/SOFIA_TASKS.md
 ```
 
 ---
@@ -81,8 +90,9 @@ cat /opt/sofia-gpt/docs/SOFIA_CURRENT.md
 
 - [ ] SOFIA_CURRENT.md обновлён с датой и статусом
 - [ ] Все изменённые файлы указаны
+- [ ] Git commit + push выполнен
 - [ ] Следующие шаги понятны для нового чата
-- [ ] Блок для копирования готов
+- [ ] Блок для копирования готов (со ссылками на GitHub)
 
 ---
 
@@ -93,7 +103,7 @@ cat /opt/sofia-gpt/docs/SOFIA_CURRENT.md
 **Claude:**
 1. Обновляю SOFIA_CURRENT.md...
 2. Добавляю в SOFIA_KNOWLEDGE.md решение про счётчик повторов...
-3. Переношу задачу в выполненные...
+3. Git commit + push...
 
 **Блок для нового чата:**
 ```
@@ -101,9 +111,16 @@ cat /opt/sofia-gpt/docs/SOFIA_CURRENT.md
 Сервер: 72.56.64.91:2222
 Путь: /opt/sofia-gpt/
 Бот: @humanAINeural_bot
-Последняя сессия: 13.01.2026 — добавлен счётчик повторов
+Последняя сессия: 15.01.2026 — унификация HELP_* логики
 
-Загрузи документацию:
-cat /opt/sofia-gpt/docs/SOFIA_CONTEXT.md
-cat /opt/sofia-gpt/docs/SOFIA_CURRENT.md
+Главное изменение: HELP_* теперь объясняют зачем нужна информация
+
+TODO: протестировать новую логику
+
+Документация на GitHub:
+https://raw.githubusercontent.com/semiekhin/sofia-bot/main/docs/SOFIA_CONTEXT.md
+https://raw.githubusercontent.com/semiekhin/sofia-bot/main/docs/SOFIA_CURRENT.md
+https://raw.githubusercontent.com/semiekhin/sofia-bot/main/docs/SOFIA_ARCHITECTURE.md
+https://raw.githubusercontent.com/semiekhin/sofia-bot/main/docs/SOFIA_KNOWLEDGE.md
+https://raw.githubusercontent.com/semiekhin/sofia-bot/main/docs/SOFIA_TASKS.md
 ```
