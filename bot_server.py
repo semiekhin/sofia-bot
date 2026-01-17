@@ -64,7 +64,7 @@ CONTEXT_SIZE = 8  # Последние 8 сообщений
 ADMIN_IDS = [5186134824, 512319063]
 
 # RAG настройки
-RAG_EXAMPLES_COUNT = 3  # Сколько примеров добавлять в промпт
+RAG_EXAMPLES_COUNT = 5  # Сколько примеров добавлять в промпт
 RAG_ENABLED = True      # Включить/выключить RAG
 
 # ============================================
@@ -511,6 +511,23 @@ async def delayed_response(chat_id, user_id, user_name, context):
         slot = ACTION_TO_SLOT.get(slot, slot)  # payment → payment_type
         increment_slot_attempt(client_state, slot, "help")
         state_manager.update_state(user_id, {"slot_attempts": client_state.slot_attempts})
+    
+    # 5.2 NEW v2.0: Сохраняем поля изменённые в Planner
+    v2_updates = {
+        "branch": client_state.branch,
+        "call_proposal_count": client_state.call_proposal_count,
+        "materials_request_count": client_state.materials_request_count,
+    }
+    
+    # При завершении диалога
+    if action == Action.FINISH_WITH_MATERIALS:
+        v2_updates["dialog_finished"] = True
+        v2_updates["finish_type"] = "materials"
+    elif action == Action.CONFIRM_MEETING:
+        v2_updates["dialog_finished"] = True
+        v2_updates["finish_type"] = "meeting"
+    
+    state_manager.update_state(user_id, v2_updates)
     
     # 6. Проверка WAIT от Planner
     if action == Action.WAIT:

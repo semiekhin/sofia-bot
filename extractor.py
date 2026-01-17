@@ -224,6 +224,22 @@ lpr (кто принимает решение):
 - "with_partner" — с партнёром, другом, родителями
 - null — если не указан
 
+strategy (стратегия инвестирования, только для goal=investment):
+- "rental" — доход с аренды, сдавать, пассивный доход
+- "growth" — рост стоимости, перепродажа, капитализация
+- "any" — оба варианта, не определился, "и то и другое"
+- null — если не спрашивали или goal не investment
+
+usage (использование, только для goal=personal):
+- "permanent" — постоянное проживание, переезд, жить
+- "vacation" — дача, отдых, сезонно, иногда приезжать
+- "any" — оба варианта, не определился
+- null — если не спрашивали или goal не personal
+
+family (информация о семье):
+- Текст: "с женой", "двое детей", "один", "с родителями"
+- null — если не спрашивали или не ответил
+
 ═══════════════════════════════════════════════════════════════════════════════
 ДОПОЛНИТЕЛЬНЫЕ ПОЛЯ:
 ═══════════════════════════════════════════════════════════════════════════════
@@ -299,7 +315,7 @@ sentiment (настроение):
 {
   "answered_last_bot_question": "yes" | "no" | "partial",
   "answer_mode": "value" | "unknown" | "needs_recommendation" | "refusal" | "deferred" | "counter_question" | "off_topic" | null,
-  "target_slot": "goal" | "location" | "budget" | "payment_type" | "lpr" | null,
+  "target_slot": "goal" | "location" | "budget" | "payment_type" | "lpr" | "strategy" | "usage" | "family" | null,
   "conversation_complete": true | false,
 
   "goal": "investment" | "personal" | null,
@@ -319,6 +335,10 @@ sentiment (настроение):
   
   "lpr": "alone" | "with_spouse" | "with_partner" | null,
   "lpr_confidence": "confirmed" | "mentioned" | null,
+  
+  "strategy": "rental" | "growth" | "any" | null,
+  "usage": "permanent" | "vacation" | "any" | null,
+  "family": "текст описания семьи" | null,
   
   "question_type": "price" | "availability" | "process" | "mortgage_rate" | "location_info" | null,
   "objection": "expensive" | "think" | "busy" | "has_realtor" | "no_call" | null,

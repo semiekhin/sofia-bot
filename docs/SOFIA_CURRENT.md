@@ -1,50 +1,90 @@
 # Текущий статус Sofia-GPT
 
-📅 **Последняя сессия:** 17.01.2026 (ночь)
+📅 **Последняя сессия:** 17.01.2026 (ночь, поздняя) — реализация спецификации v2.0
 
 ## ✅ Что сделано в этой сессии
 
-### 1. Исправлен критический баг slot_attempts
-- **Проблема:** Бот спрашивал payment_type 8+ раз подряд
-- **Причина:** Несоответствие имён: action `ask_payment` → slot `"payment"`, а в БД `"payment_type"`
-- **Решение:** Добавлен маппинг `ACTION_TO_SLOT = {"payment": "payment_type"}` в bot_server.py
-- **Коммит:** `4cac35fd`
+### Полная реализация Sofia-GPT v2.0
 
-### 2. Добавлена логика no_call (отказ от созвона)
-- В Extractor добавлено `objection: "no_call"`
-- В StateManager добавлено поле `call_refused`
-- В Planner: если `call_refused=True` и повторный `no_call` → пропускаем HANDLE_OBJECTION
+#### 1. Миграция БД — 8 новых колонок
+```sql
+ALTER TABLE client_state ADD COLUMN branch TEXT;
+ALTER TABLE client_state ADD COLUMN strategy TEXT;
+ALTER TABLE client_state ADD COLUMN usage TEXT;
+ALTER TABLE client_state ADD COLUMN family TEXT;
+ALTER TABLE client_state ADD COLUMN call_proposal_count INTEGER DEFAULT 0;
+ALTER TABLE client_state ADD COLUMN materials_request_count INTEGER DEFAULT 0;
+ALTER TABLE client_state ADD COLUMN dialog_finished BOOLEAN DEFAULT 0;
+ALTER TABLE client_state ADD COLUMN finish_type TEXT;
+```
 
-### 3. Разработана спецификация Sofia-GPT v2.0
-- Две ветки диалога: INVESTMENT и PERSONAL
-- Разный порядок вопросов для каждой ветки
-- Два предложения созвона (после базовой и полной квалификации)
-- Счётчик отказов — при 2 отказах завершаем
-- Формулировки из RAG (скрипты Оксаны)
+#### 2. state_manager.py — новые поля
+- Добавлены поля: branch, strategy, usage, family
+- Добавлены счётчики: call_proposal_count, materials_request_count
+- Добавлены флаги завершения: dialog_finished, finish_type
+- Обновлены: _init_db(), get_state(), _save_state()
+- Расширен slot_attempts для новых слотов (strategy, usage, family)
+
+#### 3. planner.py — полная переработка логики v2.0
+- Добавлены новые Actions:
+  - ASK_STRATEGY, ASK_USAGE, ASK_FAMILY
+  - PROPOSE_MEETING_1, PROPOSE_MEETING_2
+  - FINISH_WITH_MATERIALS
+- Реализованы две ветки квалификации:
+  - _qualify_investment(): goal → strategy → budget → MEETING_1 → payment → location → lpr → MEETING_2
+  - _qualify_personal(): goal → usage → location → budget → MEETING_1 → family → payment → lpr → MEETING_2
+- Счётчик отказов: materials_request_count >= 2 → FINISH_WITH_MATERIALS
+- Обновлены тесты под v2.0 (11 тестов)
+
+#### 4. extractor.py — новые поля
+- Добавлено извлечение: strategy, usage, family
+- Обновлён target_slot с новыми слотами
+- Добавлены правила извлечения для каждого поля
+
+#### 5. sofia_prompt.py — описания новых Actions
+- Добавлены описания: ASK_STRATEGY, ASK_USAGE, ASK_FAMILY
+- Добавлены описания: PROPOSE_MEETING_1, PROPOSE_MEETING_2, FINISH_WITH_MATERIALS
+- Усилены директивы: "ОБЯЗАНА предложить созвон" для PROPOSE_MEETING_*
+
+#### 6. bot_server.py — интеграция v2.0
+- Добавлено сохранение v2.0 полей после Planner:
+  - branch, call_proposal_count, materials_request_count
+  - dialog_finished, finish_type при завершении
+- RAG_EXAMPLES_COUNT увеличен с 3 до 5
+
+#### 7. RAG — формулировки Оксаны
+- Добавлен диалог 'oksana_scripts_v2' с 13 примерами:
+  - 3 примера для PROPOSE_MEETING_1 (первое предложение)
+  - 7 примеров для PROPOSE_MEETING_2 (второе предложение, работа с возражениями)
+  - 3 примера для FINISH_WITH_MATERIALS (завершение после отказов)
+- RAG переиндексирован: 1939 примеров (было 1926)
 
 ## 🔄 Текущее состояние
 
 ### Работает ✅
-- Основной бот (@humanAINeural_bot)
-- slot_attempts для payment_type
-- Распознавание no_call в Extractor
-- Флаг call_refused в БД
+- Две ветки квалификации (INVESTMENT / PERSONAL)
+- Два предложения созвона (PROPOSE_MEETING_1 / PROPOSE_MEETING_2)
+- Счётчик отказов (materials_request_count)
+- Завершение диалога (dialog_finished, finish_type)
+- RAG с формулировками Оксаны (1939 примеров)
+- Бот запущен и работает (@humanAINeural_bot)
 
-### Требует доработки ⚠️
-- Полная переработка Planner под спецификацию v2.0
-- Добавление новых полей в state_manager
-- Загрузка формулировок Оксаны в RAG
-- Логика двух предложений созвона
+### Требует тестирования ⚠️
+- Полный флоу INVESTMENT ветки
+- Полный флоу PERSONAL ветки
+- Сценарий с 2 отказами → FINISH_WITH_MATERIALS
+- Проверка что Generator всегда слушает PROPOSE_MEETING_* директивы
 
 ## 🔜 Следующие шаги
-1. **ПРИОРИТЕТ:** Реализовать спецификацию Sofia-GPT v2.0
-2. Добавить новые поля в state_manager (branch, strategy, usage, family, call_proposal_count, materials_request_count, dialog_finished, finish_type)
-3. Переписать Planner с двумя ветками квалификации
-4. Загрузить формулировки в RAG
-5. Тестирование
+1. Протестировать все сценарии v2.0
+2. Мониторить логи на предмет игнорирования директив Generator'ом
+3. При необходимости усилить промпт
 
 ## 📁 Последние изменения
-- `bot_server.py` — добавлен ACTION_TO_SLOT маппинг для slot_attempts
-- `extractor.py` — добавлен no_call в objection, установка call_refused
-- `state_manager.py` — добавлено поле call_refused
-- `planner.py` — логика пропуска HANDLE_OBJECTION при повторном no_call
+- `state_manager.py` — новые поля v2.0, обновлены все методы работы с БД
+- `planner.py` — полностью переписан get_next_action(), добавлены _qualify_investment(), _qualify_personal()
+- `extractor.py` — добавлены strategy, usage, family в промпт и формат
+- `sofia_prompt.py` — описания новых Actions, усиленные директивы
+- `bot_server.py` — сохранение v2.0 полей, RAG_EXAMPLES_COUNT=5
+- `rag_training_data.json` — добавлены 13 примеров Оксаны
+- БД `sofia_gpt.db` — 8 новых колонок

@@ -65,8 +65,25 @@ class ClientState:
         "budget": {"ask": 0, "help": 0},
         "payment_type": {"ask": 0, "help": 0},
         "first_payment": {"ask": 0, "help": 0},
-        "lpr": {"ask": 0, "help": 0}
+        "lpr": {"ask": 0, "help": 0},
+        "strategy": {"ask": 0, "help": 0},
+        "usage": {"ask": 0, "help": 0},
+        "family": {"ask": 0, "help": 0}
     })
+    
+    # NEW v2.0: Ветка диалога и дополнительные поля
+    branch: Optional[str] = None                    # 'investment' | 'personal'
+    strategy: Optional[str] = None                  # 'rental' | 'growth' | 'any'
+    usage: Optional[str] = None                     # 'permanent' | 'vacation' | 'any'
+    family: Optional[str] = None                    # текст
+    
+    # NEW v2.0: Счётчики предложений и отказов
+    call_proposal_count: int = 0                    # сколько раз предлагали созвон (0, 1, 2)
+    materials_request_count: int = 0                # сколько раз клиент просил подборку / отказался
+    
+    # NEW v2.0: Завершение диалога
+    dialog_finished: bool = False                   # диалог завершён, Sofia молчит
+    finish_type: Optional[str] = None               # 'meeting' | 'materials' 
     
     def is_qualified(self) -> bool:
         """Проверка полноты квалификации (минимум для созвона)"""
@@ -204,6 +221,7 @@ class StateManager:
                 meeting_agreed BOOLEAN DEFAULT 0,
                 meeting_datetime TEXT,
                 materials_sent BOOLEAN DEFAULT 0,
+                call_refused BOOLEAN DEFAULT 0,
                 
                 current_question_type TEXT,
                 current_objection TEXT,
@@ -213,7 +231,17 @@ class StateManager:
                 mentioned_price INTEGER,
                 
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                qualification_score REAL DEFAULT 0.0
+                qualification_score REAL DEFAULT 0.0,
+                slot_attempts TEXT DEFAULT '{}',
+                
+                branch TEXT,
+                strategy TEXT,
+                usage TEXT,
+                family TEXT,
+                call_proposal_count INTEGER DEFAULT 0,
+                materials_request_count INTEGER DEFAULT 0,
+                dialog_finished BOOLEAN DEFAULT 0,
+                finish_type TEXT
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_client_state_user ON client_state(user_id)")
@@ -255,7 +283,16 @@ class StateManager:
             mentioned_location=row["mentioned_location"],
             mentioned_price=row["mentioned_price"],
             qualification_score=row["qualification_score"] or 0.0,
-            slot_attempts=json.loads(row["slot_attempts"]) if row["slot_attempts"] else {}
+            slot_attempts=json.loads(row["slot_attempts"]) if row["slot_attempts"] else {},
+            # NEW v2.0 fields
+            branch=row["branch"] if "branch" in row.keys() else None,
+            strategy=row["strategy"] if "strategy" in row.keys() else None,
+            usage=row["usage"] if "usage" in row.keys() else None,
+            family=row["family"] if "family" in row.keys() else None,
+            call_proposal_count=row["call_proposal_count"] if "call_proposal_count" in row.keys() else 0,
+            materials_request_count=row["materials_request_count"] if "materials_request_count" in row.keys() else 0,
+            dialog_finished=bool(row["dialog_finished"]) if "dialog_finished" in row.keys() else False,
+            finish_type=row["finish_type"] if "finish_type" in row.keys() else None
         )
         return state
     
@@ -294,8 +331,11 @@ class StateManager:
                 meeting_agreed, meeting_datetime, materials_sent, call_refused,
                 current_question_type, current_objection, wants_materials,
                 mentioned_location, mentioned_price, updated_at, qualification_score,
-                slot_attempts
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                slot_attempts,
+                branch, strategy, usage, family,
+                call_proposal_count, materials_request_count,
+                dialog_finished, finish_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             state.user_id, state.goal, state.goal_confidence,
             state.location, state.location_confidence,
@@ -307,7 +347,10 @@ class StateManager:
             state.current_question_type, state.current_objection, state.wants_materials,
             state.mentioned_location, state.mentioned_price,
             state.updated_at, state.qualification_score,
-            json.dumps(state.slot_attempts)
+            json.dumps(state.slot_attempts),
+            state.branch, state.strategy, state.usage, state.family,
+            state.call_proposal_count, state.materials_request_count,
+            state.dialog_finished, state.finish_type
         ))
         conn.commit()
         conn.close()

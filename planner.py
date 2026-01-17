@@ -45,6 +45,18 @@ class Action(Enum):
     
     # Пост-обработка
     FOLLOW_UP = "follow_up"                 # Напоминание
+    
+    # NEW v2.0: Дополнительные вопросы
+    ASK_STRATEGY = "ask_strategy"           # Стратегия инвестирования (rental/growth)
+    ASK_USAGE = "ask_usage"                 # Использование (permanent/vacation)
+    ASK_FAMILY = "ask_family"               # Семья, дети
+    
+    # NEW v2.0: Два предложения созвона
+    PROPOSE_MEETING_1 = "propose_meeting_1" # Первое предложение (после базовой квалификации)
+    PROPOSE_MEETING_2 = "propose_meeting_2" # Второе предложение (после полной квалификации)
+    
+    # NEW v2.0: Завершение
+    FINISH_WITH_MATERIALS = "finish_with_materials"  # Завершение с подборкой (после 2 отказов)
 
 
 # Описания действий для промпта Generator
@@ -115,7 +127,39 @@ ACTION_DESCRIPTIONS = {
     
     Action.HELP_LPR: """Клиент не ответил про ЛПР. Объясни зачем и спроси мягко:
 'Чтобы на созвон сразу всех позвать. Решение за вами одним, или с кем-то согласовать нужно?'
-Если уходит от ответа — не настаивай, иди дальше."""
+Если уходит от ответа — не настаивай, иди дальше.""",
+
+    # NEW v2.0: Дополнительные вопросы
+    Action.ASK_STRATEGY: """Спросить стратегию инвестирования.
+'Что важнее: доход с аренды или рост стоимости при перепродаже?'
+Если 'не знаю' или 'и то и другое' — принять, идти дальше.""",
+    
+    Action.ASK_USAGE: """Спросить как будет использоваться.
+'Для постоянного проживания или как дача для отдыха?'
+Если 'не знаю' — принять, идти дальше.""",
+    
+    Action.ASK_FAMILY: """Спросить про семью.
+'С семьёй планируете? Дети есть?'
+Если 'не знаю' или не хочет отвечать — принять, идти дальше.""",
+    
+    # NEW v2.0: Два предложения созвона
+    Action.PROPOSE_MEETING_1: """Первое предложение созвона (после базовой квалификации).
+Короткая формулировка, акцент на экономии времени.
+'Давайте созвонимся на 15 минут — покажу 2-3 варианта под ваш запрос. Когда удобно?'
+Использовать примеры из RAG.""",
+    
+    Action.PROPOSE_MEETING_2: """Второе предложение созвона (после первого отказа, полная квалификация).
+Развёрнутая формулировка из работы с возражениями.
+Показать ценность: экспертиза, закрытые лоты, экономия времени.
+'За 15 минут покажу варианты, которых нет в открытом доступе. Когда удобнее?'
+Использовать примеры из RAG.""",
+    
+    # NEW v2.0: Завершение
+    Action.FINISH_WITH_MATERIALS: """Завершение диалога с обещанием подборки.
+Клиент дважды отказался от созвона — не настаиваем.
+'Хорошо, вижу вашу занятость) В ближайшее время отправлю варианты которые подобрала.
+Если будут вопросы — пишите!'
+После этого НЕ задавать вопросов, замолчать."""
 }
 
 
@@ -139,6 +183,9 @@ SLOT_TO_ASK = {
     "payment_type": Action.ASK_PAYMENT,
     "first_payment": Action.ASK_FIRST_PAYMENT,
     "lpr": Action.ASK_LPR,
+    "strategy": Action.ASK_STRATEGY,
+    "usage": Action.ASK_USAGE,
+    "family": Action.ASK_FAMILY,
 }
 
 # Маппинг слот → HELP action
@@ -161,39 +208,43 @@ def get_next_action(state: ClientState, message: str, extraction: dict = None) -
     """
     Определяет следующее действие на основе состояния и сообщения.
     
-    ПРИОРИТЕТЫ:
-    1. WAIT после договорённости
-    2. Подтверждение времени созвона
-    3. Обработка возражений
-    4. Ответ на вопрос клиента
-    5. Уточнение упоминаний
-    6. Квалификация по порядку
-    7. Реакция на запрос материалов
-    8. Предложение созвона
+    v2.0 ЛОГИКА:
+    - Две ветки: INVESTMENT и PERSONAL
+    - Два предложения созвона: после базовой и полной квалификации  
+    - Счётчик отказов: при 2 отказах → FINISH_WITH_MATERIALS
     """
     
     extraction = extraction or {}
     
     # ═══════════════════════════════════════════════════════════════════════
-    # ПРИОРИТЕТ 1: После договорённости — молчим на короткие подтверждения
+    # ПРИОРИТЕТ 0: Диалог завершён — молчим
     # ═══════════════════════════════════════════════════════════════════════
-#     if state.meeting_agreed and is_short_confirmation(message):
-#         return Action.WAIT
+    if getattr(state, 'dialog_finished', False):
+        return Action.WAIT
     
     # ═══════════════════════════════════════════════════════════════════════
-    # ПРИОРИТЕТ 2: Клиент согласился на созвон — подтверждаем
+    # ПРИОРИТЕТ 1: Клиент согласился на созвон — подтверждаем
     # ═══════════════════════════════════════════════════════════════════════
     if extraction.get("meeting_agreed") and extraction.get("meeting_datetime"):
         return Action.CONFIRM_MEETING
     
     # ═══════════════════════════════════════════════════════════════════════
-    # ПРИОРИТЕТ 3: Обработка возражений
+    # ПРИОРИТЕТ 2: Счётчик отказов (wants_materials или no_call)
+    # ═══════════════════════════════════════════════════════════════════════
+    if extraction.get("wants_materials") or extraction.get("objection") == "no_call":
+        # Увеличиваем счётчик в state (будет сохранён в bot_server.py)
+        state.materials_request_count = getattr(state, 'materials_request_count', 0) + 1
+        
+        if state.materials_request_count >= 2:
+            return Action.FINISH_WITH_MATERIALS
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # ПРИОРИТЕТ 3: Обработка возражений (кроме no_call после первого отказа)
     # ═══════════════════════════════════════════════════════════════════════
     if extraction.get("objection"):
-        # Если клиент уже отказался от созвона и снова говорит no_call — не настаиваем
-        if extraction.get("objection") == "no_call" and getattr(state, "call_refused", False):
-            pass  # Пропускаем HANDLE_OBJECTION, идём к SEND_MATERIALS
-        else:
+        obj = extraction.get("objection")
+        # no_call обрабатываем через счётчик выше, не через HANDLE_OBJECTION
+        if obj != "no_call":
             return Action.HANDLE_OBJECTION
     
     # ═══════════════════════════════════════════════════════════════════════
@@ -205,72 +256,155 @@ def get_next_action(state: ClientState, message: str, extraction: dict = None) -
     # ═══════════════════════════════════════════════════════════════════════
     # ПРИОРИТЕТ 5: Уточнение упоминаний
     # ═══════════════════════════════════════════════════════════════════════
-    # Если клиент упомянул локацию/цену, но не подтвердил — уточняем
     if extraction.get("mentioned_location") and not state.location:
         return Action.CLARIFY_MENTIONED
     if extraction.get("mentioned_price") and not state.budget:
         return Action.CLARIFY_MENTIONED
     
     # ═══════════════════════════════════════════════════════════════════════
-    # ПРИОРИТЕТ 6: Реакция на запрос материалов (ПЕРЕД квалификацией!)
+    # ПРИОРИТЕТ 6: Определяем ветку диалога
     # ═══════════════════════════════════════════════════════════════════════
-    if extraction.get("wants_materials"):
-        if state.is_qualified():
-            return Action.SEND_MATERIALS
+    if not getattr(state, 'branch', None):
+        if state.goal == "investment":
+            state.branch = "investment"
+        elif state.goal == "personal":
+            state.branch = "personal"
         else:
-            return Action.DEFLECT_TO_CALL
+            # Цель не определена — спрашиваем
+            return _ask_slot_with_limit(state, "goal")
     
     # ═══════════════════════════════════════════════════════════════════════
-    # ПРИОРИТЕТ 7: Квалификация с защитой от повторов
+    # ПРИОРИТЕТ 7: Квалификация по ветке
     # ═══════════════════════════════════════════════════════════════════════
-    
+    if state.branch == "investment":
+        return _qualify_investment(state, extraction)
+    else:
+        return _qualify_personal(state, extraction)
+
+
+def _ask_slot_with_limit(state: ClientState, slot: str) -> Action:
+    """Спрашивает слот с учётом лимита попыток"""
     # Инициализируем slot_attempts если нет
     if not hasattr(state, 'slot_attempts') or not state.slot_attempts:
-        state.slot_attempts = {s: {"ask": 0, "help": 0} for s in SLOT_ORDER}
+        state.slot_attempts = {}
     
-    for slot in SLOT_ORDER:
-        # Пропускаем first_payment если не ипотека
-        if slot == "first_payment" and state.payment_type != "mortgage":
-            continue
-        
-        # Проверяем заполнен ли слот
-        slot_value = getattr(state, slot, None)
-        slot_conf = getattr(state, f"{slot}_confidence", None)
-        
-        # Слот заполнен и подтверждён → следующий
-        if slot_value and slot_conf == "confirmed":
-            continue
-        
-        # Слот не заполнен — проверяем лимиты попыток
-        attempts = state.slot_attempts.get(slot, {"ask": 0, "help": 0})
-        
-        if attempts["ask"] == 0:
-            # Ещё не спрашивали → спрашиваем
-            return SLOT_TO_ASK[slot]
-        
-        elif attempts["ask"] >= 1 and attempts["help"] == 0:
-            # Спрашивали, но не помогали → помогаем (если есть HELP)
-            if slot in SLOT_TO_HELP:
-                return SLOT_TO_HELP[slot]
-            else:
-                # Нет HELP для этого слота → пропускаем
-                continue
-        
-        else:
-            # Исчерпали попытки → пропускаем слот
-            continue
+    if slot not in state.slot_attempts:
+        state.slot_attempts[slot] = {"ask": 0, "help": 0}
     
-    # ═══════════════════════════════════════════════════════════════════════
-    # ПРИОРИТЕТ 8: Квалификация завершена — предлагаем созвон
-    # ═══════════════════════════════════════════════════════════════════════
-    if not state.meeting_agreed:
-        # Если клиент отказался от созвона — работаем в переписке
-        if getattr(state, "call_refused", False):
-            return Action.SEND_MATERIALS
-        return Action.PROPOSE_MEETING
+    attempts = state.slot_attempts[slot]
     
-    # Если всё сделано — подтверждаем созвон
-    return Action.CONFIRM_MEETING
+    if attempts["ask"] == 0:
+        return SLOT_TO_ASK[slot]
+    elif attempts["ask"] >= 1 and attempts["help"] == 0 and slot in SLOT_TO_HELP:
+        return SLOT_TO_HELP[slot]
+    else:
+        return None  # Исчерпали попытки
+
+
+def _qualify_investment(state: ClientState, extraction: dict) -> Action:
+    """
+    Квалификация для ИНВЕСТОРА.
+    Порядок: goal → strategy → budget → MEETING_1 → payment → location → lpr → MEETING_2
+    """
+    
+    # 1. strategy (необязательно)
+    if not getattr(state, 'strategy', None):
+        action = _ask_slot_with_limit(state, "strategy")
+        if action:
+            return action
+    
+    # 2. budget (обязательно)
+    if not state.budget or state.budget_confidence != "confirmed":
+        action = _ask_slot_with_limit(state, "budget")
+        if action:
+            return action
+    
+    # ★ PROPOSE_MEETING_1 (после базовой квалификации: goal + budget)
+    if getattr(state, 'call_proposal_count', 0) == 0:
+        state.call_proposal_count = 1
+        return Action.PROPOSE_MEETING_1
+    
+    # 3. payment_type (необязательно)
+    if not state.payment_type:
+        action = _ask_slot_with_limit(state, "payment_type")
+        if action:
+            return action
+    
+    # 4. location (обязательно, но "море/горы" достаточно)
+    if not state.location or state.location_confidence != "confirmed":
+        action = _ask_slot_with_limit(state, "location")
+        if action:
+            return action
+    
+    # 5. lpr (необязательно)
+    if not state.lpr:
+        action = _ask_slot_with_limit(state, "lpr")
+        if action:
+            return action
+    
+    # ★ PROPOSE_MEETING_2 (после полной квалификации)
+    if getattr(state, 'call_proposal_count', 0) == 1:
+        state.call_proposal_count = 2
+        return Action.PROPOSE_MEETING_2
+    
+    # После второго отказа → FINISH_WITH_MATERIALS
+    return Action.FINISH_WITH_MATERIALS
+
+
+def _qualify_personal(state: ClientState, extraction: dict) -> Action:
+    """
+    Квалификация для 'ДЛЯ СЕБЯ'.
+    Порядок: goal → usage → location → budget → MEETING_1 → family → payment → lpr → MEETING_2
+    """
+    
+    # 1. usage (необязательно)
+    if not getattr(state, 'usage', None):
+        action = _ask_slot_with_limit(state, "usage")
+        if action:
+            return action
+    
+    # 2. location (обязательно)
+    if not state.location or state.location_confidence != "confirmed":
+        action = _ask_slot_with_limit(state, "location")
+        if action:
+            return action
+    
+    # 3. budget (обязательно)
+    if not state.budget or state.budget_confidence != "confirmed":
+        action = _ask_slot_with_limit(state, "budget")
+        if action:
+            return action
+    
+    # ★ PROPOSE_MEETING_1 (после базовой квалификации: goal + location + budget)
+    if getattr(state, 'call_proposal_count', 0) == 0:
+        state.call_proposal_count = 1
+        return Action.PROPOSE_MEETING_1
+    
+    # 4. family (необязательно)
+    if not getattr(state, 'family', None):
+        action = _ask_slot_with_limit(state, "family")
+        if action:
+            return action
+    
+    # 5. payment_type (необязательно)
+    if not state.payment_type:
+        action = _ask_slot_with_limit(state, "payment_type")
+        if action:
+            return action
+    
+    # 6. lpr (необязательно)
+    if not state.lpr:
+        action = _ask_slot_with_limit(state, "lpr")
+        if action:
+            return action
+    
+    # ★ PROPOSE_MEETING_2 (после полной квалификации)
+    if getattr(state, 'call_proposal_count', 0) == 1:
+        state.call_proposal_count = 2
+        return Action.PROPOSE_MEETING_2
+    
+    # После второго отказа → FINISH_WITH_MATERIALS
+    return Action.FINISH_WITH_MATERIALS
 
 
 def get_action_context(action: Action, state: ClientState, extraction: dict = None) -> dict:
@@ -394,11 +528,12 @@ def increment_slot_attempt(state, slot: str, attempt_type: str = "ask"):
 
 # === ТЕСТЫ ===
 
+
 def test_planner():
-    """Тест Planner"""
+    """Тест Planner v2.0"""
     from state_manager import ClientState
     
-    print("=== ТЕСТ PLANNER ===\n")
+    print("=== ТЕСТ PLANNER v2.0 ===\n")
     
     # Тест 1: Новый клиент → ASK_GOAL
     state = ClientState(user_id=1)
@@ -406,44 +541,40 @@ def test_planner():
     assert action == Action.ASK_GOAL, f"Ожидалось ASK_GOAL, получено {action}"
     print("✅ Тест 1: новый клиент → ASK_GOAL")
     
-    # Тест 2: Есть goal → ASK_LOCATION
+    # Тест 2: INVESTMENT ветка: goal → ASK_STRATEGY
     state.goal = "investment"
     state.goal_confidence = "confirmed"
     action = get_next_action(state, "ок", {})
-    assert action == Action.ASK_LOCATION, f"Ожидалось ASK_LOCATION, получено {action}"
-    print("✅ Тест 2: есть goal → ASK_LOCATION")
+    assert action == Action.ASK_STRATEGY, f"Ожидалось ASK_STRATEGY, получено {action}"
+    print("✅ Тест 2: investment → ASK_STRATEGY")
     
-    # Тест 3: Есть goal+location → ASK_BUDGET
-    state.location = "sochi"
-    state.location_confidence = "confirmed"
+    # Тест 3: После strategy → ASK_BUDGET
+    state.branch = "investment"
+    state.strategy = "rental"
+    state.slot_attempts = {"strategy": {"ask": 1, "help": 0}}
     action = get_next_action(state, "ок", {})
     assert action == Action.ASK_BUDGET, f"Ожидалось ASK_BUDGET, получено {action}"
-    print("✅ Тест 3: есть goal+location → ASK_BUDGET")
+    print("✅ Тест 3: после strategy → ASK_BUDGET")
     
-    # Тест 4: Возражение → HANDLE_OBJECTION (приоритет)
+    # Тест 4: После budget → PROPOSE_MEETING_1
+    state.budget = 10000000
+    state.budget_confidence = "confirmed"
+    state.slot_attempts["budget"] = {"ask": 1, "help": 0}
+    action = get_next_action(state, "ок", {})
+    assert action == Action.PROPOSE_MEETING_1, f"Ожидалось PROPOSE_MEETING_1, получено {action}"
+    print("✅ Тест 4: после budget → PROPOSE_MEETING_1")
+    
+    # Тест 5: Возражение → HANDLE_OBJECTION (приоритет)
     extraction = {"objection": "expensive"}
     action = get_next_action(state, "дорого", extraction)
     assert action == Action.HANDLE_OBJECTION, f"Ожидалось HANDLE_OBJECTION, получено {action}"
-    print("✅ Тест 4: возражение → HANDLE_OBJECTION")
+    print("✅ Тест 5: возражение → HANDLE_OBJECTION")
     
-    # Тест 5: Вопрос → ANSWER_QUESTION (приоритет)
+    # Тест 6: Вопрос → ANSWER_QUESTION (приоритет)
     extraction = {"question_type": "price"}
     action = get_next_action(state, "какие цены?", extraction)
     assert action == Action.ANSWER_QUESTION, f"Ожидалось ANSWER_QUESTION, получено {action}"
-    print("✅ Тест 5: вопрос → ANSWER_QUESTION")
-    
-    # Тест 6: Полная квалификация → PROPOSE_MEETING
-    state.budget = 10000000
-    state.budget_confidence = "confirmed"
-    state.payment_type = "mortgage"
-    state.payment_type_confidence = "confirmed"
-    state.first_payment = 2000000
-    state.first_payment_confidence = "confirmed"
-    state.lpr = "alone"
-    state.lpr_confidence = "confirmed"
-    action = get_next_action(state, "понятно", {})
-    assert action == Action.PROPOSE_MEETING, f"Ожидалось PROPOSE_MEETING, получено {action}"
-    print("✅ Тест 6: полная квалификация → PROPOSE_MEETING")
+    print("✅ Тест 6: вопрос → ANSWER_QUESTION")
     
     # Тест 7: Согласие на созвон → CONFIRM_MEETING
     extraction = {"meeting_agreed": True, "meeting_datetime": "завтра 18:00"}
@@ -451,27 +582,59 @@ def test_planner():
     assert action == Action.CONFIRM_MEETING, f"Ожидалось CONFIRM_MEETING, получено {action}"
     print("✅ Тест 7: согласие на созвон → CONFIRM_MEETING")
     
-    # Тест 8: После договорённости + короткое подтверждение → WAIT
-    state.meeting_agreed = True
-    action = get_next_action(state, "ок", {})
+    # Тест 8: dialog_finished=True → WAIT
+    state3 = ClientState(user_id=3)
+    state3.dialog_finished = True
+    action = get_next_action(state3, "привет", {})
     assert action == Action.WAIT, f"Ожидалось WAIT, получено {action}"
-    print("✅ Тест 8: после договорённости + 'ок' → WAIT")
+    print("✅ Тест 8: dialog_finished=True → WAIT")
     
-    # Тест 9: После договорённости + содержательное сообщение → НЕ WAIT
-    action = get_next_action(state, "а можно перенести на 19:00?", {})
-    assert action != Action.WAIT, f"Ожидалось НЕ WAIT, получено {action}"
-    print("✅ Тест 9: после договорённости + содержательное → НЕ WAIT")
+    # Тест 9: Два отказа → FINISH_WITH_MATERIALS
+    state4 = ClientState(user_id=4)
+    state4.goal = "investment"
+    state4.goal_confidence = "confirmed"
+    state4.branch = "investment"
+    state4.materials_request_count = 1  # Уже 1 отказ
+    extraction = {"wants_materials": True}  # Второй отказ
+    action = get_next_action(state4, "скиньте варианты", extraction)
+    assert action == Action.FINISH_WITH_MATERIALS, f"Ожидалось FINISH_WITH_MATERIALS, получено {action}"
+    print("✅ Тест 9: два отказа → FINISH_WITH_MATERIALS")
     
-    # Тест 10: Просит материалы без квалификации → DEFLECT_TO_CALL
-    state2 = ClientState(user_id=2)
-    state2.goal = "investment"
-    state2.goal_confidence = "confirmed"
-    extraction = {"wants_materials": True}
-    action = get_next_action(state2, "скиньте что есть", extraction)
-    assert action == Action.DEFLECT_TO_CALL, f"Ожидалось DEFLECT_TO_CALL, получено {action}"
-    print("✅ Тест 10: просит материалы без квалификации → DEFLECT_TO_CALL")
+    # Тест 10: PERSONAL ветка: goal → ASK_USAGE
+    state5 = ClientState(user_id=5)
+    state5.goal = "personal"
+    state5.goal_confidence = "confirmed"
+    action = get_next_action(state5, "ок", {})
+    assert action == Action.ASK_USAGE, f"Ожидалось ASK_USAGE, получено {action}"
+    print("✅ Тест 10: personal → ASK_USAGE")
     
-    print("\n✅ Все тесты пройдены!")
+    # Тест 11: PERSONAL полная квалификация → PROPOSE_MEETING_2
+    state6 = ClientState(user_id=6)
+    state6.goal = "personal"
+    state6.goal_confidence = "confirmed"
+    state6.branch = "personal"
+    state6.usage = "vacation"
+    state6.location = "sochi"
+    state6.location_confidence = "confirmed"
+    state6.budget = 15000000
+    state6.budget_confidence = "confirmed"
+    state6.call_proposal_count = 1  # Уже было первое предложение
+    state6.family = "с женой и детьми"
+    state6.payment_type = "mortgage"
+    state6.lpr = "with_spouse"
+    state6.slot_attempts = {
+        "usage": {"ask": 1, "help": 0},
+        "location": {"ask": 1, "help": 0},
+        "budget": {"ask": 1, "help": 0},
+        "family": {"ask": 1, "help": 0},
+        "payment_type": {"ask": 1, "help": 0},
+        "lpr": {"ask": 1, "help": 0},
+    }
+    action = get_next_action(state6, "ок", {})
+    assert action == Action.PROPOSE_MEETING_2, f"Ожидалось PROPOSE_MEETING_2, получено {action}"
+    print("✅ Тест 11: personal полная квалификация → PROPOSE_MEETING_2")
+    
+    print("\n✅ Все тесты v2.0 пройдены!")
 
 
 if __name__ == "__main__":

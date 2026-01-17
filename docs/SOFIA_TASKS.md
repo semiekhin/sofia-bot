@@ -1,44 +1,57 @@
 # Задачи Sofia-GPT
 
-## 🔴 Срочные
+## 🟢 Готово к тестированию
 
-### 1. Реализовать спецификацию Sofia-GPT v2.0 (ПРИОРИТЕТ!)
-- **Описание:** Полная переработка логики квалификации
-- **Файлы:** planner.py, state_manager.py, extractor.py, sofia_prompt.py
-- **Детали:** См. спецификацию в конце сессии 17.01.2026 (ночь)
-- **Оценка:** 2-3 часа
-
-### Что включает v2.0:
-1. Две ветки диалога (INVESTMENT / PERSONAL)
-2. Разный порядок вопросов для каждой ветки
-3. Два предложения созвона (PROPOSE_MEETING_1 и PROPOSE_MEETING_2)
-4. Счётчик отказов (materials_request_count >= 2 → завершаем)
-5. Новые поля: branch, strategy, usage, family, call_proposal_count, materials_request_count, dialog_finished, finish_type
-6. Формулировки из RAG (скрипты Оксаны)
+### Sofia-GPT v2.0 — РЕАЛИЗОВАНО
+- ✅ Две ветки диалога (INVESTMENT / PERSONAL)
+- ✅ Разный порядок вопросов для каждой ветки
+- ✅ Два предложения созвона (PROPOSE_MEETING_1 и PROPOSE_MEETING_2)
+- ✅ Счётчик отказов (materials_request_count >= 2 → завершаем)
+- ✅ Новые поля: branch, strategy, usage, family, call_proposal_count, materials_request_count, dialog_finished, finish_type
+- ✅ Формулировки Оксаны в RAG (13 примеров)
 
 ---
 
-## 🟡 Следующие
+## 🟡 Следующие задачи
 
-### 2. Загрузить формулировки Оксаны в RAG
-- **Описание:** Добавить скрипты продаж в rag_training_data.json
-- **Теги:** stage: "propose_meeting", substage: "first_proposal" / "second_proposal" / "objection_no_call"
+### 1. Тестирование v2.0
+- **Описание:** Полное тестирование всех сценариев
+- **Сценарии:**
+  - INVESTMENT: goal → strategy → budget → MEETING_1 → payment → location → lpr → MEETING_2
+  - PERSONAL: goal → usage → location → budget → MEETING_1 → family → payment → lpr → MEETING_2
+  - Два отказа → FINISH_WITH_MATERIALS
 - **Оценка:** 30 мин
 
-### 3. Userbot v2.0
-- **Описание:** Восстановить userbot с импортом из bot_server.py
-- **Зависит от:** Реализация v2.0
-- **Файл:** sofia_userbot_pyrogram.py
-- **Оценка:** 1 час
+### 2. Мониторинг Generator compliance
+- **Описание:** Следить что Generator слушает директивы PROPOSE_MEETING_*
+- **Как:** Смотреть логи, сравнивать action Planner'а с текстом ответа
+- **Оценка:** ongoing
 
-### 4. Настроить уведомления менеджеру
+### 3. Настроить уведомления менеджеру
 - **Описание:** При dialog_finished=True отправлять уведомление
 - **Куда:** Telegram / webhook (уточнить)
 - **Оценка:** 30 мин
 
+### 4. Userbot v2.0
+- **Описание:** Восстановить userbot с импортом из bot_server.py
+- **Зависит от:** Тестирование v2.0
+- **Файл:** sofia_userbot_pyrogram.py
+- **Оценка:** 1 час
+
 ---
 
 ## ✅ Выполнено
+
+### 17 января 2026 (поздняя ночь)
+- ✅ Реализована полная спецификация Sofia-GPT v2.0
+- ✅ Миграция БД (8 новых колонок)
+- ✅ state_manager.py — новые поля v2.0
+- ✅ planner.py — две ветки квалификации, новые Actions
+- ✅ extractor.py — strategy, usage, family
+- ✅ sofia_prompt.py — описания новых Actions, усиленные директивы
+- ✅ bot_server.py — сохранение v2.0 полей
+- ✅ RAG — 13 формулировок Оксаны
+- ✅ RAG_EXAMPLES_COUNT увеличен до 5
 
 ### 17 января 2026 (ночь)
 - ✅ Исправлен баг slot_attempts (маппинг payment → payment_type)
@@ -50,7 +63,6 @@
 ### 17 января 2026 (вечер)
 - ✅ Userbot v2.0 — импортирует логику из bot_server.py
 - ✅ Обнаружен баг slot_attempts
-- ❌ Откачены изменения no_call (из-за бага SQL)
 
 ### 17 января 2026 (утро)
 - ✅ Создан userbot на Pyrogram
@@ -64,10 +76,12 @@
 
 ## Метрики
 
-| Метрика | Текущее | Цель |
-|---------|---------|------|
-| slot_attempts работает | ✅ Да | ✅ Да |
-| no_call распознаётся | ✅ Да | ✅ Да |
-| Две ветки квалификации | ❌ Нет | ✅ Да |
-| Два предложения созвона | ❌ Нет | ✅ Да |
-| Счётчик отказов | ❌ Нет | ✅ Да |
+| Метрика | Статус |
+|---------|--------|
+| slot_attempts работает | ✅ |
+| no_call распознаётся | ✅ |
+| Две ветки квалификации | ✅ |
+| Два предложения созвона | ✅ |
+| Счётчик отказов | ✅ |
+| RAG с формулировками Оксаны | ✅ |
+| RAG примеров | 1939 |
