@@ -190,7 +190,11 @@ def get_next_action(state: ClientState, message: str, extraction: dict = None) -
     # ПРИОРИТЕТ 3: Обработка возражений
     # ═══════════════════════════════════════════════════════════════════════
     if extraction.get("objection"):
-        return Action.HANDLE_OBJECTION
+        # Если клиент уже отказался от созвона и снова говорит no_call — не настаиваем
+        if extraction.get("objection") == "no_call" and getattr(state, "call_refused", False):
+            pass  # Пропускаем HANDLE_OBJECTION, идём к SEND_MATERIALS
+        else:
+            return Action.HANDLE_OBJECTION
     
     # ═══════════════════════════════════════════════════════════════════════
     # ПРИОРИТЕТ 4: Ответ на вопрос клиента
@@ -260,6 +264,9 @@ def get_next_action(state: ClientState, message: str, extraction: dict = None) -
     # ПРИОРИТЕТ 8: Квалификация завершена — предлагаем созвон
     # ═══════════════════════════════════════════════════════════════════════
     if not state.meeting_agreed:
+        # Если клиент отказался от созвона — работаем в переписке
+        if getattr(state, "call_refused", False):
+            return Action.SEND_MATERIALS
         return Action.PROPOSE_MEETING
     
     # Если всё сделано — подтверждаем созвон

@@ -43,6 +43,7 @@ class ClientState:
     meeting_agreed: bool = False
     meeting_datetime: Optional[str] = None
     materials_sent: bool = False
+    call_refused: bool = False  # Клиент отказался от созвона
     
     # Временные флаги (сбрасываются после обработки)
     current_question_type: Optional[str] = None   # 'price' | 'availability' | 'process'
@@ -247,6 +248,7 @@ class StateManager:
             meeting_agreed=bool(row["meeting_agreed"]),
             meeting_datetime=row["meeting_datetime"],
             materials_sent=bool(row["materials_sent"]),
+            call_refused=bool(row["call_refused"]) if "call_refused" in row.keys() else False,
             current_question_type=row["current_question_type"],
             current_objection=row["current_objection"],
             wants_materials=bool(row["wants_materials"]),
@@ -289,11 +291,11 @@ class StateManager:
                 user_id, goal, goal_confidence, location, location_confidence,
                 budget, budget_confidence, payment_type, payment_type_confidence,
                 first_payment, first_payment_confidence, lpr, lpr_confidence,
-                meeting_agreed, meeting_datetime, materials_sent,
+                meeting_agreed, meeting_datetime, materials_sent, call_refused,
                 current_question_type, current_objection, wants_materials,
                 mentioned_location, mentioned_price, updated_at, qualification_score,
                 slot_attempts
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             state.user_id, state.goal, state.goal_confidence,
             state.location, state.location_confidence,
@@ -301,7 +303,7 @@ class StateManager:
             state.payment_type, state.payment_type_confidence,
             state.first_payment, state.first_payment_confidence,
             state.lpr, state.lpr_confidence,
-            state.meeting_agreed, state.meeting_datetime, state.materials_sent,
+            state.meeting_agreed, state.meeting_datetime, state.materials_sent, state.call_refused,
             state.current_question_type, state.current_objection, state.wants_materials,
             state.mentioned_location, state.mentioned_price,
             state.updated_at, state.qualification_score,

@@ -1,78 +1,50 @@
 # Текущий статус Sofia-GPT
 
-📅 **Последняя сессия:** 17.01.2026 (вечер)
+📅 **Последняя сессия:** 17.01.2026 (ночь)
 
 ## ✅ Что сделано в этой сессии
 
-### Userbot v2.0 — чистая архитектура
-- Создан userbot который **импортирует логику из bot_server.py** напрямую
-- Не дублирует код — вызывает `generate_response_with_rag()` из основного бота
-- Работает с той же БД что и бот
-- Первое сообщение отправляется через `/send @username Текст`
+### 1. Исправлен критический баг slot_attempts
+- **Проблема:** Бот спрашивал payment_type 8+ раз подряд
+- **Причина:** Несоответствие имён: action `ask_payment` → slot `"payment"`, а в БД `"payment_type"`
+- **Решение:** Добавлен маппинг `ACTION_TO_SLOT = {"payment": "payment_type"}` в bot_server.py
+- **Коммит:** `4cac35fd`
 
-### Попытка добавить обработку "не хочу созвон"
-- Добавлен `objection: "no_call"` в Extractor
-- Добавлен флаг `call_refused` в StateManager
-- Добавлена логика в Planner: если `call_refused=True` → `SEND_MATERIALS` вместо `PROPOSE_MEETING`
-- **ОТКАЧЕНО** — обнаружены проблемы при тестировании
+### 2. Добавлена логика no_call (отказ от созвона)
+- В Extractor добавлено `objection: "no_call"`
+- В StateManager добавлено поле `call_refused`
+- В Planner: если `call_refused=True` и повторный `no_call` → пропускаем HANDLE_OBJECTION
 
-## ❌ Обнаруженные проблемы
-
-### 🔴 КРИТИЧНО: slot_attempts не работает!
-**Симптом:** Бот спрашивает `payment_type` 8 раз подряд вместо перехода на `help_payment` → пропуск слота
-
-**Где видно:** В логах userbot Planner выдаёт `ask_payment` бесконечно:
-```
-🎯 Planner: ask_payment  (1-й раз)
-🎯 Planner: ask_payment  (2-й раз)
-...
-🎯 Planner: ask_payment  (8-й раз)
-```
-
-**Причина:** `slot_attempts` не инкрементируется или не сохраняется между сообщениями
-
-**Где искать:**
-- `planner.py` строки 230-260 — логика проверки `slot_attempts`
-- `bot_server.py` строки 504-509 — инкремент `increment_slot_attempt()`
-- `state_manager.py` — сохранение/загрузка `slot_attempts` из БД
-
-### 🟡 Extractor не распознаёт "не хочу созвон"
-- "не хочу созвон давайте по ватсап" → `objection: None`
-- Нужно добавить `no_call` в список возражений (было добавлено, но откачено)
+### 3. Разработана спецификация Sofia-GPT v2.0
+- Две ветки диалога: INVESTMENT и PERSONAL
+- Разный порядок вопросов для каждой ветки
+- Два предложения созвона (после базовой и полной квалификации)
+- Счётчик отказов — при 2 отказах завершаем
+- Формулировки из RAG (скрипты Оксаны)
 
 ## 🔄 Текущее состояние
 
 ### Работает ✅
-- Основной бот (@humanAINeural_bot) — работает (не перезапускался)
-- Userbot — работает в базовом режиме (`/send` команда)
-- RAG с 1926 примерами
-- Квалификация goal → location → budget → (проблема с payment) → lpr
+- Основной бот (@humanAINeural_bot)
+- slot_attempts для payment_type
+- Распознавание no_call в Extractor
+- Флаг call_refused в БД
 
 ### Требует доработки ⚠️
-- Исправить `slot_attempts` — главный приоритет!
-- После фикса — добавить `no_call` логику
-- Systemd сервис для userbot
-- Webhook API для автоматического старта диалога с лидами
+- Полная переработка Planner под спецификацию v2.0
+- Добавление новых полей в state_manager
+- Загрузка формулировок Оксаны в RAG
+- Логика двух предложений созвона
 
 ## 🔜 Следующие шаги
-1. **СРОЧНО:** Диагностировать почему `slot_attempts` не работает
-2. Исправить — добавить логирование счётчиков в Planner
-3. После фикса — повторно добавить `no_call` обработку
-4. Настроить systemd для userbot
-5. Сделать webhook API
+1. **ПРИОРИТЕТ:** Реализовать спецификацию Sofia-GPT v2.0
+2. Добавить новые поля в state_manager (branch, strategy, usage, family, call_proposal_count, materials_request_count, dialog_finished, finish_type)
+3. Переписать Planner с двумя ветками квалификации
+4. Загрузить формулировки в RAG
+5. Тестирование
 
-## 📁 Изменения в файлах (ОТКАЧЕНЫ к коммиту d4d9dc45)
-- `extractor.py` — откачен к утренней версии
-- `planner.py` — откачен к утренней версии  
-- `state_manager.py` — откачен к утренней версии
-- `sofia_userbot_pyrogram.py` — откачен к утренней версии
-
-## 🔑 Userbot credentials
-- API_ID: 32374021
-- API_HASH: 6dc50b91611d636fcc22f5ecb8c96bc6
-- Номер: +79676407597 (аккаунт Sofia)
-- Сессия: sofia_pyrogram.session
-
-## 💡 Важный вывод сессии
-**Проблема с повторами вопросов существовала ДО наших изменений!**
-Это баг в связке Planner ↔ StateManager ↔ БД с полем `slot_attempts`.
+## 📁 Последние изменения
+- `bot_server.py` — добавлен ACTION_TO_SLOT маппинг для slot_attempts
+- `extractor.py` — добавлен no_call в objection, установка call_refused
+- `state_manager.py` — добавлено поле call_refused
+- `planner.py` — логика пропуска HANDLE_OBJECTION при повторном no_call

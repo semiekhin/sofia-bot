@@ -2,91 +2,63 @@
 
 ## 🔴 Срочные
 
-### 1. Исправить slot_attempts (КРИТИЧНО!)
-- **Приоритет:** Критический
-- **Проблема:** Бот спрашивает один вопрос 8+ раз подряд
-- **Причина:** slot_attempts не инкрементируется или не сохраняется
-- **Файлы:** planner.py, bot_server.py, state_manager.py
-- **Диагностика:**
-```bash
-# Добавить логи
-grep -n "slot_attempts" /opt/sofia-gpt/bot_server.py
-grep -n "slot_attempts" /opt/sofia-gpt/planner.py
+### 1. Реализовать спецификацию Sofia-GPT v2.0 (ПРИОРИТЕТ!)
+- **Описание:** Полная переработка логики квалификации
+- **Файлы:** planner.py, state_manager.py, extractor.py, sofia_prompt.py
+- **Детали:** См. спецификацию в конце сессии 17.01.2026 (ночь)
+- **Оценка:** 2-3 часа
 
-# Проверить в БД
-sqlite3 /opt/sofia-gpt/sofia_gpt.db "SELECT user_id, slot_attempts FROM client_state ORDER BY updated_at DESC LIMIT 5;"
-```
-- **Оценка:** 1-2 часа диагностика + фикс
-
-### 2. Добавить обработку "не хочу созвон"
-- **Приоритет:** Высокий (после фикса slot_attempts)
-- **Проблема:** "не хочу созвон, давайте по ватсап" не распознаётся
-- **Решение:** 
-  - Добавить `objection: "no_call"` в Extractor
-  - Добавить `call_refused` флаг в StateManager
-  - Planner: если `call_refused` → `SEND_MATERIALS` вместо `PROPOSE_MEETING`
-- **Файлы:** extractor.py, state_manager.py, planner.py
-- **Оценка:** 30 мин (код был написан, нужно аккуратно добавить после фикса slot_attempts)
+### Что включает v2.0:
+1. Две ветки диалога (INVESTMENT / PERSONAL)
+2. Разный порядок вопросов для каждой ветки
+3. Два предложения созвона (PROPOSE_MEETING_1 и PROPOSE_MEETING_2)
+4. Счётчик отказов (materials_request_count >= 2 → завершаем)
+5. Новые поля: branch, strategy, usage, family, call_proposal_count, materials_request_count, dialog_finished, finish_type
+6. Формулировки из RAG (скрипты Оксаны)
 
 ---
 
 ## 🟡 Следующие
 
-### 3. Userbot: умная команда /start
-- **Описание:** Команда `/start @username` которая:
-  1. Сбрасывает state клиента
-  2. Через Planner определяет первое действие
-  3. Генерирует первое сообщение
-- **Зависит от:** Фикс slot_attempts
-- **Файл:** sofia_userbot_pyrogram.py
+### 2. Загрузить формулировки Оксаны в RAG
+- **Описание:** Добавить скрипты продаж в rag_training_data.json
+- **Теги:** stage: "propose_meeting", substage: "first_proposal" / "second_proposal" / "objection_no_call"
 - **Оценка:** 30 мин
 
-### 4. Systemd сервис для userbot
-- **Описание:** Чтобы userbot работал 24/7
-- **Файл:** /etc/systemd/system/sofia-userbot.service
-- **Оценка:** 15 мин
-
-### 5. Webhook API для автостарта диалогов
-- **Описание:** POST /api/new-lead → Sofia пишет первой
-- **Интеграция:** CRM, Avito, сайт
-- **Оценка:** 1-2 часа
-
----
-
-## 🟢 Бэклог
-
-### RAG: использовать search_by_substage
-- **Проблема:** Функция `search_by_substage()` существует, но не вызывается
-- **Решение:** При `HANDLE_OBJECTION` искать примеры по типу возражения
-- **Файл:** rag_module.py, bot_server.py
+### 3. Userbot v2.0
+- **Описание:** Восстановить userbot с импортом из bot_server.py
+- **Зависит от:** Реализация v2.0
+- **Файл:** sofia_userbot_pyrogram.py
 - **Оценка:** 1 час
 
-### Supervisor Agent
-- **Описание:** Проверка ответа перед отправкой
-- **Оценка:** 3-4 часа
+### 4. Настроить уведомления менеджеру
+- **Описание:** При dialog_finished=True отправлять уведомление
+- **Куда:** Telegram / webhook (уточнить)
+- **Оценка:** 30 мин
 
 ---
 
 ## ✅ Выполнено
 
+### 17 января 2026 (ночь)
+- ✅ Исправлен баг slot_attempts (маппинг payment → payment_type)
+- ✅ Добавлена логика no_call в Extractor
+- ✅ Добавлен флаг call_refused в StateManager
+- ✅ Логика пропуска HANDLE_OBJECTION при повторном no_call
+- ✅ Разработана спецификация Sofia-GPT v2.0
+
 ### 17 января 2026 (вечер)
 - ✅ Userbot v2.0 — импортирует логику из bot_server.py
-- ✅ Userbot работает в базовом режиме (/send)
 - ✅ Обнаружен баг slot_attempts
-- ❌ Откачены изменения no_call (из-за бага)
+- ❌ Откачены изменения no_call (из-за бага SQL)
 
 ### 17 января 2026 (утро)
-- ✅ Создан userbot на Pyrogram (sofia_userbot_pyrogram.py)
-- ✅ RAG обновлён до v2.1 (1926 примеров)
-- ✅ Добавлены скрипты Оксаны Швецовой
+- ✅ Создан userbot на Pyrogram
+- ✅ RAG обновлён до v2.1
 
 ### 15 января 2026
 - ✅ Унификация HELP_* логики для всех слотов
 - ✅ Добавлен HELP_LPR
-
-### 14 января 2026
-- ✅ Extractor v2.0 + answer_mode
-- ✅ sofia_prompt v4.7
 
 ---
 
@@ -94,6 +66,8 @@ sqlite3 /opt/sofia-gpt/sofia_gpt.db "SELECT user_id, slot_attempts FROM client_s
 
 | Метрика | Текущее | Цель |
 |---------|---------|------|
-| GOOD rate | 93.75% | ≥90% ✅ |
-| Повторы вопросов | 8+ раз ❌ | ≤2 |
-| slot_attempts работает | ❌ Нет | ✅ Да |
+| slot_attempts работает | ✅ Да | ✅ Да |
+| no_call распознаётся | ✅ Да | ✅ Да |
+| Две ветки квалификации | ❌ Нет | ✅ Да |
+| Два предложения созвона | ❌ Нет | ✅ Да |
+| Счётчик отказов | ❌ Нет | ✅ Да |

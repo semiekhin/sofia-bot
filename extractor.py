@@ -243,6 +243,7 @@ objection (возражение):
 - "think" — подумаю, посоветуюсь, не сейчас решу
 - "busy" — занят, некогда, перезвоните позже
 - "has_realtor" — есть риелтор, уже работаю с кем-то
+- "no_call" — не хочу созвон/звонок, только переписка, только ватсап, не буду звонить
 - null — нет возражения
 
 wants_materials (просит материалы):
@@ -320,7 +321,7 @@ sentiment (настроение):
   "lpr_confidence": "confirmed" | "mentioned" | null,
   
   "question_type": "price" | "availability" | "process" | "mortgage_rate" | "location_info" | null,
-  "objection": "expensive" | "think" | "busy" | "has_realtor" | null,
+  "objection": "expensive" | "think" | "busy" | "has_realtor" | "no_call" | null,
   "wants_materials": true | false,
   
   "meeting_agreed": true | false,
@@ -462,6 +463,10 @@ def merge_extraction_to_state(current_state: dict, extraction: dict) -> dict:
         if new_value is not None:
             updated[field] = new_value
     
+    # Устанавливаем call_refused при возражении no_call
+    if extraction.get("objection") == "no_call":
+        updated["call_refused"] = True
+
     return updated
 
 
