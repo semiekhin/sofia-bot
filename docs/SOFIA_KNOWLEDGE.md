@@ -101,3 +101,52 @@ grep -rn "на связи" /opt/sofia-gpt/*.py
 - Клиент не идиот — повторение вопроса другими словами раздражает
 - Объяснение ценности вопроса мотивирует ответить
 - Если после объяснения всё равно "не знаю" — пропускаем слот, не настаиваем
+
+### 17.01.2026 (вечер): Обнаружен баг slot_attempts
+
+**Проблема:** Бот спрашивает один и тот же вопрос (payment_type) 8+ раз подряд, игнорируя лимит попыток.
+
+**Симптомы:**
+- Planner выдаёт `ask_payment` бесконечно
+- `slot_attempts` в state показывает нули: `{'ask': 0, 'help': 0}`
+- Клиент раздражается: "я ж сказал уже", "издеваетесь?"
+
+**Где искать причину:**
+1. `planner.py:230-260` — проверка `state.slot_attempts`
+2. `bot_server.py:504-509` — вызов `increment_slot_attempt()`
+3. `state_manager.py` — сохранение `slot_attempts` в БД (JSON поле)
+
+**Гипотезы:**
+- `increment_slot_attempt()` вызывается, но state не сохраняется в БД
+- `slot_attempts` загружается из БД как пустой dict
+- Логика в Planner проверяет `slot_attempts` до инкремента
+
+**Как диагностировать:**
+```bash
+# Добавить логи в bot_server.py после инкремента:
+print(f"DEBUG slot_attempts after increment: {client_state.slot_attempts}")
+
+# Проверить что в БД:
+sqlite3 /opt/sofia-gpt/sofia_gpt.db "SELECT slot_attempts FROM client_state WHERE user_id = ID;"
+```
+
+### 17.01.2026: Userbot v2.0 — правильная архитектура
+
+**Решение:** Userbot должен ИМПОРТИРОВАТЬ логику из bot_server.py, а не копировать код.
+
+**Почему:**
+- Один источник правды — изменения в боте автоматически работают в userbot
+- Общая БД — история диалогов единая
+- Меньше багов — не нужно синхронизировать два кодовых потока
+
+**Реализация:**
+```python
+from bot_server import (
+    generate_response_with_rag,
+    state_manager,
+    extract_sync,
+    ...
+)
+```
+
+**Ограничение:** Userbot в базовой версии использует `/send` для отправки произвольного текста. Умный `/start` (через Planner) был откачен из-за бага slot_attempts.

@@ -1,53 +1,78 @@
 # Текущий статус Sofia-GPT
 
-📅 **Последняя сессия:** 17.01.2026
+📅 **Последняя сессия:** 17.01.2026 (вечер)
 
 ## ✅ Что сделано в этой сессии
 
-### RAG обновление
-- Расширен RAG с 1909 до 1926 примеров
-- Добавлены 17 скриптов отработки возражений от Оксаны Швецовой
-- Новые substages: only_whatsapp, testdrive_analogy, doctor_analogy, accept_and_hook
+### Userbot v2.0 — чистая архитектура
+- Создан userbot который **импортирует логику из bot_server.py** напрямую
+- Не дублирует код — вызывает `generate_response_with_rag()` из основного бота
+- Работает с той же БД что и бот
+- Первое сообщение отправляется через `/send @username Текст`
 
-### Баг-фиксы
-- Исправлен баг с напоминаниями после meeting_agreed (добавлена проверка в send_reminder)
-- Добавлено правило разнообразия начала сообщений в промпт (не только "Поняла")
+### Попытка добавить обработку "не хочу созвон"
+- Добавлен `objection: "no_call"` в Extractor
+- Добавлен флаг `call_refused` в StateManager
+- Добавлена логика в Planner: если `call_refused=True` → `SEND_MATERIALS` вместо `PROPOSE_MEETING`
+- **ОТКАЧЕНО** — обнаружены проблемы при тестировании
 
-### 🆕 Sofia Userbot (Pyrogram) — ГЛАВНОЕ
-- Создан userbot который может писать первым как обычный пользователь
-- Авторизация через Pyrogram (Telethon не работал на Mac — segmentation fault)
-- API credentials: api_id=32374021, номер +79676407597
-- Полная интеграция с логикой Sofia (Extractor, Planner, RAG, OpenAI)
-- Файл: /opt/sofia-gpt/sofia_userbot_pyrogram.py
-- Сессия: /opt/sofia-gpt/sofia_pyrogram.session
+## ❌ Обнаруженные проблемы
+
+### 🔴 КРИТИЧНО: slot_attempts не работает!
+**Симптом:** Бот спрашивает `payment_type` 8 раз подряд вместо перехода на `help_payment` → пропуск слота
+
+**Где видно:** В логах userbot Planner выдаёт `ask_payment` бесконечно:
+```
+🎯 Planner: ask_payment  (1-й раз)
+🎯 Planner: ask_payment  (2-й раз)
+...
+🎯 Planner: ask_payment  (8-й раз)
+```
+
+**Причина:** `slot_attempts` не инкрементируется или не сохраняется между сообщениями
+
+**Где искать:**
+- `planner.py` строки 230-260 — логика проверки `slot_attempts`
+- `bot_server.py` строки 504-509 — инкремент `increment_slot_attempt()`
+- `state_manager.py` — сохранение/загрузка `slot_attempts` из БД
+
+### 🟡 Extractor не распознаёт "не хочу созвон"
+- "не хочу созвон давайте по ватсап" → `objection: None`
+- Нужно добавить `no_call` в список возражений (было добавлено, но откачено)
 
 ## 🔄 Текущее состояние
 
 ### Работает ✅
-- Telegram Bot (@humanAINeural_bot) — основной бот
-- Sofia Userbot — может писать первым
+- Основной бот (@humanAINeural_bot) — работает (не перезапускался)
+- Userbot — работает в базовом режиме (`/send` команда)
 - RAG с 1926 примерами
-- Extractor → Planner → Generator pipeline
+- Квалификация goal → location → budget → (проблема с payment) → lpr
 
 ### Требует доработки ⚠️
-- Userbot не использует полную квалификацию (сразу предлагает созвон)
-- Нужна автоматизация: лид приходит → Sofia пишет первой
-- Userbot работает только в интерактивном режиме (нет systemd сервиса)
+- Исправить `slot_attempts` — главный приоритет!
+- После фикса — добавить `no_call` логику
+- Systemd сервис для userbot
+- Webhook API для автоматического старта диалога с лидами
 
 ## 🔜 Следующие шаги
-1. Исправить userbot чтобы проходил квалификацию перед созвоном
-2. Сделать автоматическую отправку первого сообщения по API/webhook
-3. Настроить systemd сервис для userbot
-4. Протестировать полный цикл: лид → первое сообщение → квалификация → созвон
+1. **СРОЧНО:** Диагностировать почему `slot_attempts` не работает
+2. Исправить — добавить логирование счётчиков в Planner
+3. После фикса — повторно добавить `no_call` обработку
+4. Настроить systemd для userbot
+5. Сделать webhook API
 
-## 📁 Последние изменения
-- sofia_userbot_pyrogram.py — новый userbot на Pyrogram
-- sofia_pyrogram.session — авторизованная сессия Telegram
-- sofia_prompt.py — добавлено правило разнообразия (п.15)
-- bot_server.py — добавлена проверка meeting_agreed в send_reminder
-- rag_training_data.json — v2.1, 1926 примеров
+## 📁 Изменения в файлах (ОТКАЧЕНЫ к коммиту d4d9dc45)
+- `extractor.py` — откачен к утренней версии
+- `planner.py` — откачен к утренней версии  
+- `state_manager.py` — откачен к утренней версии
+- `sofia_userbot_pyrogram.py` — откачен к утренней версии
 
-## 🔑 Важные credentials (userbot)
-API_ID = 32374021
-API_HASH = 6dc50b91611d636fcc22f5ecb8c96bc6
-Номер: +79676407597 (аккаунт Sofia)
+## 🔑 Userbot credentials
+- API_ID: 32374021
+- API_HASH: 6dc50b91611d636fcc22f5ecb8c96bc6
+- Номер: +79676407597 (аккаунт Sofia)
+- Сессия: sofia_pyrogram.session
+
+## 💡 Важный вывод сессии
+**Проблема с повторами вопросов существовала ДО наших изменений!**
+Это баг в связке Planner ↔ StateManager ↔ БД с полем `slot_attempts`.
