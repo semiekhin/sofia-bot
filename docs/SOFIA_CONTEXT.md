@@ -1,4 +1,4 @@
-# Sofia-GPT
+# Sofia-GPT v2.0
 
 AI-бот для продажи курортной недвижимости Oazis Estate. Квалифицирует лидов через Telegram и конвертирует в видео-консультации.
 
@@ -11,20 +11,25 @@ AI-бот для продажи курортной недвижимости Oazi
 ## Стек
 - Python 3 + python-telegram-bot
 - OpenAI API (gpt-5.2, Responses API)
-- ChromaDB (RAG, 1095 примеров)
+- ChromaDB (RAG, 1939 примеров)
 
-## Архитектура
+## Архитектура v2.0
 ```
-Telegram → Extractor (gpt-5.2) → State Manager → Planner (код) → Generator (gpt-5.2) → Telegram
+Telegram → Extractor (gpt-5.2) → State Manager → Planner v2.0 (код) → Generator (gpt-5.2) → Telegram
 ```
 
 ## Ключевые файлы
 - `bot_server.py` — главный файл, обработка сообщений
 - `extractor.py` — NLU, извлечение фактов из сообщений
 - `state_manager.py` — состояние клиента (SQLite)
-- `planner.py` — детерминированная логика выбора действий
+- `planner.py` — детерминированная логика выбора действий (v2.0: две ветки)
 - `sofia_prompt.py` — промпт генератора
 - `rag_module.py` — векторный поиск примеров
+
+## Логика v2.0
+- **Две ветки:** INVESTMENT и PERSONAL с разным порядком вопросов
+- **Два созвона:** PROPOSE_MEETING_1 (после базовой) и PROPOSE_MEETING_2 (после полной квалификации)
+- **Счётчик отказов:** При 2 отказах → FINISH_WITH_MATERIALS
 
 ## Команды
 ```bash
@@ -47,7 +52,7 @@ sqlite3 /opt/sofia-gpt/sofia_gpt.db "SELECT * FROM feedback_v2 ORDER BY timestam
 ## Документация
 - `docs/SOFIA_CONTEXT.md` — этот файл
 - `docs/SOFIA_CURRENT.md` — текущий статус
-- `docs/SOFIA_ARCHITECTURE.md` — детальная архитектура
+- `docs/SOFIA_ARCHITECTURE.md` — детальная архитектура v2.0
 - `docs/SOFIA_KNOWLEDGE.md` — база знаний
 - `docs/SOFIA_TASKS.md` — задачи
 - `docs/SESSION_END_TEMPLATE.md` — шаблон завершения сессии
