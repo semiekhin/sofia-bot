@@ -499,12 +499,16 @@ async def delayed_response(chat_id, user_id, user_name, context):
     log(f"🎯 Planner: {action.value} → {action_context.get('action_description', '')[:50]}...")
     
     # 5.1 Увеличиваем счётчик попыток для слота
+    # Маппинг: action name → slot name (для несовпадающих имён)
+    ACTION_TO_SLOT = {"payment": "payment_type"}
     if action.value.startswith("ask_"):
         slot = action.value.replace("ask_", "")
+        slot = ACTION_TO_SLOT.get(slot, slot)  # payment → payment_type
         increment_slot_attempt(client_state, slot, "ask")
         state_manager.update_state(user_id, {"slot_attempts": client_state.slot_attempts})
     elif action.value.startswith("help_"):
         slot = action.value.replace("help_", "")
+        slot = ACTION_TO_SLOT.get(slot, slot)  # payment → payment_type
         increment_slot_attempt(client_state, slot, "help")
         state_manager.update_state(user_id, {"slot_attempts": client_state.slot_attempts})
     
