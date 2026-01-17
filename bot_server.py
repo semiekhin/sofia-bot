@@ -64,8 +64,36 @@ CONTEXT_SIZE = 8  # Последние 8 сообщений
 ADMIN_IDS = [5186134824, 512319063]
 
 # RAG настройки
-RAG_EXAMPLES_COUNT = 5  # Сколько примеров добавлять в промпт
+RAG_EXAMPLES_COUNT = 10  # Сколько примеров добавлять в промпт
 RAG_ENABLED = True      # Включить/выключить RAG
+
+# Маппинг Action → Stage для RAG (чтобы RAG искал по действию Planner, а не Stage Detector)
+ACTION_TO_RAG_STAGE = {
+    "ask_goal": "QUALIFICATION",
+    "ask_location": "QUALIFICATION",
+    "ask_budget": "QUALIFICATION",
+    "ask_strategy": "QUALIFICATION",
+    "ask_usage": "QUALIFICATION",
+    "ask_family": "QUALIFICATION",
+    "ask_payment": "QUALIFICATION",
+    "ask_first_payment": "QUALIFICATION",
+    "ask_lpr": "QUALIFICATION",
+    "help_goal": "QUALIFICATION",
+    "help_location": "QUALIFICATION",
+    "help_budget": "QUALIFICATION",
+    "help_payment": "QUALIFICATION",
+    "help_lpr": "QUALIFICATION",
+    "answer_question": "PRESENTATION",
+    "handle_objection": "OBJECTION",
+    "clarify_mentioned": "QUALIFICATION",
+    "propose_meeting": "MEETING",
+    "propose_meeting_1": "MEETING",
+    "propose_meeting_2": "MEETING",
+    "confirm_meeting": "CLOSING",
+    "finish_with_materials": "CLOSING",
+    "send_materials": "PRESENTATION",
+    "greeting": "GREETING",
+}
 
 # ============================================
 # WAIT-ЛОГИКА: не отвечать после договорённости
@@ -291,6 +319,48 @@ def get_user_stage(chat_id):
 def set_user_stage(chat_id, stage):
     """Устанавливает текущий этап пользователя."""
     user_stages[chat_id] = stage
+
+# ============================================
+# УВЕДОМЛЕНИЯ МЕНЕДЖЕРУ
+# ============================================
+
+async def notify_manager_deal(bot, client_state, user_name: str, finish_type: str):
+    """
+    Отправляет уведомление менеджеру о новой договорённости.
+    finish_type: 'meeting' или 'materials'
+    """
+    try:
+        # Формируем информацию о клиенте
+        goal_map = {"investment": "инвестиция", "personal": "для себя"}
+        goal_text = goal_map.get(client_state.goal, client_state.goal or "не указана")
+        
+        location_text = client_state.location or "не указана"
+        budget_text = f"{client_state.budget/1_000_000:.1f} млн" if client_state.budget else "не указан"
+        
+        if finish_type == "meeting":
+            emoji = "📞"
+            type_text = "Созвон"
+            meeting_line = f"\n⏰ Время: {client_state.meeting_datetime or 'уточняется'}"
+        else:
+            emoji = "📋"
+            type_text = "Подборка материалов"
+            meeting_line = ""
+        
+        message = f"""🏁 Новая договорённость
+
+{emoji} Тип: {type_text}
+👤 Клиент: {user_name}
+🎯 Цель: {goal_text}
+📍 Локация: {location_text}
+💰 Бюджет: {budget_text}{meeting_line}
+"""
+        
+        await bot.send_message(chat_id=ADMIN_CHAT_ID, text=message)
+        log(f"📨 Уведомление менеджеру: {finish_type} для {user_name}")
+        
+    except Exception as e:
+        log(f"❌ Ошибка уведомления: {e}")
+
 
 # ============================================
 # FEEDBACK
@@ -529,6 +599,10 @@ async def delayed_response(chat_id, user_id, user_name, context):
     
     state_manager.update_state(user_id, v2_updates)
     
+    # 5.3 Уведомление менеджеру при завершении диалога
+    if v2_updates.get("dialog_finished"):
+        await notify_manager_deal(context.bot, client_state, user_name, v2_updates["finish_type"])
+    
     # 6. Проверка WAIT от Planner
     if action == Action.WAIT:
         log(f"⏸️ WAIT (Planner): пропускаем ответ")
@@ -623,10 +697,15 @@ async def generate_response_with_rag(chat_id, user_id, user_message, user_name, 
     examples_prompt = ""
     
     if RAG_ENABLED:
-        examples = search_examples(current_stage, user_message, limit=RAG_EXAMPLES_COUNT)
+        # Определяем stage для RAG по action от Planner
+        rag_stage = current_stage  # fallback
+        if action_context:
+            action = action_context.get("action", "")
+            rag_stage = ACTION_TO_RAG_STAGE.get(action, current_stage)
+        examples = search_examples(rag_stage, user_message, limit=RAG_EXAMPLES_COUNT)
         if examples:
             examples_prompt = format_examples_for_prompt(examples)
-            log(f"📚 RAG: {len(examples)} примеров для {current_stage}")
+            log(f"📚 RAG: {len(examples)} примеров для {rag_stage}")
         
         # Сохраняем лог RAG
         save_rag_log(chat_id, user_message, current_stage, confidence, examples)

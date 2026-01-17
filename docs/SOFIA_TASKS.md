@@ -1,87 +1,80 @@
 # Задачи Sofia-GPT
 
-## 🟢 Готово к тестированию
-
-### Sofia-GPT v2.0 — РЕАЛИЗОВАНО
-- ✅ Две ветки диалога (INVESTMENT / PERSONAL)
-- ✅ Разный порядок вопросов для каждой ветки
-- ✅ Два предложения созвона (PROPOSE_MEETING_1 и PROPOSE_MEETING_2)
-- ✅ Счётчик отказов (materials_request_count >= 2 → завершаем)
-- ✅ Новые поля: branch, strategy, usage, family, call_proposal_count, materials_request_count, dialog_finished, finish_type
-- ✅ Формулировки Оксаны в RAG (13 примеров)
-
----
-
-## 🟡 Следующие задачи
-
-### 1. Тестирование v2.0
-- **Описание:** Полное тестирование всех сценариев
-- **Сценарии:**
-  - INVESTMENT: goal → strategy → budget → MEETING_1 → payment → location → lpr → MEETING_2
-  - PERSONAL: goal → usage → location → budget → MEETING_1 → family → payment → lpr → MEETING_2
-  - Два отказа → FINISH_WITH_MATERIALS
-- **Оценка:** 30 мин
-
-### 2. Мониторинг Generator compliance
-- **Описание:** Следить что Generator слушает директивы PROPOSE_MEETING_*
-- **Как:** Смотреть логи, сравнивать action Planner'а с текстом ответа
-- **Оценка:** ongoing
-
-### 3. Настроить уведомления менеджеру
-- **Описание:** При dialog_finished=True отправлять уведомление
-- **Куда:** Telegram / webhook (уточнить)
-- **Оценка:** 30 мин
-
-### 4. Userbot v2.0
-- **Описание:** Восстановить userbot с импортом из bot_server.py
-- **Зависит от:** Тестирование v2.0
-- **Файл:** sofia_userbot_pyrogram.py
-- **Оценка:** 1 час
-
----
+📅 Обновлено: 18.01.2026
 
 ## ✅ Выполнено
 
-### 17 января 2026 (поздняя ночь)
-- ✅ Реализована полная спецификация Sofia-GPT v2.0
-- ✅ Миграция БД (8 новых колонок)
-- ✅ state_manager.py — новые поля v2.0
-- ✅ planner.py — две ветки квалификации, новые Actions
-- ✅ extractor.py — strategy, usage, family
-- ✅ sofia_prompt.py — описания новых Actions, усиленные директивы
-- ✅ bot_server.py — сохранение v2.0 полей
-- ✅ RAG — 13 формулировок Оксаны
-- ✅ RAG_EXAMPLES_COUNT увеличен до 5
+### v2.0 Core (17.01.2026)
+- [x] Миграция БД — 8 новых колонок в client_state
+- [x] state_manager.py — все v2.0 поля
+- [x] planner.py — две ветки INVESTMENT/PERSONAL, два созвона
+- [x] extractor.py — новые слоты strategy/usage/family
+- [x] sofia_prompt.py — директивы PROPOSE_MEETING_*
+- [x] RAG — диалог oksana_scripts_v2 (13 примеров)
+- [x] Фикс slot_attempts (маппинг payment → payment_type)
 
-### 17 января 2026 (ночь)
-- ✅ Исправлен баг slot_attempts (маппинг payment → payment_type)
-- ✅ Добавлена логика no_call в Extractor
-- ✅ Добавлен флаг call_refused в StateManager
-- ✅ Логика пропуска HANDLE_OBJECTION при повторном no_call
-- ✅ Разработана спецификация Sofia-GPT v2.0
+### Сессия 18.01.2026
+- [x] Уведомления менеджеру при dialog_finished=True
+- [x] RAG по action Planner'а (не по Stage Detector)
+- [x] "Живой" промпт — эмодзи, разнообразие, человечность
+- [x] RAG_EXAMPLES_COUNT увеличен до 10
 
-### 17 января 2026 (вечер)
-- ✅ Userbot v2.0 — импортирует логику из bot_server.py
-- ✅ Обнаружен баг slot_attempts
+## 🔄 В процессе
 
-### 17 января 2026 (утро)
-- ✅ Создан userbot на Pyrogram
-- ✅ RAG обновлён до v2.1
+### Тестирование "живой" Софии
+- [ ] Разнообразие начал (не повторяются подряд)
+- [ ] Эмодзи естественно
+- [ ] Off-topic с возвратом к делу
+- **Статус:** Ожидает утреннего теста
 
-### 15 января 2026
-- ✅ Унификация HELP_* логики для всех слотов
-- ✅ Добавлен HELP_LPR
+## 📋 TODO
 
----
+### Приоритет 1: Userbot v2.0
+**Время:** ~1 час
 
-## Метрики
+1. Восстановить из бэкапа:
+```bash
+   cp /opt/sofia-gpt/sofia_userbot_pyrogram.py.backup_20260117_132806 /opt/sofia-gpt/sofia_userbot_pyrogram.py
+```
 
-| Метрика | Статус |
-|---------|--------|
-| slot_attempts работает | ✅ |
-| no_call распознаётся | ✅ |
-| Две ветки квалификации | ✅ |
-| Два предложения созвона | ✅ |
-| Счётчик отказов | ✅ |
-| RAG с формулировками Оксаны | ✅ |
-| RAG примеров | 1939 |
+2. Добавить фикс slot_attempts (маппинг payment → payment_type):
+```python
+   ACTION_TO_SLOT = {"payment": "payment_type"}
+```
+
+3. Проверить/добавить:
+   - `merge_extraction_to_state()` из extractor.py
+   - `increment_slot_attempt()` из planner.py
+   - Команда `/start @username` для умного старта
+
+4. Создать systemd сервис:
+```bash
+   # /etc/systemd/system/sofia-userbot.service
+```
+
+5. Протестировать
+
+### Приоритет 2: Мониторинг качества
+- [ ] Дашборд: сравнение action Planner vs текст Generator
+- [ ] Алерты если Generator игнорирует директивы
+- [ ] Логирование conversation_complete rate
+
+### Приоритет 3: Улучшения RAG (опционально)
+- [ ] Синтетические "золотые" примеры живого общения
+- [ ] Фильтр quality: "exceptional" для лучших примеров
+- [ ] A/B тест: 10 vs 15 примеров
+
+## 🐛 Известные проблемы
+
+| Проблема | Статус | Решение |
+|----------|--------|---------|
+| ~~slot_attempts не инкрементировался~~ | ✅ Исправлено | Маппинг ACTION_TO_SLOT |
+| ~~RAG по неправильному stage~~ | ✅ Исправлено | ACTION_TO_RAG_STAGE |
+| ~~Generator игнорировал PROPOSE_MEETING_1~~ | ✅ Исправлено | Усилены директивы |
+| Userbot не имеет v2.0 логики | ⏳ Ожидает | Восстановить из бэкапа |
+
+## 📊 Метрики
+
+- **RAG примеров:** 1939
+- **RAG на запрос:** 10
+- **Quality distribution:** excellent 76%, good 18%, poor 6%
