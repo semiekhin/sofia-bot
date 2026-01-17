@@ -419,7 +419,12 @@ async def send_reminder(chat_id, user_name, context):
     """Отправляет напоминание если клиент не ответил 10 минут"""
     await asyncio.sleep(REMINDER_DELAY)
     
-    # Проверяем что диалог не завершён (нет договорённости о созвоне)
+    # Проверяем meeting_agreed в состоянии клиента
+    state = state_manager.get_state(chat_id)
+    if state and state.meeting_agreed:
+        return  # Уже договорились о созвоне — не напоминаем
+    
+    # Проверяем что диалог не завершён
     history = get_conversation_history(chat_id)
     if not history:
         return
