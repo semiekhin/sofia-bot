@@ -250,3 +250,77 @@ ACTION_TO_RAG_STAGE = {
 - 1-2 ответа на off-topic + мягкий возврат к теме
 - Если клиент настойчиво болтает 2-3 раза — ок, поболтай, он тоже человек
 
+
+---
+
+### 18.01.2026 (день): Userbot v2.0 — полное восстановление
+
+**Проблема:** Userbot был откачен до версии 1.0 вместе с фиксом slot_attempts (17.01). Потерял: merge_extraction_to_state, increment_slot_attempt, get_system_prompt, ACTION_TO_SLOT.
+
+**Решение:** 
+1. Восстановлен из бэкапа `sofia_userbot_pyrogram.py.backup_20260117_132806`
+2. Добавлены константы из bot_server.py (не импорт, чтобы не трогать Софью):
+   - `ACTION_TO_SLOT = {"payment": "payment_type"}`
+   - `ACTION_TO_RAG_STAGE = {...}` (23 маппинга)
+   - `RAG_EXAMPLES_COUNT = 10`
+   - `MODEL_MODE = os.getenv("MODEL_MODE", "gpt-5.2")`
+3. Переключен на gpt-5.2 Responses API
+4. Добавлено сохранение v2.0 полей после Planner
+5. Добавлено логирование в файл
+
+**Почему константы дублируются, а не импортируются:** Константы определены внутри bot_server.py и не экспортируются. Чтобы импортировать — нужен рефакторинг bot_server.py. Решили не трогать работающий бот.
+
+---
+
+### 18.01.2026 (день): Связанное извлечение goal + strategy
+
+**Проблема:** Клиент говорит "буду сдавать в аренду", Extractor извлекает только goal: investment, но не strategy: rental. Planner переспрашивает про стратегию — это раздражает.
+
+**Решение:** Добавлено правило в extractor.py:
+```
+СВЯЗАННОЕ ИЗВЛЕЧЕНИЕ (goal + strategy одновременно):
+- "сдавать в аренду", "буду сдавать" → goal: investment + strategy: rental
+- "для перепродажи", "купить и продать" → goal: investment + strategy: growth
+```
+
+**Почему:** Если клиент явно говорит про аренду — это уже ответ на оба вопроса. Не нужно переспрашивать.
+
+---
+
+### 18.01.2026 (день): Архитектура Userbot — импорт vs дублирование
+
+**Принцип:** Userbot ИМПОРТИРУЕТ логику из модулей, но ДУБЛИРУЕТ константы из bot_server.py.
+
+**Что импортируется (общий код):**
+- `extractor.py` → extract_sync(), merge_extraction_to_state()
+- `state_manager.py` → StateManager, ClientState
+- `planner.py` → get_next_action(), increment_slot_attempt()
+- `sofia_prompt.py` → get_system_prompt()
+- `rag_module.py` → search_examples()
+
+**Что дублируется (константы):**
+- ACTION_TO_SLOT
+- ACTION_TO_RAG_STAGE
+- RAG_EXAMPLES_COUNT
+- MODEL_MODE
+
+**Результат:** Изменения в модулях (extractor, planner, etc.) автоматически работают в обоих (бот + userbot). Константы нужно синхронизировать вручную.
+
+---
+
+### 18.01.2026 (вечер): Планируется — Финансовый консультант
+
+**Задача:** Sofia должна уметь:
+- Отвечать на финансовые вопросы (ставка ЦБ, доходность депозитов)
+- Сравнивать депозит vs недвижимость с расчётами
+- Убеждать клиента в выгоде недвижимости
+- Продолжать консультировать после FINISH_WITH_MATERIALS
+
+**Архитектура (планируется):**
+1. `finance_fetcher.py` — парсинг данных (ЦБ, банки)
+2. `finance_calculator.py` — расчёты доходности
+3. `finance_data.json` — кэш актуальных данных
+4. Новые Actions: CONSULT_FINANCE, COMPARE_DEPOSIT, CALCULATE_YIELD
+5. RAG по финансовым диалогам
+
+**Срок:** 1-2 недели после стабилизации текущей версии

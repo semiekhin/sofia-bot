@@ -1,73 +1,90 @@
 # Текущий статус Sofia-GPT
 
-📅 **Последняя сессия:** 18.01.2026, 01:00 MSK
+📅 **Последняя сессия:** 18.01.2026, 12:30 MSK
 
 ## ✅ Что сделано в этой сессии
 
-### Уведомления менеджеру
-- Добавлена функция `notify_manager_deal()` в bot_server.py (строка 299)
-- При `dialog_finished=True` отправляется уведомление в ADMIN_CHAT_ID
-- Формат: "🏁 Новая договорённость" + тип/клиент/цель/локация/бюджет
-- Работает для finish_type: "meeting" и "materials"
+### Userbot v2.0 — полностью восстановлен и улучшен
+- Восстановлен из бэкапа `sofia_userbot_pyrogram.py.backup_20260117_132806`
+- Добавлен `ACTION_TO_SLOT` маппинг (фикс slot_attempts: payment → payment_type)
+- Добавлен `ACTION_TO_RAG_STAGE` маппинг (RAG ищет по action Planner'а)
+- `RAG_EXAMPLES_COUNT = 10` (синхронизировано с bot_server.py)
+- Переключен на `gpt-5.2 Responses API` (MODEL_MODE из .env)
+- Добавлено сохранение v2.0 полей (branch, call_proposal_count, materials_request_count, dialog_finished)
+- Добавлено логирование в файл `/opt/sofia-gpt/userbot.log`
+- Создан systemd сервис `/etc/systemd/system/sofia-userbot.service`
+- Версия обновлена до 2.0
 
-### Исправлен RAG — использует action Planner'а
-- **Проблема:** RAG искал примеры по Stage Detector, который часто ошибался (PRESENTATION вместо QUALIFICATION)
-- **Решение:** Добавлен маппинг `ACTION_TO_RAG_STAGE` (строка 71 bot_server.py)
-- Теперь `propose_meeting_1` → RAG ищет примеры MEETING, а не PRESENTATION
-- Логика в строках 699-706 bot_server.py
-
-### "Живая" София — переписан промпт
-- Убраны жёсткие ограничения "1-3 строки", "эмодзи 0-2"
-- Добавлены живые реакции, эмодзи, разнообразие начал
-- Правило: "НИКОГДА не начинай два сообщения подряд одинаково"
-- Добавлена возможность общаться на любые темы с мягким возвратом к делу
-- Примеры живого общения в промпте
-
-### RAG увеличен до 10 примеров
-- `RAG_EXAMPLES_COUNT = 10` (было 5)
+### Extractor — связанное извлечение goal + strategy
+- Добавлено правило: "сдавать в аренду" → goal: investment + strategy: rental (оба confirmed)
+- Добавлено правило: "для перепродажи" → goal: investment + strategy: growth (оба confirmed)
 
 ## 🔄 Текущее состояние
 
 ### ✅ Работает
-- Бот @humanAINeural_bot — active (running)
-- v2.0 логика: две ветки (INVESTMENT/PERSONAL), два созвона, счётчик отказов
-- Уведомления менеджеру при завершении диалога
-- RAG по action Planner'а
-- Живой стиль общения (эмодзи, разнообразие)
+- Основной бот @humanAINeural_bot — active (running)
+- Userbot v2.0 — работает в интерактивном режиме
+- Команды: `/start @username`, `/start @username avito`, `/send @username Текст`
+- Параллельные диалоги с несколькими клиентами
+- Логирование в `/opt/sofia-gpt/userbot.log`
+- RAG по action Planner'а (10 примеров)
+- gpt-5.2 Responses API
 
 ### ⚠️ Требует тестирования
-- Новый промпт "живой Софии" — ожидает утреннего теста
-- Общение на off-topic темы с возвратом к делу
+- Связанное извлечение goal + strategy (только что добавлено)
+- Длительные диалоги через userbot
 
-### ❌ Не работает / Не сделано
-- **Userbot v2.0** — не восстановлен из бэкапа
+### ❌ Не реализовано
+- Systemd автозапуск userbot (сервис создан, но интерактивный режим не подходит)
+- HTTP API для автоматического старта диалогов из CRM/n8n
+- Daemon режим userbot
 
 ## 🔜 Следующие шаги
 
-1. **Протестировать "живую" Софию** (утром)
-   - Разнообразие ответов
-   - Эмодзи
-   - Off-topic с возвратом к делу
+### Приоритет 1: Дотестировать Userbot
+- Полный цикл квалификации через userbot
+- Проверить связанное извлечение goal + strategy
+- Проверить v2.0 логику (две ветки, два созвона, счётчик отказов)
 
-2. **Восстановить Userbot v2.0** (приоритет)
-   - Восстановить из бэкапа: `sofia_userbot_pyrogram.py.backup_20260117_132806`
-   - Добавить маппинг `ACTION_TO_SLOT = {"payment": "payment_type"}` (фикс slot_attempts)
-   - Настроить systemd сервис
-   - Команда `/start @username` для умного старта
+### Приоритет 2: Daemon режим + API (для автоматизации)
+- Переделать userbot в daemon режим (без интерактивного input)
+- Добавить HTTP API: `POST /api/new-lead` → Sofia пишет первой
+- Интеграция с n8n для автоматической обработки лидов
 
-3. **Опционально: синтетические примеры RAG**
-   - Добавить 20-30 "золотых" примеров живого общения
-   - quality: "exceptional"
+### Приоритет 3: Финансовый консультант (БОЛЬШОЙ АПГРЕЙД)
+- Парсинг ключевой ставки ЦБ
+- Парсинг ставок депозитов
+- Калькулятор доходности (депозит vs недвижимость)
+- Новые Actions: CONSULT_FINANCE, COMPARE_DEPOSIT, CALCULATE_YIELD
+- RAG по финансовым диалогам (30-50 примеров)
+- Режим "консультант" (не заканчивать после FINISH_WITH_MATERIALS)
 
 ## 📁 Последние изменения
 
 | Файл | Изменение |
 |------|-----------|
-| `bot_server.py` | +notify_manager_deal(), +ACTION_TO_RAG_STAGE, RAG по action, RAG_EXAMPLES_COUNT=10 |
-| `sofia_prompt.py` | Новые правила: живой тон, эмодзи, разнообразие, off-topic |
+| `sofia_userbot_pyrogram.py` | v2.0: ACTION_TO_SLOT, ACTION_TO_RAG_STAGE, gpt-5.2, логирование |
+| `extractor.py` | Связанное извлечение goal + strategy |
+| `/etc/systemd/system/sofia-userbot.service` | Создан (для будущего daemon режима) |
 
-## 📊 Метрики
+## 📊 Файлы Userbot
 
-- Диалогов в RAG: 1939 примеров
-- Quality distribution: excellent (76%), good (18%), poor (6%)
-- Stages: CLOSING(373), PRESENTATION(336), POST_SALE(328), QUALIFICATION(301), OBJECTION(279), MEETING(250), GREETING(72)
+- **Основной:** `/opt/sofia-gpt/sofia_userbot_pyrogram.py` (v2.0)
+- **Логи:** `/opt/sofia-gpt/userbot.log`
+- **Сессия:** `/opt/sofia-gpt/sofia_pyrogram.session`
+- **Systemd:** `/etc/systemd/system/sofia-userbot.service`
+
+## 🚀 Как запустить Userbot
+```bash
+# Терминал 1 — логи
+tail -F /opt/sofia-gpt/userbot.log
+
+# Терминал 2 — userbot
+cd /opt/sofia-gpt && ./venv/bin/python sofia_userbot_pyrogram.py
+
+# Команды в userbot:
+# /start @username — умный старт через Planner
+# /start @username avito — старт с источником
+# /send @username Текст — произвольное сообщение
+# /quit — выход
+```

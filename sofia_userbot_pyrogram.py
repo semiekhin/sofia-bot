@@ -1,6 +1,6 @@
 # sofia_userbot_pyrogram.py — Sofia как обычный пользователь Telegram
 # Использует Pyrogram (работает стабильнее Telethon)
-# Версия: 1.0
+# Версия: 2.0
 
 import asyncio
 import sys
@@ -31,9 +31,10 @@ load_dotenv(f"{SOFIA_PATH}/.env")
 
 SOFIA_AVAILABLE = False
 try:
-    from extractor import extract_sync
+    from extractor import extract_sync, merge_extraction_to_state
     from state_manager import StateManager
-    from planner import get_next_action, get_action_context, Action
+    from planner import get_next_action, get_action_context, Action, increment_slot_attempt
+    from sofia_prompt import get_system_prompt, BOT_NAME, PRICE_CATALOG
     from rag_module import search_examples, format_examples_for_prompt, init_vector_store
     import openai
     
@@ -54,6 +55,64 @@ except ImportError as e:
 conversations = {}
 
 # ============================================
+# ЛОГИРОВАНИЕ
+# ============================================
+
+LOG_PATH = "/opt/sofia-gpt/userbot.log"
+
+def log(message: str):
+    """Логирует в файл и консоль"""
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%H:%M:%S")
+    log_line = f"[{timestamp}] {message}"
+    print(log_line)
+    try:
+        with open(LOG_PATH, "a", encoding="utf-8") as f:
+            f.write(log_line + "\n")
+    except:
+        pass
+
+# ============================================
+# НАСТРОЙКИ v2.0 (синхронизированы с bot_server.py)
+# ============================================
+
+RAG_EXAMPLES_COUNT = 10
+
+# Модель OpenAI (из .env, как в bot_server.py)
+MODEL_MODE = os.getenv("MODEL_MODE", "gpt-5.2")
+
+# Маппинг action name → slot name (для несовпадающих имён)
+ACTION_TO_SLOT = {"payment": "payment_type"}
+
+# Маппинг Action → Stage для RAG
+ACTION_TO_RAG_STAGE = {
+    "ask_goal": "QUALIFICATION",
+    "ask_location": "QUALIFICATION",
+    "ask_budget": "QUALIFICATION",
+    "ask_strategy": "QUALIFICATION",
+    "ask_usage": "QUALIFICATION",
+    "ask_family": "QUALIFICATION",
+    "ask_payment": "QUALIFICATION",
+    "ask_first_payment": "QUALIFICATION",
+    "ask_lpr": "QUALIFICATION",
+    "help_goal": "QUALIFICATION",
+    "help_location": "QUALIFICATION",
+    "help_budget": "QUALIFICATION",
+    "help_payment": "QUALIFICATION",
+    "help_lpr": "QUALIFICATION",
+    "answer_question": "PRESENTATION",
+    "handle_objection": "OBJECTION",
+    "clarify_mentioned": "QUALIFICATION",
+    "propose_meeting": "MEETING",
+    "propose_meeting_1": "MEETING",
+    "propose_meeting_2": "MEETING",
+    "confirm_meeting": "CLOSING",
+    "finish_with_materials": "CLOSING",
+    "send_materials": "PRESENTATION",
+    "greeting": "GREETING",
+}
+
+# ============================================
 # ОБРАБОТКА СООБЩЕНИЙ
 # ============================================
 
@@ -70,26 +129,54 @@ async def process_with_sofia(user_id: int, user_name: str, message: str) -> str:
         # 1. Extractor
         extraction = extract_sync(message, history[-6:] if history else None)
         
-        # 2. State Manager
+        # 2. State Manager — мержим extraction в состояние
         client_state = state_manager.get_state(user_id)
         if extraction:
-            state_updates = {}
-            for field in ['goal', 'location', 'budget', 'payment_type', 'lpr']:
-                if extraction.get(field):
-                    state_updates[field] = extraction[field]
-                    conf_field = f"{field}_confidence"
-                    if extraction.get(conf_field):
-                        state_updates[conf_field] = extraction[conf_field]
-            if state_updates:
-                client_state = state_manager.update_state(user_id, state_updates)
+            state_updates = merge_extraction_to_state(client_state.to_dict(), extraction)
+            client_state = state_manager.update_state(user_id, state_updates)
+            log(f"📊 State updated: {client_state.summary()}")
         
         # 3. Planner
         action = get_next_action(client_state, message, extraction or {})
         action_context = get_action_context(action, client_state, extraction or {})
         
-        # 4. RAG
-        examples = search_examples("QUALIFICATION", message, limit=3)
+        log(f"🎯 PLANNER (incoming):")
+        log(f"   Action: {action.value}")
+        log(f"   State: goal={client_state.goal}({client_state.goal_confidence}), loc={client_state.location}({client_state.location_confidence}), budget={client_state.budget}")
+        log(f"   is_qualified: {client_state.is_qualified()}")
+        log(f"   Extraction: {extraction}")
+        
+        # 3.1 Увеличиваем счётчик попыток для слота (защита от повторов)
+        if action.value.startswith("ask_"):
+            slot = action.value.replace("ask_", "")
+            slot = ACTION_TO_SLOT.get(slot, slot)  # payment → payment_type
+            increment_slot_attempt(client_state, slot, "ask")
+            state_manager.update_state(user_id, {"slot_attempts": client_state.slot_attempts})
+        elif action.value.startswith("help_"):
+            slot = action.value.replace("help_", "")
+            slot = ACTION_TO_SLOT.get(slot, slot)  # payment → payment_type
+            increment_slot_attempt(client_state, slot, "help")
+            state_manager.update_state(user_id, {"slot_attempts": client_state.slot_attempts})
+        
+        # 3.2 Сохраняем v2.0 поля (branch, счётчики, завершение)
+        v2_updates = {
+            "branch": client_state.branch,
+            "call_proposal_count": client_state.call_proposal_count,
+            "materials_request_count": client_state.materials_request_count,
+        }
+        if action == Action.FINISH_WITH_MATERIALS:
+            v2_updates["dialog_finished"] = True
+            v2_updates["finish_type"] = "materials"
+        elif action == Action.CONFIRM_MEETING:
+            v2_updates["dialog_finished"] = True
+            v2_updates["finish_type"] = "meeting"
+        state_manager.update_state(user_id, v2_updates)
+        
+        # 4. RAG — ищем примеры по action Planner'а
+        rag_stage = ACTION_TO_RAG_STAGE.get(action.value, "QUALIFICATION")
+        examples = search_examples(rag_stage, message, limit=RAG_EXAMPLES_COUNT)
         examples_text = format_examples_for_prompt(examples) if examples else ""
+        log(f"📚 RAG: {len(examples) if examples else 0} примеров для {rag_stage}")
         
         # 5. Generator (OpenAI)
         response = await generate_with_openai(user_name, message, history, action_context, examples_text)
@@ -103,43 +190,45 @@ async def process_with_sofia(user_id: int, user_name: str, message: str) -> str:
         return response
         
     except Exception as e:
-        print(f"❌ Ошибка обработки: {e}")
+        log(f"❌ Ошибка обработки: {e}")
         import traceback
         traceback.print_exc()
         return "Секунду, связь подвисла. Напишите ещё раз?"
 
 
 async def generate_with_openai(user_name: str, message: str, history: list, action_context: dict, examples: str) -> str:
-    """Генерирует ответ через OpenAI"""
+    """Генерирует ответ через OpenAI с полным промптом Sofia"""
     
-    system_prompt = f"""Ты — София, менеджер по продаже курортной недвижимости Oazis Estate.
-Говори кратко (1-3 предложения), дружелюбно, по делу.
-Задавай один вопрос за раз.
-Клиента зовут {user_name}.
+    # Используем полный промпт из sofia_prompt.py
+    system_prompt = get_system_prompt(user_name, action_context)
+    
+    # Добавляем RAG примеры
+    if examples:
+        system_prompt += f"""
 
-{action_context.get('action_description', '')}
-
+════════════════════════════════════════════════════════════════════════════════
+ПРИМЕРЫ ХОРОШИХ ОТВЕТОВ (RAG)
+════════════════════════════════════════════════════════════════════════════════
 {examples}
 """
     
-    messages = [{"role": "system", "content": system_prompt}]
-    
-    # Добавляем историю
+    # Формируем messages для API (без system — он идёт в instructions)
+    messages = []
     for msg in history[-10:]:
         messages.append({"role": msg["role"], "content": msg["content"]})
-    
     messages.append({"role": "user", "content": message})
     
     try:
-        response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=messages,
-            max_tokens=200,
-            temperature=0.7
+        # GPT-5.2 Responses API (как в bot_server.py)
+        response = openai_client.responses.create(
+            model=MODEL_MODE,
+            instructions=system_prompt,
+            input=messages,
+            text={"verbosity": "low"},
         )
-        return response.choices[0].message.content
+        return response.output_text
     except Exception as e:
-        print(f"❌ OpenAI ошибка: {e}")
+        log(f"❌ OpenAI ошибка: {e}")
         return generate_fallback(action_context, user_name)
 
 
@@ -177,7 +266,7 @@ async def handle_message(client, message):
     if not text:
         return
     
-    print(f"📩 {user_name}: {text}")
+    log(f"📩 {user_name}: {text}")
     
     # Показываем "печатает..."
     await client.send_chat_action(message.chat.id, enums.ChatAction.TYPING)
@@ -188,7 +277,7 @@ async def handle_message(client, message):
     
     # Отправляем
     await message.reply(response)
-    print(f"📤 София: {response}")
+    log(f"📤 София: {response}")
 
 
 # ============================================
@@ -208,6 +297,149 @@ async def send_first_message(target: str, text: str):
 
 
 # ============================================
+# УМНЫЙ СТАРТ ДИАЛОГА
+# ============================================
+
+async def start_smart_dialog(target: str, lead_info: dict = None) -> bool:
+    """
+    Начинает диалог с новым лидом через логику Sofia.
+    
+    target: @username или +79123456789
+    lead_info: опционально {name: "Иван", source: "avito", ...}
+    """
+    try:
+        print(f"\n{'='*60}")
+        log(f"🚀 START_SMART_DIALOG: {target}")
+        print(f"{'='*60}")
+        
+        # Получаем user_id из Telegram
+        user = await app.get_users(target)
+        user_id = user.id
+        user_name = user.first_name or "друг"
+        
+        log(f"📱 Telegram user: {user_name} (ID: {user_id})")
+        log(f"📋 Lead info: {lead_info}")
+        
+        # Сбрасываем состояние (новый лид)
+        state_manager.reset_state(user_id)
+        log(f"🗑️ State reset для user_id={user_id}")
+        
+        # Создаём начальное состояние
+        client_state = state_manager.get_state(user_id)
+        log(f"📊 Initial state: goal={client_state.goal}, location={client_state.location}, budget={client_state.budget}")
+        
+        # Если есть инфо о лиде — сохраняем
+        if lead_info:
+            updates = {}
+            if lead_info.get('goal'):
+                updates['goal'] = lead_info['goal']
+                updates['goal_confidence'] = 'mentioned'
+            if lead_info.get('location'):
+                updates['location'] = lead_info['location']
+                updates['location_confidence'] = 'mentioned'
+            if lead_info.get('budget'):
+                updates['budget'] = lead_info['budget']
+                updates['budget_confidence'] = 'mentioned'
+            if updates:
+                client_state = state_manager.update_state(user_id, updates)
+        
+        # Planner определяет первое действие
+        action = get_next_action(client_state, "", {})
+        action_context = get_action_context(action, client_state, {})
+        
+        log(f"🎯 PLANNER DECISION:")
+        log(f"   Action: {action.value}")
+        log(f"   is_qualified: {client_state.is_qualified()}")
+        log(f"   missing_fields: {client_state.get_missing_fields()}")
+        log(f"   slot_attempts: {client_state.slot_attempts}")
+        
+        # Генерируем первое сообщение
+        # Для первого сообщения используем специальный промпт
+        first_message = await generate_first_message(user_name, action_context, lead_info)
+        
+        # Отправляем
+        log(f"📝 GENERATED MESSAGE:")
+        log(f"   {first_message}")
+        
+        await app.send_message(target, first_message)
+        log(f"✅ SENT TO TELEGRAM → {target}")
+        
+        # Сохраняем в историю
+        if user_id not in conversations:
+            conversations[user_id] = []
+        conversations[user_id].append({"role": "assistant", "content": first_message})
+        
+        # Инкрементируем счётчик если это ASK_*
+        if action.value.startswith("ask_"):
+            slot = action.value.replace("ask_", "")
+            slot = ACTION_TO_SLOT.get(slot, slot)  # payment → payment_type
+            increment_slot_attempt(client_state, slot, "ask")
+            state_manager.update_state(user_id, {"slot_attempts": client_state.slot_attempts})
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+
+async def generate_first_message(user_name: str, action_context: dict, lead_info: dict = None) -> str:
+    """Генерирует первое сообщение для нового лида"""
+    
+    # Контекст откуда пришёл лид
+    source_context = ""
+    if lead_info:
+        if lead_info.get('source') == 'avito':
+            source_context = "Клиент оставил заявку на Avito."
+        elif lead_info.get('source') == 'cian':
+            source_context = "Клиент оставил заявку на ЦИАН."
+        elif lead_info.get('source') == 'website':
+            source_context = "Клиент оставил заявку на сайте."
+        elif lead_info.get('ad_text'):
+            source_context = f"Клиент откликнулся на объявление: {lead_info['ad_text'][:100]}"
+    
+    # Используем базовый промпт Sofia + специфика первого сообщения
+    base_prompt = get_system_prompt(user_name, action_context)
+    
+    system_prompt = f"""{base_prompt}
+
+════════════════════════════════════════════════════════════════════════════════
+СПЕЦИФИКА: ЭТО ПЕРВОЕ СООБЩЕНИЕ
+════════════════════════════════════════════════════════════════════════════════
+
+{source_context}
+
+Это ПЕРВОЕ сообщение — клиент ещё не писал тебе.
+
+ФОРМАТ ПЕРВОГО СООБЩЕНИЯ:
+"{user_name}, добрый день! Это София, по недвижимости. Вы оставляли заявку на сайте — удобно сейчас пообщаться?"
+
+После ответа клиента начнёшь квалификацию.
+НЕ задавай квалификационные вопросы в первом сообщении!
+"""
+
+    messages = [
+        {"role": "user", "content": "Сгенерируй первое сообщение клиенту."}
+    ]
+    
+    try:
+        # GPT-5.2 Responses API
+        response = openai_client.responses.create(
+            model=MODEL_MODE,
+            instructions=system_prompt,
+            input=messages,
+            text={"verbosity": "low"},
+        )
+        return response.output_text
+    except Exception as e:
+        log(f"❌ OpenAI ошибка: {e}")
+        # Fallback
+        return f"Привет, {user_name}! Я София из Oazis Estate. Подскажите, рассматриваете недвижимость для себя или как инвестицию?"
+
+
+# ============================================
 # ИНТЕРАКТИВНЫЙ РЕЖИМ
 # ============================================
 
@@ -217,8 +449,9 @@ async def interactive():
     print("🤖 Sofia Userbot (Pyrogram)")
     print("="*50)
     print("\nКоманды:")
-    print("  /send @username Текст — отправить первое сообщение")
-    print("  /send +79123456789 Текст — отправить по номеру")
+    print("  /start @username — умный старт диалога (через Planner)")
+    print("  /start @username avito — старт с указанием источника")
+    print("  /send @username Текст — отправить произвольный текст")
     print("  /quit — выход")
     print("\nВходящие сообщения обрабатываются автоматически.")
     print("="*50 + "\n")
@@ -227,7 +460,17 @@ async def interactive():
         try:
             cmd = await asyncio.get_event_loop().run_in_executor(None, input, "Sofia> ")
             
-            if cmd.startswith("/send "):
+            if cmd.startswith("/start "):
+                parts = cmd[7:].split()
+                if len(parts) >= 1:
+                    target = parts[0]
+                    source = parts[1] if len(parts) > 1 else None
+                    lead_info = {"source": source} if source else None
+                    await start_smart_dialog(target, lead_info)
+                else:
+                    print("Формат: /start @username [источник]")
+            
+            elif cmd.startswith("/send "):
                 parts = cmd[6:].split(" ", 1)
                 if len(parts) == 2:
                     target, text = parts
