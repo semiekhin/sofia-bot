@@ -1,0 +1,69 @@
+{
+  "meta": {
+    "updated": "2026-01-19",
+    "version": "1.0",
+    "sources": [
+      "https://www.cbr.ru/hd_base/keyrate/",
+      "https://www.cbr.ru/press/pr/",
+      "bnmap.pro",
+      "cian.ru",
+      "rbc.ru"
+    ],
+    "next_update_trigger": "2026-02-13"
+  },
+
+  "cb_key_rate": {
+    "current": 16.0,
+    "current_date": "2026-01-19",
+    "forecast_avg": {
+      "2026": 14.0,
+      "2027": 8.0,
+      "2028": 8.0,
+      "2029": 7.5,
+      "2030": 7.5
+    },
+    "forecast_source": "ЦБ РФ, базовый сценарий, октябрь 2025"
+  },
+
+  "deposit": {
+    "spread_to_key_rate": -1.0,
+    "current_rates": {
+      "3_months": 15.0,
+      "6_months": 14.0,
+      "12_months": 13.0
+    },
+    "tax": {
+      "threshold_base": 1000000,
+      "rate": 0.13
+    }
+  },
+
+  "real_estate": {
+    "growth_construction": 0.20,
+    "growth_ready": 0.10,
+    "rental_yield_net": 0.10,
+    "notes": {
+      "growth_construction": "Рост стоимости на этапе строительства (до ввода в эксплуатацию)",
+      "growth_ready": "Ежегодный рост стоимости готового объекта",
+      "rental_yield_net": "Чистая доходность от аренды после расходов (посуточная)"
+    }
+  },
+
+  "cb_meetings_2026": [
+    {"date": "2026-02-13", "type": "основное", "forecast": true},
+    {"date": "2026-03-20", "type": "промежуточное", "forecast": false},
+    {"date": "2026-04-24", "type": "основное", "forecast": true},
+    {"date": "2026-06-19", "type": "промежуточное", "forecast": false},
+    {"date": "2026-07-24", "type": "основное", "forecast": true},
+    {"date": "2026-09-11", "type": "промежуточное", "forecast": false},
+    {"date": "2026-10-23", "type": "основное", "forecast": true},
+    {"date": "2026-12-18", "type": "промежуточное", "forecast": false}
+  ],
+
+  "talking_points": {
+    "deposit_decline": "Ставки по депозитам будут снижаться вслед за ключевой ставкой ЦБ — с текущих 15% до 6-7% к 2030 году",
+    "real_estate_advantage": "Недвижимость даёт двойной доход: рост стоимости + аренда",
+    "construction_bonus": "На этапе строительства рост цены опережает готовое жильё: ~20% против ~10% в год",
+    "tax_note": "Не забывайте про налог на доход с депозитов — 13% сверх необлагаемого лимита"
+  }
+}

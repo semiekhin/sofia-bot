@@ -1,90 +1,101 @@
 # Текущий статус Sofia-GPT
 
-📅 **Последняя сессия:** 18.01.2026, 12:30 MSK
+📅 **Последняя сессия:** 19.01.2026, ~14:45 MSK
 
 ## ✅ Что сделано в этой сессии
 
-### Userbot v2.0 — полностью восстановлен и улучшен
-- Восстановлен из бэкапа `sofia_userbot_pyrogram.py.backup_20260117_132806`
-- Добавлен `ACTION_TO_SLOT` маппинг (фикс slot_attempts: payment → payment_type)
-- Добавлен `ACTION_TO_RAG_STAGE` маппинг (RAG ищет по action Planner'а)
-- `RAG_EXAMPLES_COUNT = 10` (синхронизировано с bot_server.py)
-- Переключен на `gpt-5.2 Responses API` (MODEL_MODE из .env)
-- Добавлено сохранение v2.0 полей (branch, call_proposal_count, materials_request_count, dialog_finished)
-- Добавлено логирование в файл `/opt/sofia-gpt/userbot.log`
-- Создан systemd сервис `/etc/systemd/system/sofia-userbot.service`
-- Версия обновлена до 2.0
+### Финансовый модуль v1.0 — ИНТЕГРИРОВАН (частично работает)
 
-### Extractor — связанное извлечение goal + strategy
-- Добавлено правило: "сдавать в аренду" → goal: investment + strategy: rental (оба confirmed)
-- Добавлено правило: "для перепродажи" → goal: investment + strategy: growth (оба confirmed)
+**Созданные файлы:**
+- `finance_data.json` — данные: ставки ЦБ (16% → 7.5% к 2030), рост недвижимости (20% стройка, 10% готовое), аренда 10%
+- `finance_calculator.py` — калькулятор сравнения недвижимости vs депозит + функция `add_finance_context()`
+
+**Изменённые файлы:**
+- `extractor.py` — добавлены триггеры `finance_interest`, `deposit_mention`
+- `state_manager.py` — добавлено поле `finance_interested: bool`
+- `bot_server.py` — интеграция калькулятора, переключение на ASK_BUDGET при finance_interest
+- `sofia_userbot_pyrogram.py` — аналогичная интеграция
+- `sofia_prompt.py` — добавлен раздел "ФИНАНСОВЫЙ МОДУЛЬ" с директивами
+
+**Дополнительные исправления:**
+- `wants_materials` — уточнено: "покажите варианты" НЕ считается просьбой отправить
+- Добавлено правило "стройка = growth" для связанного извлечения
+- Исправлены опечатки `Action.ask_budget` → `Action.ASK_BUDGET`
 
 ## 🔄 Текущее состояние
 
 ### ✅ Работает
 - Основной бот @humanAINeural_bot — active (running)
-- Userbot v2.0 — работает в интерактивном режиме
-- Команды: `/start @username`, `/start @username avito`, `/send @username Текст`
-- Параллельные диалоги с несколькими клиентами
-- Логирование в `/opt/sofia-gpt/userbot.log`
-- RAG по action Planner'а (10 примеров)
-- gpt-5.2 Responses API
+- Userbot работает в интерактивном режиме
+- Финансовый калькулятор — корректно считает (проверено)
+- Триггер `finance_interest` — срабатывает
+- Расчёт показывается когда бюджет УЖЕ известен и клиент спрашивает про выгоду
 
-### ⚠️ Требует тестирования
-- Связанное извлечение goal + strategy (только что добавлено)
-- Длительные диалоги через userbot
+### ⚠️ ИЗВЕСТНАЯ ПРОБЛЕМА (требует решения)
+**Extractor не извлекает бюджет из комбинированных сообщений:**
+
+Пример:
+- Клиент: "15. какая примерно сейчас доходность?"
+- Ожидание: budget=15000000, finance_interest=True
+- Реальность: budget=None, finance_interest=True
+
+Extractor воспринимает "15." как начало предложения, а не как ответ на вопрос о бюджете.
+В результате бот переспрашивает бюджет вместо того, чтобы дать расчёт.
 
 ### ❌ Не реализовано
-- Systemd автозапуск userbot (сервис создан, но интерактивный режим не подходит)
-- HTTP API для автоматического старта диалогов из CRM/n8n
-- Daemon режим userbot
+- Автоматический парсинг ставки ЦБ
+- Разные сценарии расчёта (строящееся vs готовое) — сейчас всегда строящееся
+- Полный расчёт после отказа от созвона (как "последний аргумент")
 
 ## 🔜 Следующие шаги
 
-### Приоритет 1: Дотестировать Userbot
-- Полный цикл квалификации через userbot
-- Проверить связанное извлечение goal + strategy
-- Проверить v2.0 логику (две ветки, два созвона, счётчик отказов)
+### Приоритет 1: Исправить Extractor
+- Добавить правило: извлекать факты ДАЖЕ из комбинированных сообщений с встречным вопросом
+- Или: сначала извлекать факты, потом определять answer_mode
 
-### Приоритет 2: Daemon режим + API (для автоматизации)
-- Переделать userbot в daemon режим (без интерактивного input)
-- Добавить HTTP API: `POST /api/new-lead` → Sofia пишет первой
-- Интеграция с n8n для автоматической обработки лидов
+### Приоритет 2: Дотестировать финансовый модуль
+- Проверить все сценарии срабатывания
+- Убедиться что расчёт показывается в нужный момент
 
-### Приоритет 3: Финансовый консультант (БОЛЬШОЙ АПГРЕЙД)
-- Парсинг ключевой ставки ЦБ
-- Парсинг ставок депозитов
-- Калькулятор доходности (депозит vs недвижимость)
-- Новые Actions: CONSULT_FINANCE, COMPARE_DEPOSIT, CALCULATE_YIELD
-- RAG по финансовым диалогам (30-50 примеров)
-- Режим "консультант" (не заканчивать после FINISH_WITH_MATERIALS)
+### Приоритет 3: Daemon режим userbot + HTTP API
+- Автоматическая обработка лидов из CRM
 
-## 📁 Последние изменения
+## 📁 Изменённые файлы (эта сессия)
 
 | Файл | Изменение |
 |------|-----------|
-| `sofia_userbot_pyrogram.py` | v2.0: ACTION_TO_SLOT, ACTION_TO_RAG_STAGE, gpt-5.2, логирование |
-| `extractor.py` | Связанное извлечение goal + strategy |
-| `/etc/systemd/system/sofia-userbot.service` | Создан (для будущего daemon режима) |
+| `finance_data.json` | ✨ СОЗДАН — данные для калькулятора |
+| `finance_calculator.py` | ✨ СОЗДАН — калькулятор + add_finance_context() |
+| `extractor.py` | Триггеры finance_interest, deposit_mention; уточнение wants_materials; правило "стройка = growth" |
+| `state_manager.py` | Поле finance_interested |
+| `bot_server.py` | Импорт калькулятора, формирование finance_context, переключение на ASK_BUDGET |
+| `sofia_userbot_pyrogram.py` | Импорт add_finance_context, переключение на ASK_BUDGET |
+| `sofia_prompt.py` | Раздел "ФИНАНСОВЫЙ МОДУЛЬ", вывод finance_context в action_block |
 
-## 📊 Файлы Userbot
-
-- **Основной:** `/opt/sofia-gpt/sofia_userbot_pyrogram.py` (v2.0)
-- **Логи:** `/opt/sofia-gpt/userbot.log`
-- **Сессия:** `/opt/sofia-gpt/sofia_pyrogram.session`
-- **Systemd:** `/etc/systemd/system/sofia-userbot.service`
-
-## 🚀 Как запустить Userbot
+## 🚀 Как запустить
 ```bash
-# Терминал 1 — логи
-tail -F /opt/sofia-gpt/userbot.log
+# Бот (автозапуск)
+systemctl status sofia-gpt
 
-# Терминал 2 — userbot
+# Userbot (интерактивный режим)
 cd /opt/sofia-gpt && ./venv/bin/python sofia_userbot_pyrogram.py
+# Команды: /start @username, /send @username Текст, /quit
+```
 
-# Команды в userbot:
-# /start @username — умный старт через Planner
-# /start @username avito — старт с источником
-# /send @username Текст — произвольное сообщение
-# /quit — выход
+## 🧪 Как проверить финансовый модуль
+```bash
+# Тест калькулятора
+cd /opt/sofia-gpt && ./venv/bin/python -c "
+from finance_calculator import compare_investments, format_short_comparison
+result = compare_investments(amount=15_000_000, construction_years=2, total_years=5)
+print(format_short_comparison(result))
+"
+```
+
+Ожидаемый вывод:
+```
+За 5 лет при вложении 15.0 млн ₽:
+- Недвижимость: ~35.9 млн ₽ (+139%)
+- Депозит: ~21.2 млн ₽ (+41%)
+- Разница: +14.7 млн ₽ в пользу недвижимости
 ```

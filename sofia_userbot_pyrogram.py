@@ -34,6 +34,7 @@ try:
     from extractor import extract_sync, merge_extraction_to_state
     from state_manager import StateManager
     from planner import get_next_action, get_action_context, Action, increment_slot_attempt
+    from finance_calculator import add_finance_context
     from sofia_prompt import get_system_prompt, BOT_NAME, PRICE_CATALOG
     from rag_module import search_examples, format_examples_for_prompt, init_vector_store
     import openai
@@ -139,6 +140,16 @@ async def process_with_sofia(user_id: int, user_name: str, message: str) -> str:
         # 3. Planner
         action = get_next_action(client_state, message, extraction or {})
         action_context = get_action_context(action, client_state, extraction or {})
+        action_context = add_finance_context(action_context, extraction or {}, client_state)
+        
+        # 3.0.1 NEW: Если клиент интересуется финансами, но бюджет неизвестен - переключаем на ASK_BUDGET
+        finance_interest = (extraction or {}).get("finance_interest", False)
+        deposit_mention = (extraction or {}).get("deposit_mention", False)
+        if (finance_interest or deposit_mention) and not client_state.budget:
+            action = Action.ASK_BUDGET
+            action_context = get_action_context(action, client_state, extraction or {})
+            action_context = add_finance_context(action_context, extraction or {}, client_state)
+            log(f"💰 Finance: переключаем на ASK_BUDGET (бюджет неизвестен)")
         
         log(f"🎯 PLANNER (incoming):")
         log(f"   Action: {action.value}")
@@ -346,6 +357,7 @@ async def start_smart_dialog(target: str, lead_info: dict = None) -> bool:
         # Planner определяет первое действие
         action = get_next_action(client_state, "", {})
         action_context = get_action_context(action, client_state, {})
+        action_context = add_finance_context(action_context, {}, client_state)
         
         log(f"🎯 PLANNER DECISION:")
         log(f"   Action: {action.value}")
