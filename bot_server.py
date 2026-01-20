@@ -28,9 +28,6 @@ from state_manager import StateManager, ClientState
 from extractor import extract_sync, merge_extraction_to_state
 from planner import get_next_action, get_action_context, format_action_for_prompt, Action, increment_slot_attempt
 
-# NEW: Финансовый калькулятор
-from finance_calculator import compare_investments, format_comparison_for_prompt, format_short_comparison
-
 # Детекторы отключены — управление через промпт + RAG
 # from detectors import ...
 
@@ -569,35 +566,6 @@ async def delayed_response(chat_id, user_id, user_name, context):
     # 5. Определяем следующее действие (Planner)
     action = get_next_action(client_state, combined_message, extraction)
     action_context = get_action_context(action, client_state, extraction)
-    
-    # 5.0.1 NEW: Финансовый контекст (если клиент интересуется доходностью)
-    finance_interest = extraction.get("finance_interest", False)
-    deposit_mention = extraction.get("deposit_mention", False)
-    
-    # Сохраняем флаг в state если клиент проявил интерес
-    if finance_interest or deposit_mention:
-        client_state.finance_interested = True
-    
-    # Проверяем и текущее сообщение, и сохранённый флаг
-    if (finance_interest or deposit_mention or client_state.finance_interested) and client_state.budget and client_state.budget > 0:
-        try:
-            fin_result = compare_investments(
-                amount=client_state.budget,
-                construction_years=2,
-                total_years=5
-            )
-            action_context["finance_context"] = format_short_comparison(fin_result)
-            action_context["finance_hook"] = True
-            log(f"💰 Finance: расчёт для {client_state.budget/1_000_000:.1f} млн")
-        except Exception as e:
-            log(f"⚠️ Finance error: {e}")
-    elif (finance_interest or deposit_mention) and not client_state.budget:
-        # Меняем план: сначала спросим бюджет чтобы дать расчёт
-        action = Action.ASK_BUDGET
-        action_context = get_action_context(action, client_state, extraction)
-        log(f"💰 Finance: переключаем на ASK_BUDGET (бюджет неизвестен)")
-        action_context["finance_hook"] = True
-        action_context["finance_context"] = "Клиент интересуется доходностью, но бюджет пока не известен. Дай краткую информацию о доходности и спроси бюджет."
     log(f"🎯 Planner: {action.value} → {action_context.get('action_description', '')[:50]}...")
     
     # 5.1 Увеличиваем счётчик попыток для слота
@@ -742,61 +710,18 @@ async def generate_response_with_rag(chat_id, user_id, user_message, user_name, 
         # Сохраняем лог RAG
         save_rag_log(chat_id, user_message, current_stage, confidence, examples)
     
-    # Получаем контекст этапа
-    stage_context = get_stage_context(current_stage)
+    # Формируем system prompt (унифицировано с userbot)
+    system_prompt = get_system_prompt(user_name, action_context)
     
-    # Формируем system prompt с RAG
-    base_prompt = get_system_prompt(user_name)
-    
-    # Добавляем контекст этапа и примеры
-    rag_addition = f"""
-
-============================================================
-📍 ТЕКУЩИЙ ЭТАП: {current_stage}
-============================================================
-
-Цель этапа: {stage_context['goal']}
-Следующий шаг: {stage_context['next_step']}
-Ключевое действие: {stage_context['key_action']}
-
-"""
-    
-    # NEW: Добавляем директиву от Planner
-    if action_context:
-        action_directive = f"""
-============================================================
-🎯 ДИРЕКТИВА (что делать сейчас):
-============================================================
-Действие: {action_context.get('action', 'unknown')}
-Инструкция: {action_context.get('action_description', '')}
-
-Известные факты о клиенте:
-{_format_known_facts(action_context.get('known_facts', {}))}
-
-Не хватает: {', '.join(action_context.get('missing_fields', [])) or 'всё известно'}
-Квалификация: {action_context.get('qualification_score', 0):.0%}
-
-⚠️ ВАЖНО: Следуй директиве! Задай ОДИН вопрос из инструкции.
-"""
-        
-        # NEW: Добавляем финансовый контекст если есть
-        if action_context.get("finance_hook"):
-            finance_directive = f"""
-
-============================================================
-💰 ФИНАНСОВЫЙ КОНТЕКСТ:
-============================================================
-{action_context.get("finance_context", "")}
-
-⚠️ Используй эти цифры в ответе! После расчёта — мягко вернись к созвону или текущему вопросу.
-"""
-            rag_addition += finance_directive
-        
-    
+    # Добавляем RAG примеры
     if examples_prompt:
-        rag_addition += examples_prompt
-    
-    system_prompt = base_prompt + rag_addition
+        system_prompt += f"""
+
+════════════════════════════════════════════════════════════════════════════════
+ПРИМЕРЫ ХОРОШИХ ОТВЕТОВ (RAG)
+════════════════════════════════════════════════════════════════════════════════
+{examples_prompt}
+"""
     
     if was_offline:
         user_message = f"[Клиент написал несколько сообщений пока меня не было:\n{user_message}\n]\nОтветь на актуальный вопрос, можешь мягко извиниться что ненадолго отходила."

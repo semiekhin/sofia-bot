@@ -473,6 +473,45 @@ def get_action_context(action: Action, state: ClientState, extraction: dict = No
     if action == Action.CONFIRM_MEETING:
         context["meeting_datetime"] = extraction.get("meeting_datetime") or state.meeting_datetime
     
+    # ════════════════════════════════════════════════════════════════════════
+    # NEW: Ситуативный контекст для живости диалога
+    # ════════════════════════════════════════════════════════════════════════
+    
+    context["situation"] = {
+        "client_mood": extraction.get("sentiment", "neutral"),
+        "answer_mode": extraction.get("answer_mode"),
+        "is_off_topic": extraction.get("answer_mode") == "off_topic",
+        "is_joking": extraction.get("sentiment") == "positive" and extraction.get("answer_mode") == "off_topic",
+        "is_frustrated": extraction.get("sentiment") == "negative",
+        "dialog_stage": "early" if state.qualification_score < 0.3 else ("middle" if state.qualification_score < 0.7 else "late"),
+        "rapport_built": state.qualification_score > 0.5,  # уже поговорили, можно расслабиться
+    }
+    
+    # Опциональные подсказки для Generator (может использовать, может нет)
+    optional_hints = []
+    
+    # Позитивный клиент — можно пошутить
+    if extraction.get("sentiment") == "positive":
+        optional_hints.append("Клиент в хорошем настроении — можешь поддержать лёгкий тон, пошутить")
+    
+    # Клиент нервничает — сначала успокоить
+    if extraction.get("sentiment") == "negative" or extraction.get("objection"):
+        optional_hints.append("Клиент напряжён — сначала прояви понимание, потом к делу")
+    
+    # Off-topic — поболтать, но вернуться
+    if extraction.get("answer_mode") == "off_topic":
+        optional_hints.append("Клиент ушёл от темы — ответь по-человечески (1-2 предложения), потом мягко вернись к делу")
+    
+    # Уже хорошо поговорили — можно быть теплее
+    if state.qualification_score > 0.5:
+        optional_hints.append("Вы уже неплохо пообщались — можно быть теплее и менее формальной")
+    
+    # Начало диалога — быть дружелюбной но профессиональной
+    if state.qualification_score < 0.2:
+        optional_hints.append("Начало диалога — будь дружелюбной, но не панибратствуй")
+    
+    context["optional_hints"] = optional_hints
+    
     return context
 
 

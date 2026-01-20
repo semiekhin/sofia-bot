@@ -1,76 +1,89 @@
 # Текущий статус Sofia-GPT
 
-📅 **Последняя сессия:** 19.01.2026, ~14:45 MSK
+📅 **Последняя сессия:** 20.01.2026, ~10:00 MSK
+🏷️ **Версия:** v2.1 — "Живая София"
 
 ## ✅ Что сделано в этой сессии
 
-### Финансовый модуль v1.0 — ИНТЕГРИРОВАН (частично работает)
+### 1. Унификация промпта Generator (bot_server.py)
 
-**Созданные файлы:**
-- `finance_data.json` — данные: ставки ЦБ (16% → 7.5% к 2030), рост недвижимости (20% стройка, 10% готовое), аренда 10%
-- `finance_calculator.py` — калькулятор сравнения недвижимости vs депозит + функция `add_finance_context()`
+**Проблема:** bot_server.py и userbot использовали разную логику формирования промпта. Sofia была "зажатой", userbot — живее.
 
-**Изменённые файлы:**
-- `extractor.py` — добавлены триггеры `finance_interest`, `deposit_mention`
-- `state_manager.py` — добавлено поле `finance_interested: bool`
-- `bot_server.py` — интеграция калькулятора, переключение на ASK_BUDGET при finance_interest
-- `sofia_userbot_pyrogram.py` — аналогичная интеграция
-- `sofia_prompt.py` — добавлен раздел "ФИНАНСОВЫЙ МОДУЛЬ" с директивами
+**Причина:** bot_server не передавал `action_context` в `get_system_prompt()`, добавлял свой урезанный формат.
 
-**Дополнительные исправления:**
-- `wants_materials` — уточнено: "покажите варианты" НЕ считается просьбой отправить
-- Добавлено правило "стройка = growth" для связанного извлечения
-- Исправлены опечатки `Action.ask_budget` → `Action.ASK_BUDGET`
+**Решение:** Унифицировали вызов:
+```python
+# Было (bot_server.py)
+base_prompt = get_system_prompt(user_name)  # БЕЗ action_context
+
+# Стало (как в userbot)
+system_prompt = get_system_prompt(user_name, action_context)  # С action_context
+```
+
+Убрано: stage_context, самодельный action_directive, дублирование "ОДИН вопрос".
+
+### 2. Ситуативный контекст (planner.py)
+
+Добавлен блок `situation` в action_context:
+```python
+context["situation"] = {
+    "client_mood": "positive/negative/neutral",
+    "dialog_stage": "early/middle/late",
+    "rapport_built": True/False,
+    "is_off_topic": True/False,
+    "is_frustrated": True/False,
+}
+
+context["optional_hints"] = [
+    "💡 Клиент в хорошем настроении — можешь пошутить",
+    "💡 Клиент напряжён — сначала прояви понимание",
+    ...
+]
+```
+
+### 3. Личность Софии (sofia_prompt.py)
+
+Добавлен раздел "ТВОЯ ЛИЧНОСТЬ":
+- Чувство юмора
+- Эмпатия
+- Гибкость
+- Теплота
+- Формула: [Эмоциональная реакция] + [Возврат к делу]
+
+### 4. Расширены паттерны Extractor (extractor.py)
+
+Для связанного извлечения goal + strategy:
+- "потом сдавать", "и сдавать", "чтобы сдавать", "хотим сдавать"
+- "сдавать туристам", "сдавать посуточно", "под сдачу"
+- "потом продать", "перепродать", "на рост цены"
+
+Правило: "стройку и потом сдавать" → strategy: "rental" (не growth!)
 
 ## 🔄 Текущее состояние
 
 ### ✅ Работает
 - Основной бот @humanAINeural_bot — active (running)
-- Userbot работает в интерактивном режиме
-- Финансовый калькулятор — корректно считает (проверено)
-- Триггер `finance_interest` — срабатывает
-- Расчёт показывается когда бюджет УЖЕ известен и клиент спрашивает про выгоду
-
-### ⚠️ ИЗВЕСТНАЯ ПРОБЛЕМА (требует решения)
-**Extractor не извлекает бюджет из комбинированных сообщений:**
-
-Пример:
-- Клиент: "15. какая примерно сейчас доходность?"
-- Ожидание: budget=15000000, finance_interest=True
-- Реальность: budget=None, finance_interest=True
-
-Extractor воспринимает "15." как начало предложения, а не как ответ на вопрос о бюджете.
-В результате бот переспрашивает бюджет вместо того, чтобы дать расчёт.
+- Userbot в интерактивном режиме
+- Две ветки квалификации (INVESTMENT/PERSONAL)
+- Два созвона + счётчик отказов
+- slot_attempts защита от повторов
+- Связанное извлечение goal + strategy
+- **NEW:** Ситуативный контекст для живости
+- **NEW:** Раздел "личность" в промпте
+- **NEW:** Унифицированный промпт bot ↔ userbot
 
 ### ❌ Не реализовано
-- Автоматический парсинг ставки ЦБ
-- Разные сценарии расчёта (строящееся vs готовое) — сейчас всегда строящееся
-- Полный расчёт после отказа от созвона (как "последний аргумент")
-
-## 🔜 Следующие шаги
-
-### Приоритет 1: Исправить Extractor
-- Добавить правило: извлекать факты ДАЖЕ из комбинированных сообщений с встречным вопросом
-- Или: сначала извлекать факты, потом определять answer_mode
-
-### Приоритет 2: Дотестировать финансовый модуль
-- Проверить все сценарии срабатывания
-- Убедиться что расчёт показывается в нужный момент
-
-### Приоритет 3: Daemon режим userbot + HTTP API
-- Автоматическая обработка лидов из CRM
+- Финансовый модуль (откачен в v2.0, требует аккуратной реинтеграции)
+- Daemon режим userbot + HTTP API
 
 ## 📁 Изменённые файлы (эта сессия)
 
 | Файл | Изменение |
 |------|-----------|
-| `finance_data.json` | ✨ СОЗДАН — данные для калькулятора |
-| `finance_calculator.py` | ✨ СОЗДАН — калькулятор + add_finance_context() |
-| `extractor.py` | Триггеры finance_interest, deposit_mention; уточнение wants_materials; правило "стройка = growth" |
-| `state_manager.py` | Поле finance_interested |
-| `bot_server.py` | Импорт калькулятора, формирование finance_context, переключение на ASK_BUDGET |
-| `sofia_userbot_pyrogram.py` | Импорт add_finance_context, переключение на ASK_BUDGET |
-| `sofia_prompt.py` | Раздел "ФИНАНСОВЫЙ МОДУЛЬ", вывод finance_context в action_block |
+| `bot_server.py` | Унификация get_system_prompt(user_name, action_context) |
+| `planner.py` | Добавлен situation + optional_hints |
+| `sofia_prompt.py` | Раздел "ТВОЯ ЛИЧНОСТЬ" + вывод situation/hints |
+| `extractor.py` | Расширены паттерны для strategy (rental/growth) |
 
 ## 🚀 Как запустить
 ```bash
@@ -82,20 +95,18 @@ cd /opt/sofia-gpt && ./venv/bin/python sofia_userbot_pyrogram.py
 # Команды: /start @username, /send @username Текст, /quit
 ```
 
-## 🧪 Как проверить финансовый модуль
-```bash
-# Тест калькулятора
-cd /opt/sofia-gpt && ./venv/bin/python -c "
-from finance_calculator import compare_investments, format_short_comparison
-result = compare_investments(amount=15_000_000, construction_years=2, total_years=5)
-print(format_short_comparison(result))
-"
+## 🧪 Как проверить живость
+
+Напиши боту:
+1. Позитивное: "Привет! Отличная погода 😊" — должна поддержать тон
+2. Off-topic: "А вы давно работаете?" — ответит и вернётся к делу
+3. Негативное: "Дорого у вас..." — проявит понимание
+
+## 📋 Архитектура (напоминание)
+```
+Telegram → Extractor (gpt-5.2) → State Manager → Planner (код) → RAG → Generator (gpt-5.2) → Telegram
 ```
 
-Ожидаемый вывод:
-```
-За 5 лет при вложении 15.0 млн ₽:
-- Недвижимость: ~35.9 млн ₽ (+139%)
-- Депозит: ~21.2 млн ₽ (+41%)
-- Разница: +14.7 млн ₽ в пользу недвижимости
-```
+- **Planner = КОД** — 100% предсказуемость, выбирает ЧТО делать
+- **Generator = LLM** — креативность, выбирает КАК сказать
+- **situation + hints** — контекст для Generator, чтобы адаптировать стиль

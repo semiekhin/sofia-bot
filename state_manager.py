@@ -49,7 +49,6 @@ class ClientState:
     current_question_type: Optional[str] = None   # 'price' | 'availability' | 'process'
     current_objection: Optional[str] = None       # 'expensive' | 'think' | 'busy'
     wants_materials: bool = False
-    finance_interested: bool = False  # Клиент интересовался доходностью/депозитом
     
     # Упоминания (не подтверждённые)
     mentioned_location: Optional[str] = None
