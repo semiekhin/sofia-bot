@@ -144,6 +144,9 @@ EXTRACTOR_SYSTEM_PROMPT = """
    ? "Какие цены в Крыму?" → question_type: "price", mentioned_location: "crimea"
    ? "Как оформляется ипотека?" → question_type: "process"
    ? "Под какой процент ипотека?" → question_type: "mortgage_rate"
+   ? "Какая доходность?" → question_type: "profitability"
+   ? "Выгоднее чем депозит?" → question_type: "profitability"
+   ? "Сколько можно заработать?" → question_type: "profitability"
 
 ВАЖНО: При answer_mode="counter_question" заполняй И answer_mode, И question_type.
 Это позволит боту ответить на вопрос и вернуться к слоту.
@@ -266,6 +269,8 @@ question_type (тип вопроса клиента):
 - "process" — спрашивает о процессе покупки
 - "mortgage_rate" — спрашивает о ставках ипотеки
 - "location_info" — спрашивает о локации
+- "profitability" — спрашивает о доходности, выгоде, сравнении с депозитом
+  Примеры: "какая доходность?", "выгоднее чем депозит?", "сколько можно заработать?", "какой процент годовых?"
 - null — не задаёт вопрос
 
 ВАЖНО: question_type заполняется ВМЕСТЕ с answer_mode="counter_question", если клиент задал встречный вопрос.
@@ -356,7 +361,7 @@ sentiment (настроение):
   "usage": "permanent" | "vacation" | "any" | null,
   "family": "текст описания семьи" | null,
   
-  "question_type": "price" | "availability" | "process" | "mortgage_rate" | "location_info" | null,
+  "question_type": "price" | "availability" | "process" | "mortgage_rate" | "location_info" | "profitability" | null,
   "objection": "expensive" | "think" | "busy" | "has_realtor" | "no_call" | null,
   "wants_materials": true | false,
   

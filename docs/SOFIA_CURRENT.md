@@ -1,89 +1,65 @@
 # Текущий статус Sofia-GPT
 
-📅 **Последняя сессия:** 20.01.2026, ~10:00 MSK
+📅 **Последняя сессия:** 20.01.2026, ~11:15 MSK
 🏷️ **Версия:** v2.1 — "Живая София"
 
 ## ✅ Что сделано в этой сессии
 
-### 1. Унификация промпта Generator (bot_server.py)
-
-**Проблема:** bot_server.py и userbot использовали разную логику формирования промпта. Sofia была "зажатой", userbot — живее.
-
-**Причина:** bot_server не передавал `action_context` в `get_system_prompt()`, добавлял свой урезанный формат.
-
-**Решение:** Унифицировали вызов:
-```python
-# Было (bot_server.py)
-base_prompt = get_system_prompt(user_name)  # БЕЗ action_context
-
-# Стало (как в userbot)
-system_prompt = get_system_prompt(user_name, action_context)  # С action_context
-```
-
-Убрано: stage_context, самодельный action_directive, дублирование "ОДИН вопрос".
+### 1. Унификация промпта Generator
+- bot_server.py теперь вызывает `get_system_prompt(user_name, action_context)` как userbot
+- Убраны дублирования (stage_context, самодельный action_directive)
+- Результат: ответы Софии стали живее
 
 ### 2. Ситуативный контекст (planner.py)
-
-Добавлен блок `situation` в action_context:
-```python
-context["situation"] = {
-    "client_mood": "positive/negative/neutral",
-    "dialog_stage": "early/middle/late",
-    "rapport_built": True/False,
-    "is_off_topic": True/False,
-    "is_frustrated": True/False,
-}
-
-context["optional_hints"] = [
-    "💡 Клиент в хорошем настроении — можешь пошутить",
-    "💡 Клиент напряжён — сначала прояви понимание",
-    ...
-]
-```
+- Добавлен `situation` (client_mood, dialog_stage, rapport_built)
+- Добавлен `optional_hints` — подсказки для Generator по ситуации
 
 ### 3. Личность Софии (sofia_prompt.py)
-
-Добавлен раздел "ТВОЯ ЛИЧНОСТЬ":
-- Чувство юмора
-- Эмпатия
-- Гибкость
-- Теплота
+- Раздел "ТВОЯ ЛИЧНОСТЬ" — юмор, эмпатия, гибкость, теплота
 - Формула: [Эмоциональная реакция] + [Возврат к делу]
 
-### 4. Расширены паттерны Extractor (extractor.py)
+### 4. Расширены паттерны Extractor
+- "потом сдавать", "хотим сдавать" → strategy: rental
+- Правило: "стройка + сдавать" = rental (не growth)
 
-Для связанного извлечения goal + strategy:
-- "потом сдавать", "и сдавать", "чтобы сдавать", "хотим сдавать"
-- "сдавать туристам", "сдавать посуточно", "под сдачу"
-- "потом продать", "перепродать", "на рост цены"
+### 5. Финансовый модуль v1.1 (минимальная интеграция)
+- Добавлен question_type "profitability" в extractor.py
+- bot_server.py обогащает контекст расчётом если бюджет известен
+- Planner НЕ изменён — логика безопасна
 
-Правило: "стройку и потом сдавать" → strategy: "rental" (не growth!)
+### 6. Трансляция диалогов userbot
+- Добавлена функция broadcast_to_observers()
+- ID группы: -5206139579 ("Диалоги Софья")
+- Daemon режим — TODO
 
 ## 🔄 Текущее состояние
 
 ### ✅ Работает
-- Основной бот @humanAINeural_bot — active (running)
+- Основной бот @humanAINeural_bot — active (systemd)
 - Userbot в интерактивном режиме
 - Две ветки квалификации (INVESTMENT/PERSONAL)
-- Два созвона + счётчик отказов
-- slot_attempts защита от повторов
-- Связанное извлечение goal + strategy
-- **NEW:** Ситуативный контекст для живости
-- **NEW:** Раздел "личность" в промпте
-- **NEW:** Унифицированный промпт bot ↔ userbot
+- Ситуативный контекст + hints
+- Финансовый расчёт при вопросе о доходности
+- Трансляция в группу наблюдателей
 
 ### ❌ Не реализовано
-- Финансовый модуль (откачен в v2.0, требует аккуратной реинтеграции)
-- Daemon режим userbot + HTTP API
+- Daemon режим userbot (systemd)
+- HTTP API для автоматических лидов
+
+## 🔜 Следующие шаги
+1. Daemon режим userbot + systemd
+2. Тестирование финансового модуля на реальных диалогах
+3. HTTP API для лидов из CRM
 
 ## 📁 Изменённые файлы (эта сессия)
 
 | Файл | Изменение |
 |------|-----------|
-| `bot_server.py` | Унификация get_system_prompt(user_name, action_context) |
-| `planner.py` | Добавлен situation + optional_hints |
-| `sofia_prompt.py` | Раздел "ТВОЯ ЛИЧНОСТЬ" + вывод situation/hints |
-| `extractor.py` | Расширены паттерны для strategy (rental/growth) |
+| `bot_server.py` | Унификация промпта + обогащение finance_calculation |
+| `planner.py` | situation + optional_hints |
+| `sofia_prompt.py` | "ТВОЯ ЛИЧНОСТЬ" + finance_text |
+| `extractor.py` | question_type "profitability" + паттерны "сдавать" |
+| `sofia_userbot_pyrogram.py` | broadcast_to_observers() + OBSERVER_CHAT_ID |
 
 ## 🚀 Как запустить
 ```bash
@@ -92,21 +68,4 @@ systemctl status sofia-gpt
 
 # Userbot (интерактивный режим)
 cd /opt/sofia-gpt && ./venv/bin/python sofia_userbot_pyrogram.py
-# Команды: /start @username, /send @username Текст, /quit
 ```
-
-## 🧪 Как проверить живость
-
-Напиши боту:
-1. Позитивное: "Привет! Отличная погода 😊" — должна поддержать тон
-2. Off-topic: "А вы давно работаете?" — ответит и вернётся к делу
-3. Негативное: "Дорого у вас..." — проявит понимание
-
-## 📋 Архитектура (напоминание)
-```
-Telegram → Extractor (gpt-5.2) → State Manager → Planner (код) → RAG → Generator (gpt-5.2) → Telegram
-```
-
-- **Planner = КОД** — 100% предсказуемость, выбирает ЧТО делать
-- **Generator = LLM** — креативность, выбирает КАК сказать
-- **situation + hints** — контекст для Generator, чтобы адаптировать стиль

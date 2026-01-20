@@ -19,6 +19,9 @@ SESSION_NAME = "sofia_pyrogram"
 
 # Путь к основной логике Sofia
 SOFIA_PATH = "/opt/sofia-gpt"
+
+# Группа для трансляции диалогов (наблюдатели)
+OBSERVER_CHAT_ID = -5206139579
 sys.path.insert(0, SOFIA_PATH)
 
 # ============================================
@@ -71,6 +74,29 @@ def log(message: str):
             f.write(log_line + "\n")
     except:
         pass
+
+
+async def broadcast_to_observers(app, user_name: str, user_id: int, user_msg: str, sofia_msg: str):
+    """Транслирует диалог в группу наблюдателей"""
+    if not OBSERVER_CHAT_ID:
+        return
+    
+    try:
+        text = f"""💬 <b>Диалог с {user_name}</b> (ID: {user_id})
+
+👤 <b>Клиент:</b>
+{user_msg}
+
+🤖 <b>София:</b>
+{sofia_msg}"""
+        
+        await app.send_message(
+            OBSERVER_CHAT_ID, 
+            text,
+            parse_mode=enums.ParseMode.HTML
+        )
+    except Exception as e:
+        log(f"⚠️ Ошибка трансляции: {e}")
 
 # ============================================
 # НАСТРОЙКИ v2.0 (синхронизированы с bot_server.py)
@@ -278,6 +304,9 @@ async def handle_message(client, message):
     # Отправляем
     await message.reply(response)
     log(f"📤 София: {response}")
+    
+    # Транслируем в группу наблюдателей
+    await broadcast_to_observers(app, user_name, user_id, text, response)
 
 
 # ============================================

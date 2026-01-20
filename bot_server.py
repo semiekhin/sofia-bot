@@ -568,6 +568,20 @@ async def delayed_response(chat_id, user_id, user_name, context):
     action_context = get_action_context(action, client_state, extraction)
     log(f"🎯 Planner: {action.value} → {action_context.get('action_description', '')[:50]}...")
     
+    # 5.0.1 Обогащение финансовым расчётом (если спрашивают про доходность)
+    if action == Action.ANSWER_QUESTION and extraction.get("question_type") == "profitability":
+        if client_state.budget and client_state.budget > 0:
+            try:
+                from finance_calculator import compare_investments, format_short_comparison
+                fin_result = compare_investments(amount=client_state.budget, construction_years=2, total_years=5)
+                action_context["finance_calculation"] = format_short_comparison(fin_result)
+                log(f"💰 Finance: расчёт для {client_state.budget/1_000_000:.1f} млн")
+            except Exception as e:
+                log(f"⚠️ Finance error: {e}")
+        else:
+            # Бюджет неизвестен — дадим общую информацию
+            action_context["finance_calculation"] = "Бюджет пока не известен — дай общие цифры (8-12% аренда, 20-30% рост на стройке)"
+    
     # 5.1 Увеличиваем счётчик попыток для слота
     # Маппинг: action name → slot name (для несовпадающих имён)
     ACTION_TO_SLOT = {"payment": "payment_type"}

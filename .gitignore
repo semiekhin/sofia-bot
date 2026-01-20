@@ -9,3 +9,4 @@ chroma_db/
 *.backup
 *.log
 .DS_Store
+*.backup_*
