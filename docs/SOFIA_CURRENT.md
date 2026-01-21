@@ -1,44 +1,47 @@
 # Текущий статус Sofia-GPT
 
-📅 **Последняя сессия:** 21.01.2026 (вечер)
+📅 **Последняя сессия:** 22.01.2026 (ночь)
 🏷️ **Версия:** v2.2 — "Умная София" (Латентные метрики)
 
-## ✅ Что сделано (21.01.2026 — Фаза 1)
+## ✅ Что сделано (22.01.2026)
 
-### Латентные метрики (signals)
-- [x] Extractor: секция ЭМОЦИОНАЛЬНЫЕ СИГНАЛЫ в промпте
-- [x] Extractor: парсинг signals (friction, call_readiness, engagement, urgency)
-- [x] State Manager: 4 новых поля в ClientState и БД
-- [x] Planner: Action.EASE_PRESSURE (при friction > 0.7)
-- [x] Planner: проверка signals перед PROPOSE_MEETING_1
-- [x] Generator: отображение signals и tone_hints в СИТУАЦИЯ
-- [x] Bot Server: сохранение signals в state
+### Синхронизация userbot с v2.2
+- [x] Добавлен ease_pressure в ACTION_TO_RAG_STAGE
+- [x] Добавлено сохранение signals (friction, call_readiness, engagement, urgency)
+- [x] Добавлена обработка WAIT (return None + проверка в handle_message)
+- [x] Добавлен finance_calculator (расчёт доходности при вопросе о прибыльности)
+- [x] Daemon перезапущен с новыми изменениями
 
-### Результаты тестирования
-- friction 0.6, call_readiness 0.2 → НЕ предлагает MEETING_1 ✅
-- friction 0.9 → EASE_PRESSURE активируется ✅
-- call_readiness 0.9 → правильно распознаёт готовность ✅
+### Обсуждение архитектуры v3.0
+- [x] Проверен доступ к моделям (gpt-5.2, gpt-5.2-pro доступны)
+- [x] Спроектирована архитектура LLM-Planner + Critic
+- [x] Рассчитана стоимость (~$0.50-0.80 за диалог)
+- [x] Решено делать безопасно — обёртка вокруг существующего Planner с fallback
 
 ## 🔄 Текущее состояние
 
 ### ✅ Работает
 - Основной бот @humanAINeural_bot — active (systemd)
+- Userbot sofia-userbot — active (systemd), синхронизирован с v2.2
 - Латентные метрики (friction, call_readiness, engagement, urgency)
 - EASE_PRESSURE при высоком сопротивлении
-- Умная проверка перед предложением созвона
+- Finance calculator — расчёт доходности
 
 ### ❌ Не реализовано
-- Фаза 2: Rolling Summary + Event Log
-- Фаза 3: RAG по ситуации + LLM-планер
+- Фаза 3: LLM-Planner (обёртка вокруг детерминированного Planner)
+- Critic (проверка ответа перед отправкой)
 
-## 🔜 Следующие шаги (Фаза 2 — v2.3)
-1. Rolling Summary — generate_summary() каждые 5-6 сообщений
-2. Event Log — таблица событий (call_refused, question_asked, mood_change)
-3. Planner использует event history
+## 🔜 Следующие шаги (Фаза 3 — v3.0)
+1. Рефакторинг planner.py → `get_allowed_actions()`
+2. Создание `llm_planner.py` — LLM выбирает лучший action из allowed
+3. Интеграция с флагом `USE_LLM_PLANNER` (безопасный rollout)
+4. Тестирование на реальных диалогах
+5. (Опционально) Добавление Critic
 
 ## 📁 Последние изменения
-- extractor.py — секция signals в промпте, парсинг
-- state_manager.py — поля friction, call_readiness, engagement, urgency
-- planner.py — Action.EASE_PRESSURE, проверки signals
-- sofia_prompt.py — отображение signals и tone_hints
-- bot_server.py — сохранение signals, маппинг EASE_PRESSURE
+- `sofia_userbot_pyrogram.py` — синхронизация с v2.2 (signals, WAIT, finance)
+
+## 🔧 Доступные модели OpenAI
+- gpt-5.2 — основная модель
+- gpt-5.2-pro — для сложных случаев (дорогая: $21/$168 за 1M токенов)
+- Параметр reasoning.effort: none/low/medium/high/xhigh
