@@ -611,6 +611,237 @@ def increment_slot_attempt(state, slot: str, attempt_type: str = "ask"):
 # === ТЕСТЫ ===
 
 
+# ═══════════════════════════════════════════════════════════════════════════════
+# v3.0: LLM-Planner support
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def get_allowed_actions(state: ClientState, message: str, extraction: dict = None) -> list:
+    """
+    Возвращает список допустимых действий для LLM-Planner.
+    
+    Жёсткие случаи: возвращает [один action] — выбор однозначен.
+    Гибкие случаи: возвращает [несколько actions] — LLM выбирает лучший.
+    
+    Returns:
+        List[Action]: список допустимых действий (первый = default для fallback)
+    """
+    extraction = extraction or {}
+    allowed = []
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # ЖЁСТКИЕ СЛУЧАИ — однозначный выбор
+    # ═══════════════════════════════════════════════════════════════════════
+    
+    # Диалог завершён — молчим
+    if getattr(state, 'dialog_finished', False):
+        return [Action.WAIT]
+    
+    # Клиент согласился на созвон — подтверждаем
+    if extraction.get("meeting_agreed") and extraction.get("meeting_datetime"):
+        return [Action.CONFIRM_MEETING]
+    
+    # Высокий friction — снижаем давление
+    signals = extraction.get("signals", {})
+    friction = signals.get("friction", 0.3)
+    if friction > 0.7:
+        return [Action.EASE_PRESSURE]
+    
+    # Два отказа — завершаем
+    materials_count = getattr(state, 'materials_request_count', 0)
+    if extraction.get("wants_materials") or extraction.get("objection") == "no_call":
+        materials_count += 1
+    if materials_count >= 2:
+        return [Action.FINISH_WITH_MATERIALS]
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # ГИБКИЕ СЛУЧАИ — LLM выбирает из списка
+    # ═══════════════════════════════════════════════════════════════════════
+    
+    has_objection = extraction.get("objection") and extraction.get("objection") != "no_call"
+    has_question = extraction.get("question_type")
+    is_off_topic = extraction.get("answer_mode") == "off_topic"
+    
+    # Возражение и/или вопрос — реактивные действия
+    if has_objection:
+        allowed.append(Action.HANDLE_OBJECTION)
+    if has_question or is_off_topic:
+        allowed.append(Action.ANSWER_QUESTION)
+    
+    # Уточнение упоминаний
+    if extraction.get("mentioned_location") and not state.location:
+        allowed.append(Action.CLARIFY_MENTIONED)
+    if extraction.get("mentioned_price") and not state.budget:
+        allowed.append(Action.CLARIFY_MENTIONED)
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # КВАЛИФИКАЦИЯ — добавляем следующий слот
+    # ═══════════════════════════════════════════════════════════════════════
+    
+    # Определяем ветку
+    branch = getattr(state, 'branch', None)
+    if not branch:
+        if state.goal == "investment":
+            branch = "investment"
+        elif state.goal == "personal":
+            branch = "personal"
+    
+    # Получаем следующий шаг квалификации
+    next_qualification = _get_next_qualification_action(state, branch)
+    
+    if next_qualification:
+        # Если это PROPOSE_MEETING — проверяем готовность
+        if next_qualification in [Action.PROPOSE_MEETING_1, Action.PROPOSE_MEETING_2]:
+            call_readiness = signals.get("call_readiness", 0.5)
+            engagement = signals.get("engagement", "medium")
+            
+            # Клиент не готов — даём выбор: предложить созвон ИЛИ продолжить квалификацию
+            if friction >= 0.5 or call_readiness < 0.4 or engagement == "low":
+                allowed.append(next_qualification)  # LLM может выбрать созвон
+                # Добавляем альтернативу — следующий слот после meeting
+                alt_action = _get_qualification_after_meeting(state, branch)
+                if alt_action and alt_action not in allowed:
+                    allowed.append(alt_action)
+            else:
+                # Клиент готов — созвон в приоритете
+                allowed.insert(0, next_qualification)
+        else:
+            allowed.append(next_qualification)
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # FALLBACK
+    # ═══════════════════════════════════════════════════════════════════════
+    
+    if not allowed:
+        # Нет цели — спрашиваем
+        if not state.goal:
+            return [Action.ASK_GOAL]
+        # Всё заполнено — завершаем
+        return [Action.FINISH_WITH_MATERIALS]
+    
+    # Убираем дубликаты, сохраняя порядок
+    seen = set()
+    result = []
+    for a in allowed:
+        if a not in seen:
+            seen.add(a)
+            result.append(a)
+    
+    return result
+
+
+def _get_next_qualification_action(state: ClientState, branch: str) -> Action:
+    """
+    Возвращает следующее действие квалификации по ветке.
+    Копия логики из _qualify_investment/_qualify_personal, но возвращает только action.
+    """
+    if not branch:
+        if not state.goal:
+            return _ask_slot_with_limit(state, "goal")
+        return None
+    
+    if branch == "investment":
+        # strategy → budget → MEETING_1 → payment → location → lpr → MEETING_2
+        if not getattr(state, 'strategy', None):
+            action = _ask_slot_with_limit(state, "strategy")
+            if action:
+                return action
+        
+        if not state.budget or state.budget_confidence != "confirmed":
+            action = _ask_slot_with_limit(state, "budget")
+            if action:
+                return action
+        
+        if getattr(state, 'call_proposal_count', 0) == 0:
+            return Action.PROPOSE_MEETING_1
+        
+        if not state.payment_type:
+            action = _ask_slot_with_limit(state, "payment_type")
+            if action:
+                return action
+        
+        if not state.location or state.location_confidence != "confirmed":
+            action = _ask_slot_with_limit(state, "location")
+            if action:
+                return action
+        
+        if not state.lpr:
+            action = _ask_slot_with_limit(state, "lpr")
+            if action:
+                return action
+        
+        if getattr(state, 'call_proposal_count', 0) == 1:
+            return Action.PROPOSE_MEETING_2
+        
+        return None
+    
+    else:  # personal
+        # usage → location → budget → MEETING_1 → family → payment → lpr → MEETING_2
+        if not getattr(state, 'usage', None):
+            action = _ask_slot_with_limit(state, "usage")
+            if action:
+                return action
+        
+        if not state.location or state.location_confidence != "confirmed":
+            action = _ask_slot_with_limit(state, "location")
+            if action:
+                return action
+        
+        if not state.budget or state.budget_confidence != "confirmed":
+            action = _ask_slot_with_limit(state, "budget")
+            if action:
+                return action
+        
+        if getattr(state, 'call_proposal_count', 0) == 0:
+            return Action.PROPOSE_MEETING_1
+        
+        if not getattr(state, 'family', None):
+            action = _ask_slot_with_limit(state, "family")
+            if action:
+                return action
+        
+        if not state.payment_type:
+            action = _ask_slot_with_limit(state, "payment_type")
+            if action:
+                return action
+        
+        if not state.lpr:
+            action = _ask_slot_with_limit(state, "lpr")
+            if action:
+                return action
+        
+        if getattr(state, 'call_proposal_count', 0) == 1:
+            return Action.PROPOSE_MEETING_2
+        
+        return None
+
+
+def _get_qualification_after_meeting(state: ClientState, branch: str) -> Action:
+    """
+    Возвращает следующий слот ПОСЛЕ точки созвона.
+    Используется когда LLM может выбрать: предложить созвон ИЛИ продолжить квалификацию.
+    """
+    if branch == "investment":
+        # После MEETING_1: payment → location → lpr
+        if not state.payment_type:
+            return _ask_slot_with_limit(state, "payment_type")
+        if not state.location or state.location_confidence != "confirmed":
+            return _ask_slot_with_limit(state, "location")
+        if not state.lpr:
+            return _ask_slot_with_limit(state, "lpr")
+    else:  # personal
+        # После MEETING_1: family → payment → lpr
+        if not getattr(state, 'family', None):
+            return _ask_slot_with_limit(state, "family")
+        if not state.payment_type:
+            return _ask_slot_with_limit(state, "payment_type")
+        if not state.lpr:
+            return _ask_slot_with_limit(state, "lpr")
+    
+    return None
+
+
+
+
 def test_planner():
     """Тест Planner v2.0"""
     from state_manager import ClientState

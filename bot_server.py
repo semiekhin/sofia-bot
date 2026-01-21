@@ -26,7 +26,7 @@ from rag_module import search_examples, format_examples_for_prompt, init_vector_
 # NEW: Agent Architecture
 from state_manager import StateManager, ClientState
 from extractor import extract_sync, merge_extraction_to_state
-from planner import get_next_action, get_action_context, format_action_for_prompt, Action, increment_slot_attempt
+from planner import get_next_action, get_allowed_actions, get_action_context, format_action_for_prompt, Action, increment_slot_attempt
 
 # Детекторы отключены — управление через промпт + RAG
 # from detectors import ...
@@ -43,6 +43,8 @@ ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "512319063"))
 
 # Модель OpenAI
 MODEL_MODE = os.getenv("MODEL_MODE", "gpt-5.2")
+# v3.0: LLM-Planner
+USE_LLM_PLANNER = os.getenv("USE_LLM_PLANNER", "false").lower() == "true"
 
 MODEL_CONFIGS = {
     "gpt-4o": {"model": "gpt-4o", "use_responses_api": False, "temperature": 0.4, "max_tokens": 200},
@@ -565,8 +567,38 @@ async def delayed_response(chat_id, user_id, user_name, context):
     log(f"📊 State: {client_state.summary()}")
     
     # 5. Определяем следующее действие (Planner)
-    action = get_next_action(client_state, combined_message, extraction)
+    micro_goal = None
+    tone = "warm"
+    
+    if USE_LLM_PLANNER:
+        try:
+            from llm_planner import llm_select_action
+            allowed_actions = get_allowed_actions(client_state, combined_message, extraction)
+            log(f"🔀 Allowed actions: {[a.value for a in allowed_actions]}")
+            
+            if len(allowed_actions) > 1:
+                # Несколько вариантов — спрашиваем LLM
+                history = state_manager.get_messages(user_id, limit=8)
+                llm_result = llm_select_action(allowed_actions, client_state, combined_message, history, extraction)
+                action = llm_result["action"]
+                micro_goal = llm_result.get("micro_goal")
+                tone = llm_result.get("tone", "warm")
+                log(f"🤖 LLM Planner: {action.value} | micro_goal: {micro_goal} | tone: {tone}")
+            else:
+                # Один вариант — не тратим токены
+                action = allowed_actions[0]
+                log(f"🎯 Single action: {action.value}")
+        except Exception as e:
+            log(f"⚠️ LLM Planner error: {e}, fallback to deterministic")
+            action = get_next_action(client_state, combined_message, extraction)
+    else:
+        action = get_next_action(client_state, combined_message, extraction)
+    
     action_context = get_action_context(action, client_state, extraction)
+    # v3.0: Добавляем micro_goal и tone в контекст для Generator
+    if micro_goal:
+        action_context["micro_goal"] = micro_goal
+    action_context["tone"] = tone
     log(f"🎯 Planner: {action.value} → {action_context.get('action_description', '')[:50]}...")
     
     # 5.0.1 Обогащение финансовым расчётом (если спрашивают про доходность)

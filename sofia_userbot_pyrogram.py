@@ -36,7 +36,7 @@ SOFIA_AVAILABLE = False
 try:
     from extractor import extract_sync, merge_extraction_to_state
     from state_manager import StateManager
-    from planner import get_next_action, get_action_context, Action, increment_slot_attempt
+    from planner import get_next_action, get_allowed_actions, get_action_context, Action, increment_slot_attempt
     from sofia_prompt import get_system_prompt, BOT_NAME, PRICE_CATALOG
     from rag_module import search_examples, format_examples_for_prompt, init_vector_store
     import openai
@@ -106,6 +106,7 @@ RAG_EXAMPLES_COUNT = 10
 
 # Модель OpenAI (из .env, как в bot_server.py)
 MODEL_MODE = os.getenv("MODEL_MODE", "gpt-5.2")
+USE_LLM_PLANNER = os.getenv("USE_LLM_PLANNER", "false").lower() == "true"
 
 # Маппинг action name → slot name (для несовпадающих имён)
 ACTION_TO_SLOT = {"payment": "payment_type"}
@@ -164,8 +165,35 @@ async def process_with_sofia(user_id: int, user_name: str, message: str) -> str:
             log(f"📊 State updated: {client_state.summary()}")
         
         # 3. Planner
-        action = get_next_action(client_state, message, extraction or {})
+        micro_goal = None
+        tone = "warm"
+        
+        if USE_LLM_PLANNER:
+            try:
+                from llm_planner import llm_select_action
+                allowed_actions = get_allowed_actions(client_state, message, extraction or {})
+                log(f"🔀 Allowed actions: {[a.value for a in allowed_actions]}")
+                
+                if len(allowed_actions) > 1:
+                    history = state_manager.get_messages(user_id, limit=8)
+                    llm_result = llm_select_action(allowed_actions, client_state, message, history, extraction or {})
+                    action = llm_result["action"]
+                    micro_goal = llm_result.get("micro_goal")
+                    tone = llm_result.get("tone", "warm")
+                    log(f"🤖 LLM Planner: {action.value} | micro_goal: {micro_goal} | tone: {tone}")
+                else:
+                    action = allowed_actions[0]
+                    log(f"🎯 Single action: {action.value}")
+            except Exception as e:
+                log(f"⚠️ LLM Planner error: {e}, fallback to deterministic")
+                action = get_next_action(client_state, message, extraction or {})
+        else:
+            action = get_next_action(client_state, message, extraction or {})
+        
         action_context = get_action_context(action, client_state, extraction or {})
+        if micro_goal:
+            action_context["micro_goal"] = micro_goal
+        action_context["tone"] = tone
         
         # 3.0.1 Обогащение финансовым расчётом (если спрашивают про доходность)
         if action == Action.ANSWER_QUESTION and extraction.get("question_type") == "profitability":

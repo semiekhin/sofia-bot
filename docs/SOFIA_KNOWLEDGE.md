@@ -403,3 +403,48 @@ ACTION_TO_RAG_STAGE = {
 5. RAG по финансовым диалогам
 
 **Срок:** 1-2 недели после стабилизации текущей версии
+
+---
+
+### 22.01.2026 (ночь): LLM-Planner v3.0
+
+**Задача:** Сделать Sofia умнее в выборе действий — не жёстко по правилам, а с учётом контекста.
+
+**Решение:** Архитектура "allowed_actions + LLM выбор":
+1. Детерминированный Planner формирует список допустимых действий (1-5 штук)
+2. Если вариантов > 1 → LLM (gpt-5.2, reasoning:high) выбирает лучший
+3. LLM возвращает: action + micro_goal + tone
+4. micro_goal передаётся Generator для "комбо-ответов"
+
+**Ключевые файлы:**
+- `planner.py` — добавлен `get_allowed_actions()`, `_get_next_qualification_action()`, `_get_qualification_after_meeting()`
+- `llm_planner.py` — новый модуль, `llm_select_action()`
+- `bot_server.py` — интеграция с флагом `USE_LLM_PLANNER`
+- `sofia_userbot_pyrogram.py` — синхронизация
+
+**Примеры работы:**
+```
+Клиент: "Дорого. А рассрочка есть?"
+allowed: [handle_objection, answer_question, ask_payment]
+LLM выбирает: answer_question + micro_goal: "уточнить параметры рассрочки"
+→ Sofia отвечает на вопрос, не "отрабатывает возражение"
+```
+```
+Клиент: "ну ок" (холодный)
+allowed: [propose_meeting_1, ask_payment]
+signals: engagement=low, call_readiness=0.3
+LLM выбирает: ask_payment
+→ Sofia не давит созвоном, продолжает квалификацию
+```
+
+**Почему это лучше:**
+- Детерминированный Planner гарантирует что действие допустимо
+- LLM добавляет "человечность" — выбирает что уместнее в контексте
+- Fallback на детерминированный Planner при ошибке LLM
+- micro_goal позволяет делать "комбо" (ответить + спросить)
+
+**Стоимость:** ~$0.01-0.03 за вызов LLM-Planner (только когда >1 варианта)
+
+**Конфигурация:**
+- `USE_LLM_PLANNER=true` в .env
+- Модель: gpt-5.2, reasoning.effort: high
