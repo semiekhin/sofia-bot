@@ -35,20 +35,29 @@
 - [ ] Создать /etc/systemd/system/sofia-userbot.service
 - [ ] Автозапуск при перезагрузке
 
-## 🔵 Запланировано
+## 🔵 Запланировано: Умная София v3.0
 
-### HTTP API для лидов
-- [ ] POST /api/new-lead
-- [ ] Интеграция с n8n
-- [ ] Webhook для CRM
+### ФАЗА 1: Латентные метрики (v2.2) — 2-3 дня
+- [ ] Extractor: секция ЭМОЦИОНАЛЬНЫЕ СИГНАЛЫ + калибровка
+- [ ] Extractor: парсинг signals (friction, call_readiness, engagement, urgency)
+- [ ] State Manager: новые поля в БД
+- [ ] Planner: условия по метрикам
+- [ ] Generator: блок СИТУАЦИЯ в промпте
+- [ ] Тестирование на реальных диалогах
 
-### Улучшения RAG
-- [ ] Больше примеров для возражений
-- [ ] Примеры разных стилей
+### ФАЗА 2: Rolling Summary + Event Log (v2.3) — 3-5 дней
+- [ ] generate_summary() каждые 5-6 сообщений
+- [ ] Event Log: call_refused, question_asked, mood_change
+- [ ] Planner использует event history
 
-### Аналитика
-- [ ] Дашборд конверсии
-- [ ] A/B тестирование формулировок
+### ФАЗА 3: RAG по ситуации + LLM-планер (v3.0) — 5-7 дней
+- [ ] RAG: метаданные (objection_type, friction_level, outcome)
+- [ ] RAG: поиск успешных траекторий
+- [ ] LLM-планер: allowed_actions -> LLM выбирает лучшее
+
+### Инфраструктура
+- [ ] systemd сервис для userbot daemon
+- [ ] HTTP API для лидов
 
 ## 🔴 Известные проблемы
 
