@@ -581,7 +581,20 @@ async def main_daemon():
     """Daemon режим — только слушает входящие, без интерактивных команд"""
     print("🚀 Запуск Sofia Userbot (daemon)...")
     
-    await app.start()
+    try:
+        await app.start()
+    except Exception as e:
+        error_msg = str(e)
+        if "AUTH_KEY_UNREGISTERED" in error_msg or "401" in error_msg:
+            log("❌ СЕССИЯ ИСТЕКЛА! Требуется ручная авторизация:")
+            log("   1. systemctl stop sofia-userbot")
+            log("   2. rm /opt/sofia-gpt/sofia_pyrogram.session")
+            log("   3. python /opt/sofia-gpt/sofia_userbot_pyrogram.py")
+            log("   4. systemctl start sofia-userbot")
+            sys.exit(0)  # Выход без ошибки — не рестартовать
+        else:
+            log(f"❌ Ошибка запуска: {e}")
+            raise
     
     me = await app.get_me()
     print(f"✅ Авторизован как: {me.first_name} (@{me.username or 'нет'})")

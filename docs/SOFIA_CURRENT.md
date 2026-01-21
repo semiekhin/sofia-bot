@@ -1,68 +1,66 @@
 # Текущий статус Sofia-GPT
 
-📅 **Последняя сессия:** 22.01.2026 (ночь, ~01:40)
-🏷️ **Версия:** v3.0 — "LLM-Planner"
+📅 **Последняя сессия:** 22.01.2026 (ночь, ~02:45)
+🏷️ **Версия:** v3.1 — "LLM-Planner + RAG"
 
 ## ✅ Что сделано (22.01.2026 ночь)
 
-### LLM-Planner v3.0
-- [x] `get_allowed_actions()` в planner.py — возвращает список допустимых actions
-- [x] Новый модуль `llm_planner.py` — LLM выбирает лучший action + micro_goal + tone
-- [x] Интеграция в bot_server.py с флагом `USE_LLM_PLANNER`
-- [x] Синхронизация userbot с v3.0
-- [x] Включен на проде: `USE_LLM_PLANNER=true`
+### RAG → LLM-Planner
+- [x] Добавлен импорт `search_examples` в llm_planner.py
+- [x] Маппинг `ACTION_TO_RAG_STAGE` для поиска примеров
+- [x] Функция `_get_rag_examples()` — триггеры:
+  - `objection: "no_call"` — отказ от созвона
+  - `wants_materials: true` — просит подборку
+  - `HANDLE_OBJECTION`, `PROPOSE_MEETING_*` в allowed_actions
+- [x] RAG примеры добавляются в промпт LLM-Planner
 
-### Исправление wants_materials
-- [x] Проблема: "давай варианты и там и там" после "море или горы?" считалось отказом
-- [x] Решение: wants_materials=true только при явной просьбе КАК АЛЬТЕРНАТИВА созвону
-- [x] Обновлён промпт Extractor с примерами контекста
+### Баг call_proposal_count
+- [x] Проблема: после первого отказа бот снова предлагал созвон
+- [x] Причина: `call_proposal_count` не инкрементировался в bot_server.py
+- [x] Решение: добавлен инкремент после PROPOSE_MEETING_1/2
 
-### Исследование RAG для LLM-Planner
-- [x] Протестирован RAG — находит релевантные примеры (similarity 0.6-0.7)
-- [x] Особенно хорош для: отказ от созвона, возражения, просьба материалов
-- [ ] Интеграция RAG в LLM-Planner — следующая задача
+### Защита userbot от рестартов
+- [x] systemd: лимит 5 рестартов за 10 минут (было: бесконечно)
+- [x] Код: обработка AUTH_KEY_UNREGISTERED → выход без рестарта
+- [ ] Авторизация: ждём разблокировки Telegram (лимит попыток)
 
 ## 🔄 Текущее состояние
 
 ### ✅ Работает
-- Основной бот @humanAINeural_bot — active + LLM-Planner
-- Userbot sofia-userbot — active + LLM-Planner
-- Латентные метрики (friction, call_readiness, engagement, urgency)
-- Finance calculator — расчёт доходности
-- Комбо-ответы через micro_goal
+- Основной бот @humanAINeural_bot — active + LLM-Planner + RAG
+- RAG примеры подтягиваются для сложных кейсов
+- Счётчик call_proposal_count корректно работает
 
-### 📊 Как работает LLM-Planner
-1. Детерминированный Planner → `allowed_actions[]` (1-5 вариантов)
-2. Если вариантов > 1 → LLM (gpt-5.2, reasoning:high) выбирает лучший
-3. LLM возвращает: action + micro_goal + tone
-4. micro_goal передаётся Generator для "комбо-ответов"
-5. Fallback на детерминированный Planner при ошибке
+### ⏳ Ожидает
+- Userbot sofia-userbot — ОСТАНОВЛЕН (сессия истекла, лимит Telegram)
+- Когда разблокируют (1-24ч):
+  1. `rm -f /opt/sofia-gpt/sofia_pyrogram.session`
+  2. `python /opt/sofia-gpt/sofia_userbot_pyrogram.py` (авторизация)
+  3. `systemctl enable sofia-userbot && systemctl start sofia-userbot`
 
 ## 🔜 Следующие шаги
-1. **RAG для LLM-Planner** — показывать успешные примеры при выборе action
-2. Мониторинг на реальных диалогах
-3. (Опционально) Critic — проверка ответа перед отправкой
+1. Восстановить userbot после разблокировки Telegram
+2. Протестировать сценарий "отказ от созвона → продолжение квалификации"
+3. Мониторинг RAG примеров в реальных диалогах
 
 ## 📁 Последние изменения
-- `planner.py` — добавлен `get_allowed_actions()` (~200 строк)
-- `llm_planner.py` — новый модуль (~250 строк)
-- `bot_server.py` — интеграция LLM-Planner
-- `sofia_userbot_pyrogram.py` — синхронизация с v3.0
-- `extractor.py` — исправлено правило wants_materials
-- `.env` — добавлен `USE_LLM_PLANNER=true`
+- `llm_planner.py` — интеграция RAG (import, маппинг, _get_rag_examples)
+- `bot_server.py` — инкремент call_proposal_count после PROPOSE_MEETING
+- `sofia_userbot_pyrogram.py` — обработка AUTH_KEY_UNREGISTERED
+- `/etc/systemd/system/sofia-userbot.service` — лимит рестартов
 
 ## 🚀 Команды
 ```bash
-# Перезапуск
-systemctl restart sofia-gpt sofia-userbot
+# Перезапуск основного бота
+systemctl restart sofia-gpt
 
-# Логи LLM-Planner
-tail -f /opt/sofia-gpt/sofia_bot.log | grep -E "LLM|Allowed"
+# Логи с RAG
+tail -f /opt/sofia-gpt/sofia_bot.log | grep -E "RAG|LLM|Allowed"
 
-# Отправить первое сообщение клиенту
-/opt/sofia-gpt/sofia_start.sh @username
+# Статус userbot (сейчас остановлен)
+systemctl status sofia-userbot
 
-# Откат на v2.2 (если нужно)
-sed -i 's/USE_LLM_PLANNER=true/USE_LLM_PLANNER=false/' /opt/sofia-gpt/.env
-systemctl restart sofia-gpt sofia-userbot
+# После разблокировки Telegram — авторизация userbot
+rm -f /opt/sofia-gpt/sofia_pyrogram.session
+python /opt/sofia-gpt/sofia_userbot_pyrogram.py
 ```

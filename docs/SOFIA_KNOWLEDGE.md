@@ -448,3 +448,44 @@ LLM выбирает: ask_payment
 **Конфигурация:**
 - `USE_LLM_PLANNER=true` в .env
 - Модель: gpt-5.2, reasoning.effort: high
+
+---
+
+### 22.01.2026: RAG → LLM-Planner интеграция
+
+**Задача:** Показывать LLM-Planner успешные примеры из RAG при выборе action.
+
+**Решение:**
+1. Функция `_get_rag_examples()` в llm_planner.py
+2. Триггеры: `objection: "no_call"`, `wants_materials: true`, HANDLE_OBJECTION/PROPOSE_MEETING в allowed_actions
+3. RAG примеры добавляются в промпт перед "Выбери лучшее действие"
+
+**Почему:** LLM видит как успешно решали похожие ситуации (аналогия с врачом, "работа уже сделана") и делает более умный выбор.
+
+---
+
+### 22.01.2026: Баг call_proposal_count при USE_LLM_PLANNER
+
+**Проблема:** После первого отказа от созвона бот снова предлагал созвон вместо продолжения квалификации.
+
+**Причина:** `call_proposal_count` инкрементировался только в `_qualify_investment()` / `_qualify_personal()`, но при USE_LLM_PLANNER=true вызывается `get_allowed_actions()`, который только читает счётчик.
+
+**Решение:** Добавлен инкремент в bot_server.py после выбора action:
+```python
+if action in [Action.PROPOSE_MEETING_1, Action.PROPOSE_MEETING_2]:
+    client_state.call_proposal_count += 1
+```
+
+**Урок:** При USE_LLM_PLANNER=true side-effects (инкременты счётчиков) должны быть в bot_server.py, не в planner.py.
+
+---
+
+### 22.01.2026: Защита userbot от бесконечных рестартов
+
+**Проблема:** Сессия Telegram истекла → userbot падал → systemd рестартовал (280 раз!) → лимит Telegram.
+
+**Решение:**
+1. systemd: `StartLimitBurst=5`, `StartLimitIntervalSec=600` — макс 5 рестартов за 10 мин
+2. Код: обработка AUTH_KEY_UNREGISTERED → `sys.exit(0)` без рестарта + инструкция в логах
+
+**Почему:** Бесконечные попытки авторизации блокируют аккаунт Telegram на 1-24 часа.

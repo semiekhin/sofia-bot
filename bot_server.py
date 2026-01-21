@@ -629,6 +629,10 @@ async def delayed_response(chat_id, user_id, user_name, context):
         increment_slot_attempt(client_state, slot, "help")
         state_manager.update_state(user_id, {"slot_attempts": client_state.slot_attempts})
     
+    # 5.1.1 Увеличиваем счётчик предложений созвона
+    if action in [Action.PROPOSE_MEETING_1, Action.PROPOSE_MEETING_2]:
+        client_state.call_proposal_count = getattr(client_state, 'call_proposal_count', 0) + 1
+    
     # 5.2 NEW v2.0: Сохраняем поля изменённые в Planner
     v2_updates = {
         "branch": client_state.branch,

@@ -16,6 +16,7 @@ from typing import List, Dict, Any, Optional
 from openai import OpenAI
 
 from planner import Action, ACTION_DESCRIPTIONS
+from rag_module import search_examples
 
 # Настройка логирования
 logger = logging.getLogger(__name__)
@@ -27,6 +28,14 @@ client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 LLM_PLANNER_MODEL = "gpt-5.2"
 LLM_PLANNER_REASONING = {"effort": "high"}  # Включаем "думание"
 LLM_PLANNER_MAX_TOKENS = 300
+
+# Маппинг Action -> RAG stage для поиска примеров
+ACTION_TO_RAG_STAGE = {
+    Action.HANDLE_OBJECTION: "OBJECTION",
+    Action.PROPOSE_MEETING_1: "MEETING",
+    Action.PROPOSE_MEETING_2: "MEETING",
+    Action.FINISH_WITH_MATERIALS: "CLOSING",
+}
 
 
 def llm_select_action(
@@ -116,6 +125,51 @@ def _get_system_instructions() -> str:
 }"""
 
 
+
+def _get_rag_examples(allowed_actions: List[Action], message: str, extraction: Dict) -> str:
+    """Получает RAG примеры для сложных кейсов."""
+    
+    # Определяем нужен ли RAG
+    needs_rag = False
+    rag_stage = "OBJECTION"
+    
+    # Триггеры для RAG
+    if extraction.get("objection") == "no_call":
+        needs_rag = True
+        rag_stage = "OBJECTION"
+    elif extraction.get("wants_materials"):
+        needs_rag = True
+        rag_stage = "MEETING"
+    elif any(a in ACTION_TO_RAG_STAGE for a in allowed_actions):
+        needs_rag = True
+        for action in allowed_actions:
+            if action in ACTION_TO_RAG_STAGE:
+                rag_stage = ACTION_TO_RAG_STAGE[action]
+                break
+    
+    if not needs_rag:
+        return ""
+    
+    # Получаем примеры
+    try:
+        examples = search_examples(stage=rag_stage, client_message=message, limit=2, quality_filter=["excellent"])
+    except Exception as e:
+        logger.warning(f"RAG search failed: {e}")
+        return ""
+    
+    if not examples:
+        return ""
+    
+    # Форматируем
+    lines = ["\nУСПЕШНЫЕ ПРИМЕРЫ (как решали похожие ситуации):"]
+    for i, ex in enumerate(examples, 1):
+        client = ex.get("client", "")[:80]
+        manager = ex.get("manager", "")[:120]
+        lines.append(f"{i}. Клиент: \"{client}\" → Менеджер: \"{manager}\"")
+    
+    return "\n".join(lines)
+
+
 def _build_planner_prompt(
     allowed_actions: List[Action],
     state: Any,
@@ -165,6 +219,9 @@ def _build_planner_prompt(
         content = msg.get("content", "")[:100]  # Обрезаем длинные
         history_text.append(f"{role}: {content}")
     
+    # Получаем RAG примеры для сложных кейсов
+    rag_section = _get_rag_examples(allowed_actions, message, extraction)
+    
     prompt = f"""СИТУАЦИЯ:
 Последнее сообщение клиента: "{message}"
 
@@ -185,7 +242,7 @@ def _build_planner_prompt(
 - objection: {extraction.get('objection', 'нет')}
 - sentiment: {extraction.get('sentiment', 'neutral')}
 - answer_mode: {extraction.get('answer_mode', 'direct')}
-
+{rag_section}
 Выбери лучшее действие и ответь JSON."""
 
     return prompt
