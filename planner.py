@@ -57,6 +57,9 @@ class Action(Enum):
     
     # NEW v2.0: Завершение
     FINISH_WITH_MATERIALS = "finish_with_materials"  # Завершение с подборкой (после 2 отказов)
+    
+    # NEW v2.2: Управление давлением
+    EASE_PRESSURE = "ease_pressure"                 # Снизить давление (friction > 0.7)
 
 
 # Описания действий для промпта Generator
@@ -159,7 +162,13 @@ ACTION_DESCRIPTIONS = {
 Клиент дважды отказался от созвона — не настаиваем.
 'Хорошо, вижу вашу занятость) В ближайшее время отправлю варианты которые подобрала.
 Если будут вопросы — пишите!'
-После этого НЕ задавать вопросов, замолчать."""
+После этого НЕ задавать вопросов, замолчать.""",
+
+    # NEW v2.2: Управление давлением
+    Action.EASE_PRESSURE: """Клиент напряжён (friction > 0.7). Снизить давление.
+Не задавай новых вопросов. Прояви понимание, покажи что не давишь.
+'Понимаю, много вопросов сразу) Давайте без спешки — расскажите что для вас сейчас важнее всего?'
+Или просто ответь на то, что волнует клиента, без перехода к следующему слоту."""
 }
 
 
@@ -227,6 +236,16 @@ def get_next_action(state: ClientState, message: str, extraction: dict = None) -
     # ═══════════════════════════════════════════════════════════════════════
     if extraction.get("meeting_agreed") and extraction.get("meeting_datetime"):
         return Action.CONFIRM_MEETING
+    
+    # ═══════════════════════════════════════════════════════════════════════
+    # ПРИОРИТЕТ 1.5 (NEW v2.2): Высокий friction — снижаем давление
+    # ═══════════════════════════════════════════════════════════════════════
+    signals = extraction.get("signals", {})
+    friction = signals.get("friction", 0.3)
+    call_readiness = signals.get("call_readiness", 0.5)
+    
+    if friction > 0.7:
+        return Action.EASE_PRESSURE
     
     # ═══════════════════════════════════════════════════════════════════════
     # ПРИОРИТЕТ 2: Счётчик отказов (wants_materials или no_call)
@@ -320,9 +339,17 @@ def _qualify_investment(state: ClientState, extraction: dict) -> Action:
             return action
     
     # ★ PROPOSE_MEETING_1 (после базовой квалификации: goal + budget)
+    # NEW v2.2: Проверяем готовность к созвону
+    friction = getattr(state, 'friction', 0.3)
+    call_readiness = getattr(state, 'call_readiness', 0.5)
+    
     if getattr(state, 'call_proposal_count', 0) == 0:
-        state.call_proposal_count = 1
-        return Action.PROPOSE_MEETING_1
+        # Если клиент не готов (friction >= 0.5 или call_readiness < 0.4) — продолжаем квалификацию
+        if friction >= 0.5 or call_readiness < 0.4:
+            pass  # Пропускаем MEETING_1, идём дальше по квалификации
+        else:
+            state.call_proposal_count = 1
+            return Action.PROPOSE_MEETING_1
     
     # 3. payment_type (необязательно)
     if not state.payment_type:
@@ -376,9 +403,17 @@ def _qualify_personal(state: ClientState, extraction: dict) -> Action:
             return action
     
     # ★ PROPOSE_MEETING_1 (после базовой квалификации: goal + location + budget)
+    # NEW v2.2: Проверяем готовность к созвону
+    friction = getattr(state, 'friction', 0.3)
+    call_readiness = getattr(state, 'call_readiness', 0.5)
+    
     if getattr(state, 'call_proposal_count', 0) == 0:
-        state.call_proposal_count = 1
-        return Action.PROPOSE_MEETING_1
+        # Если клиент не готов (friction >= 0.5 или call_readiness < 0.4) — продолжаем квалификацию
+        if friction >= 0.5 or call_readiness < 0.4:
+            pass  # Пропускаем MEETING_1, идём дальше по квалификации
+        else:
+            state.call_proposal_count = 1
+            return Action.PROPOSE_MEETING_1
     
     # 4. family (необязательно)
     if not getattr(state, 'family', None):
@@ -477,6 +512,9 @@ def get_action_context(action: Action, state: ClientState, extraction: dict = No
     # NEW: Ситуативный контекст для живости диалога
     # ════════════════════════════════════════════════════════════════════════
     
+    # NEW v2.2: Получаем signals
+    signals = extraction.get("signals", {})
+    
     context["situation"] = {
         "client_mood": extraction.get("sentiment", "neutral"),
         "answer_mode": extraction.get("answer_mode"),
@@ -485,6 +523,11 @@ def get_action_context(action: Action, state: ClientState, extraction: dict = No
         "is_frustrated": extraction.get("sentiment") == "negative",
         "dialog_stage": "early" if state.qualification_score < 0.3 else ("middle" if state.qualification_score < 0.7 else "late"),
         "rapport_built": state.qualification_score > 0.5,  # уже поговорили, можно расслабиться
+        # NEW v2.2: Латентные метрики
+        "friction": signals.get("friction", 0.3),
+        "call_readiness": signals.get("call_readiness", 0.5),
+        "engagement": signals.get("engagement", "medium"),
+        "urgency": signals.get("urgency", "unclear"),
     }
     
     # Опциональные подсказки для Generator (может использовать, может нет)

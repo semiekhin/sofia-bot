@@ -83,7 +83,13 @@ class ClientState:
     
     # NEW v2.0: Завершение диалога
     dialog_finished: bool = False                   # диалог завершён, Sofia молчит
-    finish_type: Optional[str] = None               # 'meeting' | 'materials' 
+    finish_type: Optional[str] = None               # 'meeting' | 'materials'
+    
+    # NEW v2.2: Латентные метрики (signals)
+    friction: float = 0.3                           # 0.0-1.0 уровень сопротивления
+    call_readiness: float = 0.5                     # 0.0-1.0 готовность к созвону
+    engagement: Optional[str] = "medium"            # low/medium/high
+    urgency: Optional[str] = "unclear"              # now/week/month/unclear
     
     def is_qualified(self) -> bool:
         """Проверка полноты квалификации (минимум для созвона)"""
@@ -241,7 +247,12 @@ class StateManager:
                 call_proposal_count INTEGER DEFAULT 0,
                 materials_request_count INTEGER DEFAULT 0,
                 dialog_finished BOOLEAN DEFAULT 0,
-                finish_type TEXT
+                finish_type TEXT,
+                
+                friction REAL DEFAULT 0.3,
+                call_readiness REAL DEFAULT 0.5,
+                engagement TEXT DEFAULT 'medium',
+                urgency TEXT DEFAULT 'unclear'
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_client_state_user ON client_state(user_id)")
@@ -292,7 +303,12 @@ class StateManager:
             call_proposal_count=row["call_proposal_count"] if "call_proposal_count" in row.keys() else 0,
             materials_request_count=row["materials_request_count"] if "materials_request_count" in row.keys() else 0,
             dialog_finished=bool(row["dialog_finished"]) if "dialog_finished" in row.keys() else False,
-            finish_type=row["finish_type"] if "finish_type" in row.keys() else None
+            finish_type=row["finish_type"] if "finish_type" in row.keys() else None,
+            # NEW v2.2: Латентные метрики
+            friction=row["friction"] if "friction" in row.keys() else 0.3,
+            call_readiness=row["call_readiness"] if "call_readiness" in row.keys() else 0.5,
+            engagement=row["engagement"] if "engagement" in row.keys() else "medium",
+            urgency=row["urgency"] if "urgency" in row.keys() else "unclear"
         )
         return state
     
@@ -334,8 +350,9 @@ class StateManager:
                 slot_attempts,
                 branch, strategy, usage, family,
                 call_proposal_count, materials_request_count,
-                dialog_finished, finish_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                dialog_finished, finish_type,
+                friction, call_readiness, engagement, urgency
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             state.user_id, state.goal, state.goal_confidence,
             state.location, state.location_confidence,
@@ -350,7 +367,8 @@ class StateManager:
             json.dumps(state.slot_attempts),
             state.branch, state.strategy, state.usage, state.family,
             state.call_proposal_count, state.materials_request_count,
-            state.dialog_finished, state.finish_type
+            state.dialog_finished, state.finish_type,
+            state.friction, state.call_readiness, state.engagement, state.urgency
         ))
         conn.commit()
         conn.close()

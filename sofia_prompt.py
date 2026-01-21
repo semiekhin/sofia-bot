@@ -67,11 +67,32 @@ def get_system_prompt(client_name: str, action_context: dict = None) -> str:
         situation_text = ""
         if situation:
             mood_emoji = {"positive": "😊", "negative": "😟", "neutral": "😐"}.get(situation.get('client_mood'), "😐")
+            friction = situation.get('friction', 0.3)
+            call_readiness = situation.get('call_readiness', 0.5)
+            engagement = situation.get('engagement', 'medium')
+            urgency = situation.get('urgency', 'unclear')
+            
+            # Рекомендации по тону на основе метрик
+            tone_hints = []
+            if friction > 0.6:
+                tone_hints.append("⚠️ Высокое сопротивление — не дави, дай пространство")
+            if call_readiness < 0.3:
+                tone_hints.append("📵 Не готов к созвону — не предлагай звонок сейчас")
+            if engagement == "low":
+                tone_hints.append("💤 Низкая вовлечённость — задай интересный вопрос")
+            if urgency == "now":
+                tone_hints.append("🔥 Срочность — действуй быстро")
+            
+            tone_text = "\n".join(tone_hints) if tone_hints else ""
+            
             situation_text = f"""
 СИТУАЦИЯ:
 — Настроение клиента: {situation.get('client_mood', 'neutral')} {mood_emoji}
 — Этап диалога: {situation.get('dialog_stage', 'early')}
 — Раппорт установлен: {"да" if situation.get('rapport_built') else "ещё нет"}
+— Сопротивление (friction): {friction:.1f}  |  Готовность к созвону: {call_readiness:.1f}
+— Вовлечённость: {engagement}  |  Срочность: {urgency}
+{tone_text}
 """
         
         action_block = f"""

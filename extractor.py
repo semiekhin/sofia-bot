@@ -329,6 +329,63 @@ sentiment (настроение):
 - Бот: "Удобно сейчас пообщаться?" → Клиент: "да, могу" → meeting_agreed: FALSE (это не созвон!)
 - Бот: "Давайте созвонимся, когда удобно?" → Клиент: "давайте" → meeting_agreed: TRUE
 
+
+═══════════════════════════════════════════════════════════════════════════════
+ЭМОЦИОНАЛЬНЫЕ СИГНАЛЫ (signals):
+═══════════════════════════════════════════════════════════════════════════════
+
+Оцени латентные метрики клиента на основе ВСЕГО диалога:
+
+1. friction (0.0-1.0) — уровень сопротивления:
+   0.0-0.2: Охотно отвечает, позитивный, открытый
+   0.3-0.5: Нормальный диалог, иногда уклоняется  
+   0.6-0.7: Заметное сопротивление, частые "не знаю", "потом", "по ситуации"
+   0.8-1.0: Раздражение, грубость, категорические отказы
+
+2. call_readiness (0.0-1.0) — готовность к созвону:
+   0.0-0.2: Категорически против ("только переписка", "не звоните", "отправляйте здесь")
+   0.3-0.4: Скорее нет ("пока не удобно", "сейчас не могу")
+   0.5-0.6: Нейтрально (тема созвона не поднималась)
+   0.7-0.8: Скорее да ("может быть", "посмотрим")
+   0.9-1.0: Явное согласие ("давайте", "завтра в 18:00")
+
+3. engagement (low/medium/high) — вовлечённость:
+   low: односложные ответы, долгие паузы, off-topic, "ок", "да"
+   medium: отвечает по делу, но без энтузиазма
+   high: задаёт вопросы, развёрнутые ответы, уточняет детали
+
+4. urgency (now/week/month/unclear) — срочность покупки:
+   now: "срочно", "сегодня", "как можно быстрее"
+   week: "на этой неделе", "в ближайшие дни"
+   month: "в течение месяца", "не торопимся", "присматриваемся"
+   unclear: сроки не обсуждались
+
+ПРИМЕРЫ КАЛИБРОВКИ:
+
+Клиент: "пока не удобно, отправляйте здесь"
+→ friction: 0.6, call_readiness: 0.2, engagement: medium
+
+Клиент: "не знаю, разные варианты посмотрим"
+→ friction: 0.5, call_readiness: 0.5, engagement: medium
+
+Клиент: "Сейчас не удобно разговаривать, на работе"
+→ friction: 0.3, call_readiness: 0.4, engagement: medium (отказ по объективной причине)
+
+Клиент: "Лучше завтра после обеда"
+→ friction: 0.1, call_readiness: 0.9, engagement: high
+
+Клиент: "там где выгоднее"
+→ friction: 0.4, call_readiness: 0.5, engagement: high (задаёт вопрос)
+
+Клиент: "Для инвестиций"
+→ friction: 0.1, call_readiness: 0.5, engagement: medium
+
+Клиент: "только переписка, звонить не буду"
+→ friction: 0.7, call_readiness: 0.0, engagement: low
+
+Клиент: "Здравствуйте, да"
+→ friction: 0.1, call_readiness: 0.5, engagement: medium
+
 ═══════════════════════════════════════════════════════════════════════════════
 ФОРМАТ ОТВЕТА — ТОЛЬКО JSON:
 ═══════════════════════════════════════════════════════════════════════════════
@@ -371,7 +428,14 @@ sentiment (настроение):
   "mentioned_location": "sochi" | null,
   "mentioned_price": 10000000 | null,
   
-  "sentiment": "positive" | "neutral" | "negative" | "frustrated"
+  "sentiment": "positive" | "neutral" | "negative" | "frustrated",
+  
+  "signals": {
+    "friction": 0.3,
+    "call_readiness": 0.5,
+    "engagement": "low" | "medium" | "high",
+    "urgency": "now" | "week" | "month" | "unclear"
+  }
 }
 
 ВЕРНИ ТОЛЬКО JSON, БЕЗ КОММЕНТАРИЕВ И ПОЯСНЕНИЙ.
@@ -422,6 +486,14 @@ def extract_sync(message: str, history: list[dict] = None) -> dict:
                     raw_text = raw_text[4:]
                 raw_text = raw_text.strip()
             result = json.loads(raw_text)
+            # Нормализация signals (дефолты если LLM не вернул)
+            if "signals" not in result or not isinstance(result.get("signals"), dict):
+                result["signals"] = {}
+            signals = result["signals"]
+            signals.setdefault("friction", 0.3)
+            signals.setdefault("call_readiness", 0.5)
+            signals.setdefault("engagement", "medium")
+            signals.setdefault("urgency", "unclear")
         else:
             # Fallback на Chat Completions API
             response = client.chat.completions.create(
@@ -435,6 +507,14 @@ def extract_sync(message: str, history: list[dict] = None) -> dict:
                 max_tokens=500
             )
             result = json.loads(response.choices[0].message.content)
+            # Нормализация signals (дефолты если LLM не вернул)
+            if "signals" not in result or not isinstance(result.get("signals"), dict):
+                result["signals"] = {}
+            signals = result["signals"]
+            signals.setdefault("friction", 0.3)
+            signals.setdefault("call_readiness", 0.5)
+            signals.setdefault("engagement", "medium")
+            signals.setdefault("urgency", "unclear")
         return result
         
     except Exception as e:
@@ -454,6 +534,12 @@ def extract_sync(message: str, history: list[dict] = None) -> dict:
             "mentioned_location": None,
             "mentioned_price": None,
             "sentiment": "neutral",
+            "signals": {
+                "friction": 0.3,
+                "call_readiness": 0.5,
+                "engagement": "medium",
+                "urgency": "unclear"
+            },
             "_error": str(e)
         }
 

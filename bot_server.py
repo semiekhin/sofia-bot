@@ -91,6 +91,7 @@ ACTION_TO_RAG_STAGE = {
     "propose_meeting_2": "MEETING",
     "confirm_meeting": "CLOSING",
     "finish_with_materials": "CLOSING",
+    "ease_pressure": "OBJECTION",
     "send_materials": "PRESENTATION",
     "greeting": "GREETING",
 }
@@ -602,6 +603,14 @@ async def delayed_response(chat_id, user_id, user_name, context):
         "call_proposal_count": client_state.call_proposal_count,
         "materials_request_count": client_state.materials_request_count,
     }
+    
+    # 5.2.1 NEW v2.2: Сохраняем латентные метрики (signals)
+    signals = extraction.get("signals", {})
+    if signals:
+        v2_updates["friction"] = signals.get("friction", 0.3)
+        v2_updates["call_readiness"] = signals.get("call_readiness", 0.5)
+        v2_updates["engagement"] = signals.get("engagement", "medium")
+        v2_updates["urgency"] = signals.get("urgency", "unclear")
     
     # При завершении диалога
     if action == Action.FINISH_WITH_MATERIALS:
