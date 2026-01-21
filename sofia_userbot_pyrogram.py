@@ -517,7 +517,23 @@ async def interactive():
             print(f"Ошибка: {e}")
 
 
+async def main_daemon():
+    """Daemon режим — только слушает входящие, без интерактивных команд"""
+    print("🚀 Запуск Sofia Userbot (daemon)...")
+    
+    await app.start()
+    
+    me = await app.get_me()
+    print(f"✅ Авторизован как: {me.first_name} (@{me.username or 'нет'})")
+    print("📡 Слушаю входящие сообщения... (Ctrl+C для выхода)")
+    
+    # Просто держим процесс активным
+    from pyrogram import idle
+    await idle()
+
+
 async def main():
+    """Интерактивный режим — с командами /start, /send"""
     print("🚀 Запуск Sofia Userbot...")
     
     await app.start()
@@ -529,4 +545,8 @@ async def main():
 
 
 if __name__ == "__main__":
-    app.run(main())
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "--daemon":
+        app.run(main_daemon())
+    else:
+        app.run(main())
