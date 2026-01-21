@@ -135,6 +135,7 @@ ACTION_TO_RAG_STAGE = {
     "confirm_meeting": "CLOSING",
     "finish_with_materials": "CLOSING",
     "send_materials": "PRESENTATION",
+    "ease_pressure": "OBJECTION",
     "greeting": "GREETING",
 }
 
@@ -166,6 +167,19 @@ async def process_with_sofia(user_id: int, user_name: str, message: str) -> str:
         action = get_next_action(client_state, message, extraction or {})
         action_context = get_action_context(action, client_state, extraction or {})
         
+        # 3.0.1 Обогащение финансовым расчётом (если спрашивают про доходность)
+        if action == Action.ANSWER_QUESTION and extraction.get("question_type") == "profitability":
+            if client_state.budget and client_state.budget > 0:
+                try:
+                    from finance_calculator import compare_investments, format_short_comparison
+                    fin_result = compare_investments(amount=client_state.budget, construction_years=2, total_years=5)
+                    action_context["finance_calculation"] = format_short_comparison(fin_result)
+                    log(f"💰 Finance: расчёт для {client_state.budget/1_000_000:.1f} млн")
+                except Exception as e:
+                    log(f"⚠️ Finance error: {e}")
+            else:
+                action_context["finance_calculation"] = "Бюджет пока не известен — дай общие цифры (8-12% аренда, 20-30% рост на стройке)"
+        
         log(f"🎯 PLANNER (incoming):")
         log(f"   Action: {action.value}")
         log(f"   State: goal={client_state.goal}({client_state.goal_confidence}), loc={client_state.location}({client_state.location_confidence}), budget={client_state.budget}")
@@ -190,6 +204,14 @@ async def process_with_sofia(user_id: int, user_name: str, message: str) -> str:
             "call_proposal_count": client_state.call_proposal_count,
             "materials_request_count": client_state.materials_request_count,
         }
+        
+        # v2.2: Сохраняем латентные метрики (signals)
+        signals = extraction.get("signals", {}) if extraction else {}
+        if signals:
+            v2_updates["friction"] = signals.get("friction", 0.3)
+            v2_updates["call_readiness"] = signals.get("call_readiness", 0.5)
+            v2_updates["engagement"] = signals.get("engagement", "medium")
+            v2_updates["urgency"] = signals.get("urgency", "unclear")
         if action == Action.FINISH_WITH_MATERIALS:
             v2_updates["dialog_finished"] = True
             v2_updates["finish_type"] = "materials"
@@ -203,6 +225,11 @@ async def process_with_sofia(user_id: int, user_name: str, message: str) -> str:
         examples = search_examples(rag_stage, message, limit=RAG_EXAMPLES_COUNT)
         examples_text = format_examples_for_prompt(examples) if examples else ""
         log(f"📚 RAG: {len(examples) if examples else 0} примеров для {rag_stage}")
+        
+        # 4.1 Проверка WAIT от Planner
+        if action == Action.WAIT:
+            log(f"⏸️ WAIT (Planner): пропускаем ответ")
+            return None
         
         # 5. Generator (OpenAI)
         response = await generate_with_openai(user_name, message, history, action_context, examples_text)
@@ -300,6 +327,11 @@ async def handle_message(client, message):
     
     # Обрабатываем
     response = await process_with_sofia(user_id, user_name, text)
+    
+    # Проверяем WAIT
+    if response is None:
+        log(f"⏸️ WAIT: не отвечаем на это сообщение")
+        return
     
     # Отправляем
     await message.reply(response)
