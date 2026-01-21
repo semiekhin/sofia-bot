@@ -1,15 +1,20 @@
 # Задачи Sofia-GPT
 
-📅 **Обновлено:** 20.01.2026
+📅 **Обновлено:** 21.01.2026
 
 ## ✅ Выполнено
+
+### 21.01.2026 — Daemon + sofia_start.sh
+- [x] Daemon-режим userbot (`--daemon` флаг)
+- [x] Скрипт sofia_start.sh для быстрого старта диалога
+- [x] Правила форматирования (без markdown в Telegram)
 
 ### 20.01.2026 — "Живая София" v2.1
 - [x] Унификация промпта bot_server.py с userbot
 - [x] Ситуативный контекст (situation + optional_hints)
 - [x] Раздел "ТВОЯ ЛИЧНОСТЬ" в промпте
 - [x] Расширены паттерны extractor для strategy ("сдавать" → rental)
-- [x] Финансовый модуль v1.1 — минимальная интеграция (question_type "profitability")
+- [x] Финансовый модуль v1.1 — минимальная интеграция
 - [x] Трансляция диалогов userbot в группу наблюдателей
 
 ### 18.01.2026
@@ -25,9 +30,9 @@
 
 ## 🟡 В работе
 
-### Daemon режим userbot
-- [ ] Убрать интерактивный input() 
-- [ ] Создать systemd сервис sofia-userbot.service
+### systemd сервис для userbot
+- [x] Daemon-режим в коде (main_daemon)
+- [ ] Создать /etc/systemd/system/sofia-userbot.service
 - [ ] Автозапуск при перезагрузке
 
 ## 🔵 Запланировано
