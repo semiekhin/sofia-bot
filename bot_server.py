@@ -10,7 +10,8 @@ import asyncio
 import sqlite3
 import json
 import csv
-from datetime import datetime
+from datetime import datetime, timedelta
+import random
 from openai import OpenAI
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQueryHandler, filters, ContextTypes
@@ -485,12 +486,27 @@ async def handle_rating(update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================
 
 pending_responses = {}
-reminder_tasks = {}  # Таймеры напоминания (10 мин)
-REMINDER_DELAY = 600  # 10 минут в секундах
+reminder_tasks = {}  # Таймеры напоминания
+
+REMINDER_PHRASES = [
+    "{name}, продолжим общение?",
+    "{name}, не забыли про меня?",
+]
+
+def get_reminder_delay():
+    """Вычисляет задержку: 1 час если до 18:00, иначе до 9:00 следующего дня"""
+    now = datetime.now()
+    if now.hour < 18:
+        return 3600  # 1 час
+    else:
+        tomorrow_9am = now.replace(hour=9, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        return (tomorrow_9am - now).total_seconds()
 
 async def send_reminder(chat_id, user_name, context):
-    """Отправляет напоминание если клиент не ответил 10 минут"""
-    await asyncio.sleep(REMINDER_DELAY)
+    """Отправляет напоминание: через 1 час или в 9:00 если после 18:00"""
+    delay = get_reminder_delay()
+    log(f"⏳ Напоминание для {user_name} запланировано через {delay/3600:.1f}ч")
+    await asyncio.sleep(delay)
     
     # Проверяем meeting_agreed в состоянии клиента
     state = state_manager.get_state(chat_id)
@@ -514,7 +530,7 @@ async def send_reminder(chat_id, user_name, context):
         return
     
     # Отправляем напоминание
-    reminder_text = f"{user_name}, на связи? 🙂"
+    reminder_text = random.choice(REMINDER_PHRASES).format(name=user_name)
     await context.bot.send_message(chat_id=chat_id, text=reminder_text)
     log(f"⏰ Напоминание → {user_name}")
     

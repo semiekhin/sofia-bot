@@ -13,8 +13,8 @@ from pyrogram.handlers import MessageHandler
 # КОНФИГУРАЦИЯ
 # ============================================
 
-API_ID = 32374021
-API_HASH = "6dc50b91611d636fcc22f5ecb8c96bc6"
+API_ID = 2040
+API_HASH = "b18441a1ff607e10a989891a5462e627"
 SESSION_NAME = "sofia_pyrogram"
 
 # Путь к основной логике Sofia
