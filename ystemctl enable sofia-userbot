@@ -1,0 +1,14 @@
+○ sofia-userbot.service - Sofia Userbot (Pyrogram)
+     Loaded: loaded (]8;;file://6028283-hk015312/etc/systemd/system/sofia-userbot.service/etc/systemd/system/sofia-userbot.service]8;;; [0;1;38;5;185mdisabled[0m; preset: [0;1;32menabled[0m)
+     Active: inactive (dead)
+
+Jan 22 02:20:59 6028283-hk015312 systemd[1]: [0;1;38;5;185m[0;1;39m[0;1;38;5;185msofia-userbot.service: Failed with result 'exit-code'.[0m
+Jan 22 02:20:59 6028283-hk015312 systemd[1]: sofia-userbot.service: Consumed 3.533s CPU time.
+Jan 22 02:21:04 6028283-hk015312 systemd[1]: sofia-userbot.service: Scheduled restart job, restart counter is at 332.
+Jan 22 02:21:04 6028283-hk015312 systemd[1]: Started sofia-userbot.service - Sofia Userbot (Pyrogram).
+Jan 22 02:21:07 6028283-hk015312 systemd[1]: Stopping sofia-userbot.service - Sofia Userbot (Pyrogram)...
+Jan 22 02:21:07 6028283-hk015312 systemd[1]: sofia-userbot.service: Deactivated successfully.
+Jan 22 02:21:07 6028283-hk015312 systemd[1]: Stopped sofia-userbot.service - Sofia Userbot (Pyrogram).
+Jan 22 02:21:07 6028283-hk015312 systemd[1]: sofia-userbot.service: Consumed 2.879s CPU time.
+Jan 23 06:48:58 6028283-hk015312 systemd[1]: [0;1;38;5;185m[0;1;39m[0;1;38;5;185m]8;;file://6028283-hk015312/etc/systemd/system/sofia-userbot.service/etc/systemd/system/sofia-userbot.service]8;;:13: Unknown key name 'StartLimitIntervalSec' in section 'Service', ignoring.[0m
+Jan 23 12:14:44 6028283-hk015312 systemd[1]: [0;1;38;5;185m[0;1;39m[0;1;38;5;185m]8;;file://6028283-hk015312/etc/systemd/system/sofia-userbot.service/etc/systemd/system/sofia-userbot.service]8;;:13: Unknown key name 'StartLimitIntervalSec' in section 'Service', ignoring.[0m

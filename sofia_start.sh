@@ -1,49 +1,93 @@
 #!/bin/bash
-# Умный старт диалога через userbot
-# Использование: ./sofia_start.sh @username [источник]
+# Быстрый старт диалога: ./sofia_start.sh @username|+phone [источник]
 
-if [ -z "$1" ]; then
-    echo "Использование: ./sofia_start.sh @username [источник]"
-    echo "Пример: ./sofia_start.sh @sergey_7in avito"
+if [ $# -lt 1 ]; then
+    echo "Использование: $0 @username|+phone [источник]"
+    echo "Пример: $0 @ivan_petrov avito"
+    echo "Пример: $0 +79991234567 avito"
     exit 1
 fi
 
 TARGET=$1
-SOURCE=$2
+SOURCE=${2:-"сайте"}
 
-echo "🛑 Останавливаю daemon..."
+echo "⏸️ Останавливаю демон..."
 systemctl stop sofia-userbot
+sleep 1
 
-echo "🚀 Запускаю smart start для $TARGET..."
+echo "📤 Отправляю приветствие → $TARGET"
+
 cd /opt/sofia-gpt
-
-if [ -z "$SOURCE" ]; then
-    ./venv/bin/python -c "
+/opt/sofia-gpt/venv/bin/python3 << PYTHON
 import asyncio
-from sofia_userbot_pyrogram import app, start_smart_dialog
+import sys
+sys.path.insert(0, '/opt/sofia-gpt')
 
-async def run():
-    await app.start()
-    await start_smart_dialog('$TARGET')
-    await app.stop()
+from pyrogram import Client
+from pyrogram.raw import functions, types
+from state_manager import StateManager
 
-asyncio.run(run())
-"
-else
-    ./venv/bin/python -c "
-import asyncio
-from sofia_userbot_pyrogram import app, start_smart_dialog
+state_manager = StateManager('/opt/sofia-gpt/sofia_gpt.db')
+OBSERVER_CHAT_ID = -5206139579
 
-async def run():
-    await app.start()
-    await start_smart_dialog('$TARGET', {'source': '$SOURCE'})
-    await app.stop()
+async def main():
+    app = Client('/opt/sofia-gpt/sofia_pyrogram', api_id=2040, api_hash='b18441a1ff607e10a989891a5462e627')
+    
+    async with app:
+        target = "$TARGET"
+        
+        # Определяем тип идентификатора
+        if target.startswith('+'):
+            # Номер телефона — импортируем контакт
+            print(f"📞 Импортирую контакт: {target}")
+            phone = target.replace('+', '')
+            
+            result = await app.invoke(
+                functions.contacts.ImportContacts(
+                    contacts=[types.InputPhoneContact(
+                        client_id=0,
+                        phone=phone,
+                        first_name="Клиент",
+                        last_name=""
+                    )]
+                )
+            )
+            
+            if not result.users:
+                print("❌ Номер не зарегистрирован в Telegram")
+                return
+            
+            user = result.users[0]
+            user_id = user.id
+            user_name = user.first_name or "друг"
+        else:
+            # Username
+            user = await app.get_users(target)
+            user_id = user.id
+            user_name = user.first_name or "друг"
+        
+        print(f"📱 User: {user_name} (ID: {user_id})")
+        
+        # Сбрасываем состояние
+        state_manager.reset_state(user_id)
+        
+        # Приветствие
+        message = f"{user_name}, добрый день! Это София, по недвижимости. Вы оставляли заявку на $SOURCE — удобно сейчас пообщаться?"
+        
+        # Отправляем клиенту
+        await app.send_message(user_id, message)
+        print(f"✅ Отправлено: {message}")
+        
+        # Транслируем в группу
+        username_str = f"@{user.username}" if hasattr(user, 'username') and user.username else f"ID:{user_id}"
+        broadcast = f"🆕 НОВЫЙ ДИАЛОГ: {user_name} ({username_str})\n\n🤖 София:\n{message}"
+        await app.send_message(OBSERVER_CHAT_ID, broadcast)
+        print(f"📢 Транслировано в группу")
 
-asyncio.run(run())
-"
-fi
+asyncio.run(main())
+PYTHON
 
-echo "🔄 Запускаю daemon обратно..."
+echo ""
+echo "▶️ Перезапускаю демон..."
 systemctl start sofia-userbot
-
-echo "✅ Готово! Daemon снова работает."
+echo "✅ Готово"
