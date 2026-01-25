@@ -1,66 +1,67 @@
 # Текущий статус Sofia-GPT
 
-📅 **Последняя сессия:** 22.01.2026 (ночь, ~02:45)
+📅 **Последняя сессия:** 25.01.2026
 🏷️ **Версия:** v3.1 — "LLM-Planner + RAG"
 
-## ✅ Что сделано (22.01.2026 ночь)
+## ✅ Что сделано (25.01.2026)
 
-### RAG → LLM-Planner
-- [x] Добавлен импорт `search_examples` в llm_planner.py
-- [x] Маппинг `ACTION_TO_RAG_STAGE` для поиска примеров
-- [x] Функция `_get_rag_examples()` — триггеры:
-  - `objection: "no_call"` — отказ от созвона
-  - `wants_materials: true` — просит подборку
-  - `HANDLE_OBJECTION`, `PROPOSE_MEETING_*` в allowed_actions
-- [x] RAG примеры добавляются в промпт LLM-Planner
-
-### Баг call_proposal_count
-- [x] Проблема: после первого отказа бот снова предлагал созвон
-- [x] Причина: `call_proposal_count` не инкрементировался в bot_server.py
-- [x] Решение: добавлен инкремент после PROPOSE_MEETING_1/2
-
-### Защита userbot от рестартов
-- [x] systemd: лимит 5 рестартов за 10 минут (было: бесконечно)
-- [x] Код: обработка AUTH_KEY_UNREGISTERED → выход без рестарта
-- [ ] Авторизация: ждём разблокировки Telegram (лимит попыток)
+### Исправлен LLM-Planner
+- [x] **Баг:** LLM-Planner был включён (`USE_LLM_PLANNER=true`), но падал с ошибкой
+- [x] **Причина:** `state_manager.get_messages()` — метод не существовал
+- [x] **Симптом:** в логах `⚠️ LLM Planner error: 'StateManager' object has no attribute 'get_messages', fallback to deterministic`
+- [x] **Решение:**
+  - `bot_server.py`: заменено на `get_conversation_history(chat_id, limit=8)`
+  - `sofia_userbot_pyrogram.py`: заменено на `history[-8:]`
+- [x] **Результат:** LLM-Planner теперь реально работает, в логах видно `🤖 LLM Planner: action | micro_goal | tone`
 
 ## 🔄 Текущее состояние
 
 ### ✅ Работает
 - Основной бот @humanAINeural_bot — active + LLM-Planner + RAG
+- Userbot @SofiaOazis (+79181038493) — active + LLM-Planner
+- LLM-Planner выбирает лучший action из allowed_actions (когда >1 вариант)
 - RAG примеры подтягиваются для сложных кейсов
-- Счётчик call_proposal_count корректно работает
+- Напоминания: 1ч днём / 9:00 после 18:00
 
-### ⏳ Ожидает
-- Userbot sofia-userbot — ОСТАНОВЛЕН (сессия истекла, лимит Telegram)
-- Когда разблокируют (1-24ч):
-  1. `rm -f /opt/sofia-gpt/sofia_pyrogram.session`
-  2. `python /opt/sofia-gpt/sofia_userbot_pyrogram.py` (авторизация)
-  3. `systemctl enable sofia-userbot && systemctl start sofia-userbot`
+### Как работает LLM-Planner
+1. Детерминированный Planner формирует `allowed_actions[]`
+2. Если 1 action → используется сразу (экономия токенов)
+3. Если >1 action → LLM (gpt-5.2) выбирает лучший + добавляет:
+   - `micro_goal` — дополнительная цель для Generator
+   - `tone` — тон ответа (warm, professional, empathetic, playful)
 
-## 🔜 Следующие шаги
-1. Восстановить userbot после разблокировки Telegram
-2. Протестировать сценарий "отказ от созвона → продолжение квалификации"
-3. Мониторинг RAG примеров в реальных диалогах
+### Пример из логов
+```
+🔀 Allowed actions: ['answer_question', 'ask_budget']
+🤖 LLM Planner: answer_question | micro_goal: уточнить район/формат под бюджет 15-17 млн | tone: warm
+```
 
-## 📁 Последние изменения
-- `llm_planner.py` — интеграция RAG (import, маппинг, _get_rag_examples)
-- `bot_server.py` — инкремент call_proposal_count после PROPOSE_MEETING
-- `sofia_userbot_pyrogram.py` — обработка AUTH_KEY_UNREGISTERED
-- `/etc/systemd/system/sofia-userbot.service` — лимит рестартов
+## 📁 Последние изменения (25.01.2026)
+- `bot_server.py` — фикс get_messages → get_conversation_history
+- `sofia_userbot_pyrogram.py` — фикс get_messages → history[-8:]
 
 ## 🚀 Команды
 ```bash
-# Перезапуск основного бота
+# Перезапуск
 systemctl restart sofia-gpt
+systemctl restart sofia-userbot
 
-# Логи с RAG
-tail -f /opt/sofia-gpt/sofia_bot.log | grep -E "RAG|LLM|Allowed"
+# Логи LLM-Planner
+tail -f /opt/sofia-gpt/sofia_bot.log | grep -E "LLM Planner|Allowed actions"
 
-# Статус userbot (сейчас остановлен)
+# Проверка что LLM-Planner работает (должен быть без error)
+grep "LLM Planner:" /opt/sofia-gpt/sofia_bot.log | tail -5
+
+# Статусы
+systemctl status sofia-gpt
 systemctl status sofia-userbot
 
-# После разблокировки Telegram — авторизация userbot
-rm -f /opt/sofia-gpt/sofia_pyrogram.session
-python /opt/sofia-gpt/sofia_userbot_pyrogram.py
+# Быстрый старт диалога
+/opt/sofia-gpt/sofia_start.sh @username
+/opt/sofia-gpt/sofia_start.sh @username avito
 ```
+
+## 🔜 Следующие шаги
+1. Мониторинг LLM-Planner на реальных диалогах
+2. Анализ качества выбора actions
+3. Интеграция с Max (новый источник лидов)
