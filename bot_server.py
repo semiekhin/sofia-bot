@@ -594,7 +594,7 @@ async def delayed_response(chat_id, user_id, user_name, context):
             
             if len(allowed_actions) > 1:
                 # Несколько вариантов — спрашиваем LLM
-                history = state_manager.get_messages(user_id, limit=8)
+                history = get_conversation_history(chat_id, limit=8)
                 llm_result = llm_select_action(allowed_actions, client_state, combined_message, history, extraction)
                 action = llm_result["action"]
                 micro_goal = llm_result.get("micro_goal")

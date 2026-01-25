@@ -175,7 +175,7 @@ async def process_with_sofia(user_id: int, user_name: str, message: str) -> str:
                 log(f"🔀 Allowed actions: {[a.value for a in allowed_actions]}")
                 
                 if len(allowed_actions) > 1:
-                    history = state_manager.get_messages(user_id, limit=8)
+                    history = history[-8:]  # последние 8 сообщений
                     llm_result = llm_select_action(allowed_actions, client_state, message, history, extraction or {})
                     action = llm_result["action"]
                     micro_goal = llm_result.get("micro_goal")
