@@ -489,3 +489,44 @@ if action in [Action.PROPOSE_MEETING_1, Action.PROPOSE_MEETING_2]:
 2. Код: обработка AUTH_KEY_UNREGISTERED → `sys.exit(0)` без рестарта + инструкция в логах
 
 **Почему:** Бесконечные попытки авторизации блокируют аккаунт Telegram на 1-24 часа.
+
+---
+
+### 28.01.2026: Интеграция Max через Radist.Online
+
+**Задача:** Добавить второй канал связи — Max мессенджер (писать первым).
+
+**Проблема:** Max боты (как и Telegram боты) не могут инициировать диалог.
+
+**Решение:** Radist.Online — шлюз для номерных аккаунтов:
+- Подключен номер +79284466701
+- API: https://api-ru.radist.online/v2
+- company_id: 205054, connection_id: 80024
+
+**Важные открытия:**
+1. ВСЕ эндпоинты требуют `/companies/{company_id}/` в пути — без него 404
+2. `chat_id` — число, не телефон. Сначала создать чат, потом отправлять
+3. Формат text — объект `{"text": "сообщение"}`, не строка
+4. Для России использовать `api-ru.radist.online`
+
+**API примеры:**
+```bash
+# Создать чат
+POST /companies/205054/messaging/chats/
+{"connection_id": 80024, "phone": "+79001234567"}
+→ {"chat_id": 38001832, "contact_id": 32498778}
+
+# Отправить сообщение
+POST /companies/205054/messaging/messages/
+{"connection_id": 80024, "chat_id": 38001832, "message_type": "text", "text": {"text": "Привет!"}}
+```
+
+**Файлы:**
+- `docs/RADIST_API.md` — полная документация
+- `config/radist_config.py` — конфигурация
+
+**TODO:**
+- Настроить webhook для входящих
+- Написать sofia_radist_gateway.py
+
+**⚠️ Подписка Radist до 31.01.2026!**
