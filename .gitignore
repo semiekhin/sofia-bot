@@ -10,3 +10,5 @@ chroma_db/
 *.log
 .DS_Store
 *.backup_*
+*.session
+*.session-journal

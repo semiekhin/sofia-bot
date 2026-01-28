@@ -1,67 +1,47 @@
 # Текущий статус Sofia-GPT
 
-📅 **Последняя сессия:** 25.01.2026
-🏷️ **Версия:** v3.1 — "LLM-Planner + RAG"
+📅 **Последняя сессия:** 28.01.2026
 
-## ✅ Что сделано (25.01.2026)
+## ✅ Что сделано
 
-### Исправлен LLM-Planner
-- [x] **Баг:** LLM-Planner был включён (`USE_LLM_PLANNER=true`), но падал с ошибкой
-- [x] **Причина:** `state_manager.get_messages()` — метод не существовал
-- [x] **Симптом:** в логах `⚠️ LLM Planner error: 'StateManager' object has no attribute 'get_messages', fallback to deterministic`
-- [x] **Решение:**
-  - `bot_server.py`: заменено на `get_conversation_history(chat_id, limit=8)`
-  - `sofia_userbot_pyrogram.py`: заменено на `history[-8:]`
-- [x] **Результат:** LLM-Planner теперь реально работает, в логах видно `🤖 LLM Planner: action | micro_goal | tone`
+### Сессия 28.01.2026
+- Подключен Radist.Online для Max мессенджера
+- Авторизован номер +79284466701
+- Протестирована отправка сообщений через API
+- Создана документация RADIST_API.md
+
+### Сессия 26.01.2026
+- Исправлен баг LLM-Planner (get_messages → get_conversation_history)
+- Исследована интеграция с Max мессенджером
+- Выбран Radist.Online для номерных аккаунтов Max
 
 ## 🔄 Текущее состояние
 
-### ✅ Работает
-- Основной бот @humanAINeural_bot — active + LLM-Planner + RAG
-- Userbot @SofiaOazis (+79181038493) — active + LLM-Planner
-- LLM-Planner выбирает лучший action из allowed_actions (когда >1 вариант)
-- RAG примеры подтягиваются для сложных кейсов
-- Напоминания: 1ч днём / 9:00 после 18:00
+| Компонент | Статус |
+|-----------|--------|
+| Telegram бот | ✅ @humanAINeural_bot |
+| Telegram userbot | ✅ @SofiaOazis (+79676407597) |
+| LLM-Planner | ✅ v2.2 активен |
+| Max (Radist) | ✅ Подключен (+79284466701) |
+| Max webhook | ⏳ Не настроен |
+| Max gateway | ⏳ Не написан |
 
-### Как работает LLM-Planner
-1. Детерминированный Planner формирует `allowed_actions[]`
-2. Если 1 action → используется сразу (экономия токенов)
-3. Если >1 action → LLM (gpt-5.2) выбирает лучший + добавляет:
-   - `micro_goal` — дополнительная цель для Generator
-   - `tone` — тон ответа (warm, professional, empathetic, playful)
-
-### Пример из логов
+## 🔑 Ключевые параметры Radist
 ```
-🔀 Allowed actions: ['answer_question', 'ask_budget']
-🤖 LLM Planner: answer_question | micro_goal: уточнить район/формат под бюджет 15-17 млн | tone: warm
-```
-
-## 📁 Последние изменения (25.01.2026)
-- `bot_server.py` — фикс get_messages → get_conversation_history
-- `sofia_userbot_pyrogram.py` — фикс get_messages → history[-8:]
-
-## 🚀 Команды
-```bash
-# Перезапуск
-systemctl restart sofia-gpt
-systemctl restart sofia-userbot
-
-# Логи LLM-Planner
-tail -f /opt/sofia-gpt/sofia_bot.log | grep -E "LLM Planner|Allowed actions"
-
-# Проверка что LLM-Planner работает (должен быть без error)
-grep "LLM Planner:" /opt/sofia-gpt/sofia_bot.log | tail -5
-
-# Статусы
-systemctl status sofia-gpt
-systemctl status sofia-userbot
-
-# Быстрый старт диалога
-/opt/sofia-gpt/sofia_start.sh @username
-/opt/sofia-gpt/sofia_start.sh @username avito
+API URL: https://api-ru.radist.online/v2
+company_id: 205054
+connection_id: 80024
+Номер: +79284466701
+Подписка до: 31.01.2026
 ```
 
 ## 🔜 Следующие шаги
-1. Мониторинг LLM-Planner на реальных диалогах
-2. Анализ качества выбора actions
-3. Интеграция с Max (новый источник лидов)
+
+1. ☐ Настроить webhook для входящих из Max
+2. ☐ Написать sofia_radist_gateway.py
+3. ☐ Интегрировать gateway с основной Sofia
+4. ☐ Продлить подписку Radist (до 31.01!)
+
+## 📁 Изменённые файлы (28.01.2026)
+- `docs/RADIST_API.md` — новый, документация API
+- `docs/SOFIA_CURRENT.md` — обновлён статус
