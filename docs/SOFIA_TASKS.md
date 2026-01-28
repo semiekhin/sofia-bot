@@ -69,3 +69,22 @@
 ### Userbot: сессия
 **Проблема:** Периодически истекает сессия Telegram
 **Решение:** Защита от бесконечных рестартов добавлена
+
+## 28.01.2026 — Max интеграция
+
+### ✅ Выполнено
+- [x] sofia_radist_gateway.py — webhook сервер
+- [x] sofia_max_start.sh — исходящие сообщения
+- [x] Webhook зарегистрирован в Radist
+- [x] Фикс extractor.py — strategy/usage/family
+
+### 🔴 Требует исправления
+- [ ] Max Gateway: логика после отказа от созвона некорректна
+- [ ] Max Gateway: изучить planner.py и привести в соответствие с bot_server.py
+
+### 🟡 Архитектурный долг
+- [ ] Вынести общую логику в message_processor.py
+- [ ] Убрать дублирование из bot_server.py, userbot, gateway
+
+### ⚠️ Дедлайн
+- Подписка Radist до **31.01.2026**

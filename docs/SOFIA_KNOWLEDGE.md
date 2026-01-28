@@ -530,3 +530,26 @@ POST /companies/205054/messaging/messages/
 - Написать sofia_radist_gateway.py
 
 **⚠️ Подписка Radist до 31.01.2026!**
+
+### 28.01.2026: Баг merge_extraction_to_state — strategy/usage/family
+
+**Проблема:** Поля strategy, usage, family никогда не сохранялись в state клиента. Extractor их извлекал, но merge_extraction_to_state() их игнорировал.
+
+**Решение:** Добавили эти поля в simple_fields в extractor.py.
+
+**Почему не замечали:** Planner использует branch (который устанавливается от goal), а не strategy напрямую. Поэтому основная логика работала, но детализация терялась.
+
+### 28.01.2026: Архитектурный долг — дублирование логики
+
+**Проблема:** Логика обработки сообщений продублирована в 3 файлах:
+- bot_server.py (Telegram бот)
+- sofia_userbot_pyrogram.py (Telegram userbot)  
+- sofia_radist_gateway.py (Max gateway)
+
+**Следствие:** Баги фиксятся в одном месте, остаются в других. Каждая интеграция требует копирования 200+ строк кода.
+
+**Решение (TODO):** Вынести общую логику в message_processor.py:
+```
+process_message(user_id, message, history) -> response
+```
+Транспорты (Telegram, Max, etc.) только получают/отправляют сообщения.
