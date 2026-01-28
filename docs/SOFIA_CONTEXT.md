@@ -1,58 +1,97 @@
-# Sofia-GPT v2.1
+# Sofia-GPT — Контекст проекта
 
-AI-бот для продажи курортной недвижимости Oazis Estate. Квалифицирует лидов через Telegram и конвертирует в видео-консультации.
+📅 **Обновлено:** 28.01.2026
 
-## Инфраструктура
-- **Сервер:** 72.56.64.91:2222 (SSH)
-- **Путь:** /opt/sofia-gpt/
-- **Бот:** @humanAINeural_bot
-- **База:** sofia_gpt.db (SQLite)
+## 🎯 Что это
 
-## Стек
-- Python 3 + python-telegram-bot
-- OpenAI API (gpt-5.2, Responses API)
-- ChromaDB (RAG, 1939 примеров)
+Sofia-GPT — AI-бот для продажи недвижимости Oazis Estate в Сочи.
+Работает в Telegram и Max, квалифицирует лиды и записывает на видеоконсультации.
 
-## Архитектура v2.0
+## 🖥 Инфраструктура
+
+| Компонент | Значение |
+|-----------|----------|
+| Сервер | 72.56.64.91:2222 |
+| Путь | /opt/sofia-gpt/ |
+| Python | 3.11 |
+| База данных | SQLite |
+
+## 📱 Каналы связи
+
+### Telegram
+| Параметр | Значение |
+|----------|----------|
+| Бот | @humanAINeural_bot |
+| Userbot | @SofiaOazis |
+| Номер userbot | +79676407597 |
+| Сервис | sofia-bot.service |
+| Сервис userbot | sofia-userbot.service |
+
+### Max (через Radist.Online)
+| Параметр | Значение |
+|----------|----------|
+| Номер | +79284466701 |
+| API URL | https://api-ru.radist.online/v2 |
+| company_id | 205054 |
+| connection_id | 80024 |
+| Подписка до | 31.01.2026 |
+
+## 🧠 Архитектура
 ```
-Telegram → Extractor (gpt-5.2) → State Manager → Planner v2.0 (код) → Generator (gpt-5.2) → Telegram
+Telegram/Max → Extractor → State Manager → Planner → RAG → Generator → Ответ
 ```
 
-## Ключевые файлы
-- `bot_server.py` — главный файл, обработка сообщений
-- `extractor.py` — NLU, извлечение фактов из сообщений
-- `state_manager.py` — состояние клиента (SQLite)
-- `planner.py` — детерминированная логика выбора действий (v2.0: две ветки)
-- `sofia_prompt.py` — промпт генератора
-- `rag_module.py` — векторный поиск примеров
+- **Extractor** — NLU, извлекает интенты и сущности
+- **State Manager** — SQLite, хранит состояние диалога
+- **Planner** — LLM-Planner v2.2, выбирает действия
+- **RAG** — ChromaDB, примеры из реальных продаж
+- **Generator** — GPT-5.2, генерирует ответы
 
-## Логика v2.0
-- **Две ветки:** INVESTMENT и PERSONAL с разным порядком вопросов
-- **Два созвона:** PROPOSE_MEETING_1 (после базовой) и PROPOSE_MEETING_2 (после полной квалификации)
-- **Счётчик отказов:** При 2 отказах → FINISH_WITH_MATERIALS
+## 📁 Структура проекта
+```
+/opt/sofia-gpt/
+├── bot_server.py           # Основной Telegram бот
+├── sofia_userbot_pyrogram.py # Telegram userbot
+├── state_manager.py        # Управление состоянием
+├── extractor.py            # NLU
+├── planner.py              # LLM-Planner
+├── generator.py            # Генерация ответов
+├── config/
+│   └── radist_config.py    # Конфиг Radist API
+├── docs/
+│   ├── SOFIA_CONTEXT.md    # Этот файл
+│   ├── SOFIA_CURRENT.md    # Текущий статус
+│   ├── SOFIA_ARCHITECTURE.md
+│   ├── SOFIA_KNOWLEDGE.md
+│   ├── SOFIA_TASKS.md
+│   └── RADIST_API.md       # Документация Radist
+└── rag/
+    └── training_data/      # Обучающие данные
+```
 
-## Команды
+## 🔧 Управление сервисами
 ```bash
+# Статус
+systemctl status sofia-bot sofia-userbot
+
 # Перезапуск
-systemctl restart sofia-gpt
+systemctl restart sofia-bot
+systemctl restart sofia-userbot
 
 # Логи
-tail -f /opt/sofia-gpt/sofia_bot.log
-
-# Статус
-systemctl status sofia-gpt
-
-# Состояние клиента
-sqlite3 /opt/sofia-gpt/sofia_gpt.db "SELECT * FROM client_state WHERE user_id = ID;"
-
-# Feedback
-sqlite3 /opt/sofia-gpt/sofia_gpt.db "SELECT * FROM feedback_v2 ORDER BY timestamp DESC LIMIT 10;"
+journalctl -u sofia-bot -f
+journalctl -u sofia-userbot -f
 ```
 
-## Документация
-- `docs/SOFIA_CONTEXT.md` — этот файл
-- `docs/SOFIA_CURRENT.md` — текущий статус
-- `docs/SOFIA_ARCHITECTURE.md` — детальная архитектура v2.0
-- `docs/SOFIA_KNOWLEDGE.md` — база знаний
-- `docs/SOFIA_TASKS.md` — задачи
-- `docs/SESSION_END_TEMPLATE.md` — шаблон завершения сессии
+## 📋 Текущие задачи
+
+1. ☐ Настроить webhook Radist для входящих из Max
+2. ☐ Написать sofia_radist_gateway.py
+3. ☐ Интегрировать Max gateway с основной Sofia
+4. ☐ Продлить подписку Radist (до 31.01!)
+
+## 🔗 Ссылки
+
+- GitHub: https://github.com/semiekhin/sofia-bot
+- Radist Docs: https://docs.radist.online
+- Radist Swagger: https://api-ru.radist.online/v2/docs
