@@ -553,3 +553,42 @@ POST /companies/205054/messaging/messages/
 process_message(user_id, message, history) -> response
 ```
 Транспорты (Telegram, Max, etc.) только получают/отправляют сообщения.
+
+---
+
+## 29.01.2026: Исправление логики созвонов (КОНТРОЛЬНАЯ ТОЧКА)
+
+### Проблема
+После первого отказа от созвона бот снова предлагал созвон вместо продолжения квалификации.
+
+### Причины
+1. **Двойной инкремент `call_proposal_count`:**
+   - В `planner.py`: `state.call_proposal_count = 1/2`
+   - В `bot_server.py`: `+1` после PROPOSE_MEETING
+   - После MEETING_1 сразу записывалось 2
+
+2. **Неправильное условие HANDLE_OBJECTION:**
+   - `objection = "busy"` считался возражением
+   - Generator внутри HANDLE_OBJECTION снова предлагал созвон
+
+### Решение
+1. Убрали присвоение `call_proposal_count` из planner.py
+2. Изменили условие:
+```python
+# БЫЛО:
+if obj and obj != "no_call":
+    return Action.HANDLE_OBJECTION
+
+# СТАЛО:
+if obj and obj not in ["no_call", "busy"] and not wants_materials:
+    return Action.HANDLE_OBJECTION
+```
+
+### Результат
+Эталонный путь работает:
+```
+goal → strategy → budget → MEETING_1 → [отказ] → payment → location → lpr → MEETING_2 → [отказ] → FINISH
+```
+
+### Теги
+#bug-fix #planner #call_proposal_count #контрольная_точка
