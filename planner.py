@@ -91,7 +91,14 @@ ACTION_DESCRIPTIONS = {
 После ответа задай следующий квалификационный вопрос.""",
     
     Action.HANDLE_OBJECTION: """Обработать возражение клиента.
-Проявить понимание, дать аргумент, мягко вернуть к диалогу.""",
+Проявить понимание, дать аргумент, мягко вернуть к диалогу.
+
+⚠️ ЕСЛИ КЛИЕНТ ОТКАЗАЛСЯ ОТ СОЗВОНА (objection = busy/no_call, wants_materials = true):
+— НЕ предлагай созвон снова!
+— Прими отказ спокойно: "Понимаю вас, бывает)" или "Ок, без проблем)"
+— НЕ задавай вопросов квалификации в этом сообщении — следующий ACTION их задаст
+— Просто прими и заверши сообщение дружелюбно
+""",
     
     Action.CLARIFY_MENTIONED: """Уточнить упомянутую информацию.
 Клиент упомянул локацию/цену — уточни, это его выбор или просто вопрос.""",
@@ -260,11 +267,12 @@ def get_next_action(state: ClientState, message: str, extraction: dict = None) -
     # ═══════════════════════════════════════════════════════════════════════
     # ПРИОРИТЕТ 3: Обработка возражений (кроме no_call после первого отказа)
     # ═══════════════════════════════════════════════════════════════════════
-    if extraction.get("objection"):
-        obj = extraction.get("objection")
-        # no_call обрабатываем через счётчик выше, не через HANDLE_OBJECTION
-        if obj != "no_call":
-            return Action.HANDLE_OBJECTION
+    # Обработка возражений (кроме отказа от созвона)
+    obj = extraction.get("objection")
+    wants_materials = extraction.get("wants_materials")
+    # НЕ считаем возражением: отказ от созвона (busy, no_call) или запрос материалов
+    if obj and obj not in ["no_call", "busy"] and not wants_materials:
+        return Action.HANDLE_OBJECTION
     
     # ═══════════════════════════════════════════════════════════════════════
     # ПРИОРИТЕТ 4: Ответ на вопрос клиента
@@ -348,7 +356,6 @@ def _qualify_investment(state: ClientState, extraction: dict) -> Action:
         if friction >= 0.5 or call_readiness < 0.4:
             pass  # Пропускаем MEETING_1, идём дальше по квалификации
         else:
-            state.call_proposal_count = 1
             return Action.PROPOSE_MEETING_1
     
     # 3. payment_type (необязательно)
@@ -371,7 +378,6 @@ def _qualify_investment(state: ClientState, extraction: dict) -> Action:
     
     # ★ PROPOSE_MEETING_2 (после полной квалификации)
     if getattr(state, 'call_proposal_count', 0) == 1:
-        state.call_proposal_count = 2
         return Action.PROPOSE_MEETING_2
     
     # После второго отказа → FINISH_WITH_MATERIALS
@@ -412,7 +418,6 @@ def _qualify_personal(state: ClientState, extraction: dict) -> Action:
         if friction >= 0.5 or call_readiness < 0.4:
             pass  # Пропускаем MEETING_1, идём дальше по квалификации
         else:
-            state.call_proposal_count = 1
             return Action.PROPOSE_MEETING_1
     
     # 4. family (необязательно)
@@ -435,7 +440,6 @@ def _qualify_personal(state: ClientState, extraction: dict) -> Action:
     
     # ★ PROPOSE_MEETING_2 (после полной квалификации)
     if getattr(state, 'call_proposal_count', 0) == 1:
-        state.call_proposal_count = 2
         return Action.PROPOSE_MEETING_2
     
     # После второго отказа → FINISH_WITH_MATERIALS
@@ -657,7 +661,10 @@ def get_allowed_actions(state: ClientState, message: str, extraction: dict = Non
     # ГИБКИЕ СЛУЧАИ — LLM выбирает из списка
     # ═══════════════════════════════════════════════════════════════════════
     
-    has_objection = extraction.get("objection") and extraction.get("objection") != "no_call"
+    # Не считаем "возражением" отказ от созвона (busy, no_call) или запрос материалов
+    objection = extraction.get("objection")
+    wants_materials = extraction.get("wants_materials")
+    has_objection = objection and objection not in ["no_call", "busy"] and not wants_materials
     has_question = extraction.get("question_type")
     is_off_topic = extraction.get("answer_mode") == "off_topic"
     
