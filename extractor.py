@@ -591,7 +591,6 @@ def merge_extraction_to_state(current_state: dict, extraction: dict) -> dict:
     
     # Простые поля (перезаписываем если не None)
     simple_fields = [
-        "strategy", "usage", "family",
         "question_type", "objection", "wants_materials",
         "meeting_agreed", "meeting_datetime",
         "mentioned_location", "mentioned_price", "sentiment"
