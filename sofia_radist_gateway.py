@@ -21,6 +21,7 @@ from config.radist_config import RADIST_CONFIG, get_headers, get_base_url
 from state_manager import StateManager, ClientState
 from extractor import extract_sync, merge_extraction_to_state
 from planner import get_next_action, get_allowed_actions, get_action_context, Action, increment_slot_attempt
+from message_processor import process_message
 from sofia_prompt import get_system_prompt, BOT_NAME
 from rag_module import search_examples, format_examples_for_prompt
 from stage_detector import detect_stage
@@ -184,10 +185,9 @@ async def send_message_to_max(chat_id: int, text: str) -> bool:
 async def process_max_message(chat_id: int, contact_id: int, phone: str, user_message: str, user_name: str = None):
     """
     Обрабатывает входящее сообщение из Max.
-    Логика аналогична delayed_response из bot_server.py
+    Использует единый message_processor.
     """
     # Уникальный user_id для Max (чтобы не пересекался с Telegram)
-    # Используем отрицательный chat_id или префикс
     user_id = -chat_id  # Отрицательный ID для Max клиентов
     
     if not user_name:
@@ -198,107 +198,28 @@ async def process_max_message(chat_id: int, contact_id: int, phone: str, user_me
     # Сохраняем входящее сообщение
     save_max_message(chat_id, contact_id, phone, "user", user_message)
     
+    # Получаем историю
+    history = get_max_history(chat_id, limit=8)
+    
     # ════════════════════════════════════════════════════════════════════════
-    # Агентная архитектура — Extractor → State → Planner
+    # Единая обработка через message_processor
     # ════════════════════════════════════════════════════════════════════════
     
-    # 1. Получаем текущее состояние клиента
-    client_state = state_manager.get_state(user_id)
+    result = await process_message(
+        user_id=user_id,
+        user_name=user_name,
+        message=user_message,
+        history=history,
+        state_manager=state_manager,
+        channel="max"
+    )
     
-    # 2. Получаем историю для Extractor
-    history = get_max_history(chat_id, limit=6)
-    history_for_extractor = [{"role": m["role"], "content": m["content"]} for m in history]
-    
-    # 3. Извлекаем данные из сообщения (NLU)
-    extraction = extract_sync(user_message, history_for_extractor)
-    log(f"🔍 Extractor: {extraction}")
-    
-    # 4. Обновляем состояние клиента
-    state_updates = merge_extraction_to_state(client_state.to_dict(), extraction)
-    client_state = state_manager.update_state(user_id, state_updates)
-    log(f"📊 State: {client_state.summary()}")
-    
-    # 5. Определяем следующее действие (Planner)
-    micro_goal = None
-    tone = "warm"
-    
-    if USE_LLM_PLANNER:
-        try:
-            from llm_planner import llm_select_action
-            allowed_actions = get_allowed_actions(client_state, user_message, extraction)
-            log(f"🔀 Allowed actions: {[a.value for a in allowed_actions]}")
-            
-            if len(allowed_actions) > 1:
-                llm_result = llm_select_action(allowed_actions, client_state, user_message, history, extraction)
-                action = llm_result["action"]
-                micro_goal = llm_result.get("micro_goal")
-                tone = llm_result.get("tone", "warm")
-                log(f"🤖 LLM Planner: {action.value} | micro_goal: {micro_goal} | tone: {tone}")
-            else:
-                action = allowed_actions[0]
-                log(f"🎯 Single action: {action.value}")
-        except Exception as e:
-            log(f"⚠️ LLM Planner error: {e}, fallback to deterministic")
-            action = get_next_action(client_state, user_message, extraction)
-    else:
-        action = get_next_action(client_state, user_message, extraction)
-    
-    action_context = get_action_context(action, client_state, extraction)
-    if micro_goal:
-        action_context["micro_goal"] = micro_goal
-    action_context["tone"] = tone
-    log(f"🎯 Planner: {action.value}")
-    
-    # 5.1 Увеличиваем счётчики
-    ACTION_TO_SLOT = {"payment": "payment_type"}
-    if action.value.startswith("ask_"):
-        slot = action.value.replace("ask_", "")
-        slot = ACTION_TO_SLOT.get(slot, slot)
-        increment_slot_attempt(client_state, slot, "ask")
-        state_manager.update_state(user_id, {"slot_attempts": client_state.slot_attempts})
-    elif action.value.startswith("help_"):
-        slot = action.value.replace("help_", "")
-        slot = ACTION_TO_SLOT.get(slot, slot)
-        increment_slot_attempt(client_state, slot, "help")
-        state_manager.update_state(user_id, {"slot_attempts": client_state.slot_attempts})
-    
-    # 5.1.2 Увеличиваем счётчик запросов материалов
-    if extraction.get("wants_materials") or extraction.get("objection") == "no_call":
-        client_state.materials_request_count = getattr(client_state, "materials_request_count", 0) + 1
-    
-    if action in [Action.PROPOSE_MEETING_1, Action.PROPOSE_MEETING_2]:
-        client_state.call_proposal_count = getattr(client_state, 'call_proposal_count', 0) + 1
-    
-    # 5.2 Сохраняем обновления состояния
-    v2_updates = {
-        "branch": client_state.branch,
-        "call_proposal_count": client_state.call_proposal_count,
-        "materials_request_count": client_state.materials_request_count,
-    }
-    
-    signals = extraction.get("signals", {})
-    if signals:
-        v2_updates["friction"] = signals.get("friction", 0.3)
-        v2_updates["call_readiness"] = signals.get("call_readiness", 0.5)
-        v2_updates["engagement"] = signals.get("engagement", "medium")
-        v2_updates["urgency"] = signals.get("urgency", "unclear")
-    
-    if action == Action.FINISH_WITH_MATERIALS:
-        v2_updates["dialog_finished"] = True
-        v2_updates["finish_type"] = "materials"
-    elif action == Action.CONFIRM_MEETING:
-        v2_updates["dialog_finished"] = True
-        v2_updates["finish_type"] = "meeting"
-    
-    state_manager.update_state(user_id, v2_updates)
-    
-    # 6. Проверка WAIT
-    if action == Action.WAIT:
+    # Если WAIT — не отвечаем
+    if result["skip_response"]:
         log(f"⏸️ WAIT: пропускаем ответ")
         return
     
-    # 7. Очищаем временные флаги
-    state_manager.clear_temporary_flags(user_id)
+    action_context = result["action_context"]
     
     # ════════════════════════════════════════════════════════════════════════
     # Генерация ответа
@@ -310,7 +231,11 @@ async def process_max_message(chat_id: int, contact_id: int, phone: str, user_me
     save_max_message(chat_id, contact_id, phone, "assistant", response)
     
     # Отправляем в Max
-    await send_message_to_max(chat_id, response)
+    success = await send_message_to_max(chat_id, response)
+    if success:
+        log(f"📤 Max → {user_name}: {response[:50]}...")
+    else:
+        log(f"❌ Не удалось отправить в Max")
 
 
 async def generate_response_max(chat_id: int, user_id: int, user_message: str, user_name: str, action_context: dict) -> str:

@@ -37,6 +37,7 @@ try:
     from extractor import extract_sync, merge_extraction_to_state
     from state_manager import StateManager
     from planner import get_next_action, get_allowed_actions, get_action_context, Action, increment_slot_attempt
+    from message_processor import process_message
     from sofia_prompt import get_system_prompt, BOT_NAME, PRICE_CATALOG
     from rag_module import search_examples, format_examples_for_prompt, init_vector_store
     import openai
@@ -145,122 +146,43 @@ ACTION_TO_RAG_STAGE = {
 # ============================================
 
 async def process_with_sofia(user_id: int, user_name: str, message: str) -> str:
-    """Обрабатывает сообщение через логику Sofia"""
+    """Обрабатывает сообщение через единый message_processor"""
     
     if not SOFIA_AVAILABLE:
         return f"Эхо: {message}"
     
     try:
-        # Получаем историю
+        # Получаем историю из памяти
         history = conversations.get(user_id, [])
+        history_list = history[-8:] if history else []
         
-        # 1. Extractor
-        extraction = extract_sync(message, history[-6:] if history else None)
+        # Единая обработка через message_processor
+        result = await process_message(
+            user_id=user_id,
+            user_name=user_name,
+            message=message,
+            history=history_list,
+            state_manager=state_manager,
+            channel="userbot"
+        )
         
-        # 2. State Manager — мержим extraction в состояние
-        client_state = state_manager.get_state(user_id)
-        if extraction:
-            state_updates = merge_extraction_to_state(client_state.to_dict(), extraction)
-            client_state = state_manager.update_state(user_id, state_updates)
-            log(f"📊 State updated: {client_state.summary()}")
+        # Если WAIT — не отвечаем
+        if result["skip_response"]:
+            log(f"⏸️ WAIT (Planner): пропускаем ответ")
+            return None
         
-        # 3. Planner
-        micro_goal = None
-        tone = "warm"
+        action_context = result["action_context"]
+        client_state = result["client_state"]
         
-        if USE_LLM_PLANNER:
-            try:
-                from llm_planner import llm_select_action
-                allowed_actions = get_allowed_actions(client_state, message, extraction or {})
-                log(f"🔀 Allowed actions: {[a.value for a in allowed_actions]}")
-                
-                if len(allowed_actions) > 1:
-                    history = history[-8:]  # последние 8 сообщений
-                    llm_result = llm_select_action(allowed_actions, client_state, message, history, extraction or {})
-                    action = llm_result["action"]
-                    micro_goal = llm_result.get("micro_goal")
-                    tone = llm_result.get("tone", "warm")
-                    log(f"🤖 LLM Planner: {action.value} | micro_goal: {micro_goal} | tone: {tone}")
-                else:
-                    action = allowed_actions[0]
-                    log(f"🎯 Single action: {action.value}")
-            except Exception as e:
-                log(f"⚠️ LLM Planner error: {e}, fallback to deterministic")
-                action = get_next_action(client_state, message, extraction or {})
-        else:
-            action = get_next_action(client_state, message, extraction or {})
-        
-        action_context = get_action_context(action, client_state, extraction or {})
-        if micro_goal:
-            action_context["micro_goal"] = micro_goal
-        action_context["tone"] = tone
-        
-        # 3.0.1 Обогащение финансовым расчётом (если спрашивают про доходность)
-        if action == Action.ANSWER_QUESTION and extraction.get("question_type") == "profitability":
-            if client_state.budget and client_state.budget > 0:
-                try:
-                    from finance_calculator import compare_investments, format_short_comparison
-                    fin_result = compare_investments(amount=client_state.budget, construction_years=2, total_years=5)
-                    action_context["finance_calculation"] = format_short_comparison(fin_result)
-                    log(f"💰 Finance: расчёт для {client_state.budget/1_000_000:.1f} млн")
-                except Exception as e:
-                    log(f"⚠️ Finance error: {e}")
-            else:
-                action_context["finance_calculation"] = "Бюджет пока не известен — дай общие цифры (8-12% аренда, 20-30% рост на стройке)"
-        
-        log(f"🎯 PLANNER (incoming):")
-        log(f"   Action: {action.value}")
-        log(f"   State: goal={client_state.goal}({client_state.goal_confidence}), loc={client_state.location}({client_state.location_confidence}), budget={client_state.budget}")
-        log(f"   is_qualified: {client_state.is_qualified()}")
-        log(f"   Extraction: {extraction}")
-        
-        # 3.1 Увеличиваем счётчик попыток для слота (защита от повторов)
-        if action.value.startswith("ask_"):
-            slot = action.value.replace("ask_", "")
-            slot = ACTION_TO_SLOT.get(slot, slot)  # payment → payment_type
-            increment_slot_attempt(client_state, slot, "ask")
-            state_manager.update_state(user_id, {"slot_attempts": client_state.slot_attempts})
-        elif action.value.startswith("help_"):
-            slot = action.value.replace("help_", "")
-            slot = ACTION_TO_SLOT.get(slot, slot)  # payment → payment_type
-            increment_slot_attempt(client_state, slot, "help")
-            state_manager.update_state(user_id, {"slot_attempts": client_state.slot_attempts})
-        
-        # 3.2 Сохраняем v2.0 поля (branch, счётчики, завершение)
-        v2_updates = {
-            "branch": client_state.branch,
-            "call_proposal_count": client_state.call_proposal_count,
-            "materials_request_count": client_state.materials_request_count,
-        }
-        
-        # v2.2: Сохраняем латентные метрики (signals)
-        signals = extraction.get("signals", {}) if extraction else {}
-        if signals:
-            v2_updates["friction"] = signals.get("friction", 0.3)
-            v2_updates["call_readiness"] = signals.get("call_readiness", 0.5)
-            v2_updates["engagement"] = signals.get("engagement", "medium")
-            v2_updates["urgency"] = signals.get("urgency", "unclear")
-        if action == Action.FINISH_WITH_MATERIALS:
-            v2_updates["dialog_finished"] = True
-            v2_updates["finish_type"] = "materials"
-        elif action == Action.CONFIRM_MEETING:
-            v2_updates["dialog_finished"] = True
-            v2_updates["finish_type"] = "meeting"
-        state_manager.update_state(user_id, v2_updates)
-        
-        # 4. RAG — ищем примеры по action Planner'а
-        rag_stage = ACTION_TO_RAG_STAGE.get(action.value, "QUALIFICATION")
+        # RAG — ищем примеры
+        action_value = result["action"]
+        rag_stage = ACTION_TO_RAG_STAGE.get(action_value, "QUALIFICATION")
         examples = search_examples(rag_stage, message, limit=RAG_EXAMPLES_COUNT)
         examples_text = format_examples_for_prompt(examples) if examples else ""
         log(f"📚 RAG: {len(examples) if examples else 0} примеров для {rag_stage}")
         
-        # 4.1 Проверка WAIT от Planner
-        if action == Action.WAIT:
-            log(f"⏸️ WAIT (Planner): пропускаем ответ")
-            return None
-        
-        # 5. Generator (OpenAI)
-        response = await generate_with_openai(user_name, message, history, action_context, examples_text)
+        # Generator (OpenAI)
+        response = await generate_with_openai(user_name, message, history_list, action_context, examples_text)
         
         # Сохраняем в историю
         if user_id not in conversations:

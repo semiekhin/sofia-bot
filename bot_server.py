@@ -28,6 +28,7 @@ from rag_module import search_examples, format_examples_for_prompt, init_vector_
 from state_manager import StateManager, ClientState
 from extractor import extract_sync, merge_extraction_to_state
 from planner import get_next_action, get_allowed_actions, get_action_context, format_action_for_prompt, Action, increment_slot_attempt
+from message_processor import process_message
 
 # Детекторы отключены — управление через промпт + RAG
 # from detectors import ...
@@ -556,136 +557,32 @@ async def delayed_response(chat_id, user_id, user_name, context):
     
     mark_messages_processed(chat_id)
 
-#     # WAIT-логика: не отвечать на короткие подтверждения после договорённости
-#     last_bot_msg = get_last_bot_message(chat_id)
-#     if should_skip_response(combined_message, last_bot_msg):
-#         log(f"⏸️ WAIT: пропускаем ответ на '{combined_message}' после договорённости")
-#         return
-#     
+
     # ════════════════════════════════════════════════════════════════════════
-    # NEW: Агентная архитектура — Extractor → State → Planner
+    # Унифицированная обработка через message_processor
     # ════════════════════════════════════════════════════════════════════════
     
-    # 1. Получаем текущее состояние клиента
-    client_state = state_manager.get_state(user_id)
+    history = get_conversation_history(chat_id, limit=8)
+    result = await process_message(
+        state_manager=state_manager,
+        user_id=user_id,
+        user_name=user_name,
+        message=combined_message,
+        history=history,
+        channel="telegram"
+    )
     
-    # 2. Получаем историю для Extractor
-    history = get_conversation_history(chat_id, limit=6)
-    history_for_extractor = [{"role": m["role"], "content": m["content"]} for m in history]
-    
-    # 3. Извлекаем данные из сообщения (NLU)
-    extraction = extract_sync(combined_message, history_for_extractor)
-    log(f"🔍 Extractor: {extraction}")
-    
-    # 4. Обновляем состояние клиента
-    state_updates = merge_extraction_to_state(client_state.to_dict(), extraction)
-    client_state = state_manager.update_state(user_id, state_updates)
-    log(f"📊 State: {client_state.summary()}")
-    
-    # 5. Определяем следующее действие (Planner)
-    micro_goal = None
-    tone = "warm"
-    
-    if USE_LLM_PLANNER:
-        try:
-            from llm_planner import llm_select_action
-            allowed_actions = get_allowed_actions(client_state, combined_message, extraction)
-            log(f"🔀 Allowed actions: {[a.value for a in allowed_actions]}")
-            
-            if len(allowed_actions) > 1:
-                # Несколько вариантов — спрашиваем LLM
-                history = get_conversation_history(chat_id, limit=8)
-                llm_result = llm_select_action(allowed_actions, client_state, combined_message, history, extraction)
-                action = llm_result["action"]
-                micro_goal = llm_result.get("micro_goal")
-                tone = llm_result.get("tone", "warm")
-                log(f"🤖 LLM Planner: {action.value} | micro_goal: {micro_goal} | tone: {tone}")
-            else:
-                # Один вариант — не тратим токены
-                action = allowed_actions[0]
-                log(f"🎯 Single action: {action.value}")
-        except Exception as e:
-            log(f"⚠️ LLM Planner error: {e}, fallback to deterministic")
-            action = get_next_action(client_state, combined_message, extraction)
-    else:
-        action = get_next_action(client_state, combined_message, extraction)
-    
-    action_context = get_action_context(action, client_state, extraction)
-    # v3.0: Добавляем micro_goal и tone в контекст для Generator
-    if micro_goal:
-        action_context["micro_goal"] = micro_goal
-    action_context["tone"] = tone
-    log(f"🎯 Planner: {action.value} → {action_context.get('action_description', '')[:50]}...")
-    
-    # 5.0.1 Обогащение финансовым расчётом (если спрашивают про доходность)
-    if action == Action.ANSWER_QUESTION and extraction.get("question_type") == "profitability":
-        if client_state.budget and client_state.budget > 0:
-            try:
-                from finance_calculator import compare_investments, format_short_comparison
-                fin_result = compare_investments(amount=client_state.budget, construction_years=2, total_years=5)
-                action_context["finance_calculation"] = format_short_comparison(fin_result)
-                log(f"💰 Finance: расчёт для {client_state.budget/1_000_000:.1f} млн")
-            except Exception as e:
-                log(f"⚠️ Finance error: {e}")
-        else:
-            # Бюджет неизвестен — дадим общую информацию
-            action_context["finance_calculation"] = "Бюджет пока не известен — дай общие цифры (8-12% аренда, 20-30% рост на стройке)"
-    
-    # 5.1 Увеличиваем счётчик попыток для слота
-    # Маппинг: action name → slot name (для несовпадающих имён)
-    ACTION_TO_SLOT = {"payment": "payment_type"}
-    if action.value.startswith("ask_"):
-        slot = action.value.replace("ask_", "")
-        slot = ACTION_TO_SLOT.get(slot, slot)  # payment → payment_type
-        increment_slot_attempt(client_state, slot, "ask")
-        state_manager.update_state(user_id, {"slot_attempts": client_state.slot_attempts})
-    elif action.value.startswith("help_"):
-        slot = action.value.replace("help_", "")
-        slot = ACTION_TO_SLOT.get(slot, slot)  # payment → payment_type
-        increment_slot_attempt(client_state, slot, "help")
-        state_manager.update_state(user_id, {"slot_attempts": client_state.slot_attempts})
-    
-    # 5.1.1 Увеличиваем счётчик предложений созвона
-    if action in [Action.PROPOSE_MEETING_1, Action.PROPOSE_MEETING_2]:
-        client_state.call_proposal_count = getattr(client_state, 'call_proposal_count', 0) + 1
-    
-    # 5.2 NEW v2.0: Сохраняем поля изменённые в Planner
-    v2_updates = {
-        "branch": client_state.branch,
-        "call_proposal_count": client_state.call_proposal_count,
-        "materials_request_count": client_state.materials_request_count,
-    }
-    
-    # 5.2.1 NEW v2.2: Сохраняем латентные метрики (signals)
-    signals = extraction.get("signals", {})
-    if signals:
-        v2_updates["friction"] = signals.get("friction", 0.3)
-        v2_updates["call_readiness"] = signals.get("call_readiness", 0.5)
-        v2_updates["engagement"] = signals.get("engagement", "medium")
-        v2_updates["urgency"] = signals.get("urgency", "unclear")
-    
-    # При завершении диалога
-    if action == Action.FINISH_WITH_MATERIALS:
-        v2_updates["dialog_finished"] = True
-        v2_updates["finish_type"] = "materials"
-    elif action == Action.CONFIRM_MEETING:
-        v2_updates["dialog_finished"] = True
-        v2_updates["finish_type"] = "meeting"
-    
-    state_manager.update_state(user_id, v2_updates)
-    
-    # 5.3 Уведомление менеджеру при завершении диалога
-    if v2_updates.get("dialog_finished"):
-        await notify_manager_deal(context.bot, client_state, user_name, v2_updates["finish_type"])
-    
-    # 6. Проверка WAIT от Planner
-    if action == Action.WAIT:
-        log(f"⏸️ WAIT (Planner): пропускаем ответ")
+    # Если WAIT — не отвечаем
+    if result["skip_response"]:
         return
     
-    # 7. Очищаем временные флаги после обработки
-    state_manager.clear_temporary_flags(user_id)
+    action_context = result["action_context"]
+    client_state = result["client_state"]
     
+    # Уведомление менеджеру при завершении диалога
+    if result["should_notify"]:
+        await notify_manager_deal(context.bot, client_state, user_name, result["notification_type"])
+
     # ════════════════════════════════════════════════════════════════════════
     
     stop_typing = asyncio.Event()
