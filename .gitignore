@@ -12,3 +12,5 @@ chroma_db/
 *.backup_*
 *.session
 *.session-journal
+*.session
+backup_*/

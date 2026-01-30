@@ -288,7 +288,7 @@ async def handle_message(client, message):
     log(f"📤 София: {response}")
     
     # Транслируем в группу наблюдателей
-    await broadcast_to_observers(app, user_name, user_id, text, response)
+    # ТЕСТ:     await broadcast_to_observers(app, user_name, user_id, text, response)
 
 
 # ============================================
