@@ -42,6 +42,7 @@ load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "512319063"))
+OBSERVER_CHAT_ID = int(os.getenv("OBSERVER_CHAT_ID", "-5206139579"))
 
 # Модель OpenAI
 MODEL_MODE = os.getenv("MODEL_MODE", "gpt-5.2")
@@ -938,6 +939,10 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     user_name = update.effective_user.first_name or "друг"
     chat_id = update.effective_chat.id
+    
+    # Игнорируем сообщения из групп (включая Observer)
+    if update.effective_chat.type in ["group", "supergroup"]:
+        return
     user_message = update.message.text
     
     # Комментарий к оценке?
