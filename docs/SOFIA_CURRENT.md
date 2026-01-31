@@ -1,67 +1,61 @@
-# Sofia-GPT Current Status
+# Текущий статус Sofia-GPT
 
-📅 **Обновлено:** 31.01.2026
+📅 **Последняя сессия:** 31.01.2026
 
-## Текущее состояние
+## ✅ Что сделано (сессия 30-31.01.2026)
 
-### ✅ Работает
-- **Telegram Bot** (@humanAINeural_bot) — основной бот, полный цикл
-- **Max Gateway** (Radist.Online) — интеграция работает, message_processor подключен
-- **message_processor.py** — единая логика для всех каналов
+### Мультиканальность через Radist
+- Мультиканальный gateway v2.0 (Max + Telegram)
+- Webhook для обоих каналов настроен
+- Единая БД radist_messages для всех каналов
 
-### ⚠️ Проблемы
+### Проактивная отправка (ГЛАВНОЕ!)
+- Скрипт sofia_outreach.sh для первого контакта с клиентом
+- Telegram: по @username
+- Max: по номеру телефона
+- Сохраняет первое сообщение в БД для контекста
 
-#### 1. Telegram Userbot — не работает
-- Коды авторизации не приходят (ни в app, ни на почту, ни по SMS)
-- Номер: +79181038493 (@SofiaOazis)
-- **Workaround:** использовать Telegram через Radist.Online (как Max)
+### Observer Chat
+- Группа "Диалоги Софья" — все диалоги в одном месте
+- Формат: `[КАНАЛ] Клиент → сообщение` и `София → Клиент: ответ`
+- Бот игнорирует сообщения в группах
 
-#### 2. Подписка Radist — истекает 31.01.2026!
-- Нужно продлить для продолжения работы Max
-- Также для подключения Telegram/WhatsApp через Radist
+## 🔄 Текущее состояние
+- ✅ Max через Radist — работает
+- ✅ Telegram через Radist — работает
+- ✅ Telegram Bot (@humanAINeural_bot) — работает
+- ✅ Проактивная отправка — работает
+- ✅ Observer Chat — работает
+- ⏳ WhatsApp — не подключён в Radist
 
-#### 3. dialog_finished не устанавливается
-- При фразах "Вопрос решён", "Не актуально", "Спасибо, не надо" — состояние не обновляется
-- **Влияние:** Нет (в Max нет напоминаний)
-- **Нужно:** Обновить extractor для распознавания завершающих фраз
+## ⚠️ Известные баги
+- BUG-001: dialog_finished не ставится при отказе клиента (см. SOFIA_BUGS.md)
 
-### 📊 Архитектура
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    ВХОДЯЩИЕ КАНАЛЫ                          │
-├─────────────────────────────────────────────────────────────┤
-│  Telegram Bot ✅      Userbot ❌         Max ✅              │
-│  bot_server.py       (не работает)    sofia_radist_gateway  │
-└──────────────┬───────────────────────────────┬──────────────┘
-               │                               │
-               └───────────┬───────────────────┘
-                           ↓
-              ┌────────────────────────┐
-              │   message_processor.py │
-              │   (единая логика)      │
-              └────────────────────────┘
-                           ↓
-              Extractor → State → Planner → Generator
-```
+## 🔜 Следующие шаги
+1. Подключить WhatsApp через Radist
+2. Фикс BUG-001 (напоминания при отказе)
+3. Добавить эталонный пример в RAG ("ошибочный контакт")
+4. Исследовать LLM-Planner v2.0 (свободный режим без детерминированного планера)
 
-## Сервисы
+## 📁 Изменённые файлы
+- `config/radist_config.py` — мультиканальный конфиг
+- `sofia_radist_gateway.py` — gateway v2.0 с Observer
+- `sofia_outreach.sh` — скрипт проактивной отправки
+- `bot_server.py` — игнорирование групп
+- `docs/SOFIA_BUGS.md` — новый файл с багами
+- `docs/SOFIA_TASKS.md` — новые задачи
+
+## 🔧 Команды
 ```bash
-# Статус
-systemctl status sofia-bot        # Telegram Bot
-systemctl status sofia-radist     # Max Gateway
+# Проактивная отправка
+/opt/sofia-gpt/sofia_outreach.sh telegram @username [Имя]
+/opt/sofia-gpt/sofia_outreach.sh max 79001234567 [Имя]
+
+# Перезапуск сервисов
+systemctl restart sofia-gpt        # Telegram Bot
+systemctl restart sofia-radist     # Radist Gateway
 
 # Логи
-tail -f /opt/sofia-gpt/sofia_bot.log
 tail -f /opt/sofia-gpt/sofia_radist.log
-journalctl -u sofia-bot -f
-journalctl -u sofia-radist -f
-```
-
-## Команды
-```bash
-# Отправить первое сообщение через Max
-./sofia_max_start.sh +79001234567
-
-# Сбросить состояние клиента (Max)
-sqlite3 sofia_gpt.db "DELETE FROM client_state WHERE user_id = -39XXXXXX;"
+tail -f /opt/sofia-gpt/sofia_bot.log
 ```
