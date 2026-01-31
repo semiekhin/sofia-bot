@@ -1,49 +1,67 @@
-# Текущий статус Sofia-GPT
+# Sofia-GPT Current Status
 
-📅 **Последняя сессия:** 29.01.2026, 22:45
-🏷️ **Версия:** v3.2 — "Исправлена логика созвонов"
+📅 **Обновлено:** 31.01.2026
 
-## 🎯 КОНТРОЛЬНАЯ ТОЧКА — SOFIA РАБОТАЕТ КОРРЕКТНО!
+## Текущее состояние
 
-**Дата:** 29.01.2026 22:40
-**Статус:** ✅ Полный цикл квалификации работает по эталону
+### ✅ Работает
+- **Telegram Bot** (@humanAINeural_bot) — основной бот, полный цикл
+- **Max Gateway** (Radist.Online) — интеграция работает, message_processor подключен
+- **message_processor.py** — единая логика для всех каналов
 
-### Эталонный путь диалога (INVESTMENT):
+### ⚠️ Проблемы
+
+#### 1. Telegram Userbot — не работает
+- Коды авторизации не приходят (ни в app, ни на почту, ни по SMS)
+- Номер: +79181038493 (@SofiaOazis)
+- **Workaround:** использовать Telegram через Radist.Online (как Max)
+
+#### 2. Подписка Radist — истекает 31.01.2026!
+- Нужно продлить для продолжения работы Max
+- Также для подключения Telegram/WhatsApp через Radist
+
+#### 3. dialog_finished не устанавливается
+- При фразах "Вопрос решён", "Не актуально", "Спасибо, не надо" — состояние не обновляется
+- **Влияние:** Нет (в Max нет напоминаний)
+- **Нужно:** Обновить extractor для распознавания завершающих фраз
+
+### 📊 Архитектура
 ```
-START → ASK_GOAL → ASK_STRATEGY → ASK_BUDGET → ASK_PAYMENT
-    → PROPOSE_MEETING_1
-    → [отказ клиента]
-    → ASK_LOCATION → ASK_LPR  ← продолжение квалификации!
-    → PROPOSE_MEETING_2
-    → [отказ клиента]
-    → FINISH_WITH_MATERIALS + уведомление менеджеру
+┌─────────────────────────────────────────────────────────────┐
+│                    ВХОДЯЩИЕ КАНАЛЫ                          │
+├─────────────────────────────────────────────────────────────┤
+│  Telegram Bot ✅      Userbot ❌         Max ✅              │
+│  bot_server.py       (не работает)    sofia_radist_gateway  │
+└──────────────┬───────────────────────────────┬──────────────┘
+               │                               │
+               └───────────┬───────────────────┘
+                           ↓
+              ┌────────────────────────┐
+              │   message_processor.py │
+              │   (единая логика)      │
+              └────────────────────────┘
+                           ↓
+              Extractor → State → Planner → Generator
 ```
 
-### Что было исправлено (29.01.2026):
-1. Убран двойной инкремент call_proposal_count
-2. busy и no_call + wants_materials НЕ вызывают HANDLE_OBJECTION
-3. После отказа от MEETING_1 → продолжается квалификация
-4. PROPOSE_MEETING_2 срабатывает после полной квалификации
-
----
-
-## ✅ Что работает
-
-- ✅ Основной бот @humanAINeural_bot — полный цикл
-- ✅ RAG примеры
-- ✅ Уведомления менеджеру
-- ⚠️ Max Gateway — логика НЕ унифицирована (TODO)
-- ⏸️ Userbot — остановлен
-
-## 🔜 Следующие шаги
-
-1. Унификация логики — создать message_processor.py
-2. Подключить userbot и Max к единой логике
-3. ⚠️ Подписка Radist до 31.01.2026!
-
-## 🚀 Команды
+## Сервисы
 ```bash
-systemctl restart sofia-gpt
+# Статус
+systemctl status sofia-bot        # Telegram Bot
+systemctl status sofia-radist     # Max Gateway
+
+# Логи
 tail -f /opt/sofia-gpt/sofia_bot.log
-sqlite3 /opt/sofia-gpt/sofia_gpt.db "SELECT * FROM client_state WHERE user_id = ID;"
+tail -f /opt/sofia-gpt/sofia_radist.log
+journalctl -u sofia-bot -f
+journalctl -u sofia-radist -f
+```
+
+## Команды
+```bash
+# Отправить первое сообщение через Max
+./sofia_max_start.sh +79001234567
+
+# Сбросить состояние клиента (Max)
+sqlite3 sofia_gpt.db "DELETE FROM client_state WHERE user_id = -39XXXXXX;"
 ```
