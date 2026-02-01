@@ -329,65 +329,135 @@ async def process_incoming_message(channel: str, connection_id: int, chat_id: in
 
 
 async def generate_response(channel: str, chat_id: int, user_id: int, user_message: str, user_name: str, action_context: dict) -> str:
-    """Генерирует ответ с использованием RAG"""
+    """Генерирует ответ с LLM-Аналитиком + RAG (v3.0)"""
     
     history = get_history(channel, chat_id)
+    state = state_manager.get_state(user_id)
     
-    # Определяем этап для RAG
-    stage_result = detect_stage(user_message, history, "QUALIFICATION")
-    current_stage = stage_result["stage"]
+    # Форматируем историю
+    history_text = "\n".join([
+        f"{'София' if m['role']=='assistant' else 'Клиент'}: {m['content']}" 
+        for m in history[-20:]
+    ])
     
-    # RAG примеры
+    # Форматируем state
+    from sofia_prompt_v2 import format_state_summary
+    state_summary = format_state_summary(state) if state else "Новый клиент"
+    
+    # ═══════════════════════════════════════════════════════════════
+    # ШАГ 1: LLM-Аналитик определяет контекст
+    # ═══════════════════════════════════════════════════════════════
+    
+    analyzer_prompt = """Ты — аналитик диалогов продаж недвижимости.
+
+Прочитай диалог и последнее сообщение клиента. Определи:
+1. На какой вопрос/тему отвечает клиент?
+2. Какой сейчас этап продажи?
+3. Какие примеры из базы помогут менеджеру ответить?
+
+ЭТАПЫ:
+- GREETING — приветствие, начало диалога
+- QUALIFICATION — выясняем цель, бюджет, сроки, способ оплаты
+- MEETING — предлагаем созвон
+- OBJECTION — клиент возражает (дорого, подумаю, не сейчас, пришлите материалы)
+- CLOSING — завершение (договорились о созвоне, отправляем подборку, прощаемся)
+
+Ответь СТРОГО в формате JSON:
+{
+  "client_intent": "краткое описание что имеет в виду клиент",
+  "stage": "ОДИН ИЗ ЭТАПОВ",
+  "rag_query": "что искать в базе примеров (на русском, 3-7 слов)"
+}"""
+
+    analyzer_input = f"""ИСТОРИЯ ДИАЛОГА:
+{history_text if history_text else "Диалог только начался"}
+
+НОВОЕ СООБЩЕНИЕ КЛИЕНТА:
+{user_message}
+
+ЧТО ИЗВЕСТНО О КЛИЕНТЕ:
+{state_summary}"""
+
+    rag_stage = "QUALIFICATION"
+    rag_query = user_message
+    
+    try:
+        log(f"🧠 [{channel.upper()}] Analyzer запрос...")
+        analyzer_response = await asyncio.to_thread(
+            client.responses.create,
+            model="gpt-5.2",
+            instructions=analyzer_prompt,
+            input=analyzer_input,
+            reasoning={"effort": "medium"},
+            max_output_tokens=300
+        )
+        
+        analyzer_text = analyzer_response.output_text or ""
+        
+        import re
+        json_match = re.search(r'\{[^}]+\}', analyzer_text, re.DOTALL)
+        if json_match:
+            analysis = json.loads(json_match.group())
+            rag_stage = analysis.get("stage", "QUALIFICATION")
+            rag_query = analysis.get("rag_query", user_message)
+            log(f"🧠 [{channel.upper()}] Analyzer: stage={rag_stage}, query='{rag_query[:30]}...'")
+        else:
+            log(f"⚠️ [{channel.upper()}] Analyzer: JSON не найден, fallback")
+            
+    except Exception as e:
+        log(f"⚠️ [{channel.upper()}] Analyzer error: {e}, fallback")
+    
+    # ═══════════════════════════════════════════════════════════════
+    # ШАГ 2: RAG ищет релевантные примеры
+    # ═══════════════════════════════════════════════════════════════
+    
     examples_prompt = ""
-    if RAG_ENABLED and action_context:
-        action = action_context.get("action", "")
-        rag_stage = ACTION_TO_RAG_STAGE.get(action, current_stage)
-        examples = search_examples(rag_stage, user_message, limit=RAG_EXAMPLES_COUNT)
+    if RAG_ENABLED:
+        examples = search_examples(rag_stage, rag_query, limit=RAG_EXAMPLES_COUNT)
         if examples:
             examples_prompt = format_examples_for_prompt(examples)
-            log(f"📚 [{channel.upper()}] RAG: {len(examples)} примеров для {rag_stage}")
+            log(f"📚 [{channel.upper()}] RAG [{rag_stage}]: {len(examples)} примеров")
     
-    # System prompt
-    system_prompt = get_system_prompt(user_name, action_context)
+    # ═══════════════════════════════════════════════════════════════
+    # ШАГ 3: LLM-Генератор пишет ответ
+    # ═══════════════════════════════════════════════════════════════
     
-    if examples_prompt:
-        system_prompt += f"""
-
-════════════════════════════════════════════════════════════════════════════════
-ПРИМЕРЫ ХОРОШИХ ОТВЕТОВ (RAG)
-════════════════════════════════════════════════════════════════════════════════
-{examples_prompt}
-"""
+    from sofia_prompt_v2 import get_system_prompt_v2
+    system_prompt = get_system_prompt_v2(state_summary, examples_prompt)
     
-    # Формируем сообщения
-    messages = []
-    for msg in history:
-        messages.append({"role": msg["role"], "content": msg["content"]})
+    messages = [{"role": m["role"], "content": m["content"]} for m in history]
     messages.append({"role": "user", "content": user_message})
     
-    # Вызов OpenAI
     try:
-        log(f"🔄 [{channel.upper()}] GPT запрос для {user_name}...")
+        log(f"🔄 [{channel.upper()}] Generator запрос для {user_name}...")
         
         response = await asyncio.to_thread(
             client.responses.create,
             model="gpt-5.2",
             instructions=system_prompt,
             input=messages,
-            text={"verbosity": "low"}
+            reasoning={"effort": "high"},
+            max_output_tokens=800
         )
         
-        assistant_message = response.output_text
-        if not assistant_message or assistant_message.strip() == "":
-            assistant_message = "Вы на связи? 😊"
+        answer = response.output_text or ""
         
-        log(f"✅ [{channel.upper()}] GPT ответил")
-        return assistant_message
+        # Проверяем [END] маркер
+        if "[END]" in answer or "[end]" in answer:
+            answer = answer.replace("[END]", "").replace("[end]", "").strip()
+            # Ставим dialog_finished
+            state_manager.update_state(user_id, {"dialog_finished": True, "finish_type": "llm_end"})
+            log(f"🏁 [{channel.upper()}] LLM завершил диалог [END]")
+        
+        if not answer.strip():
+            answer = "Подскажите, что для вас сейчас важнее — посмотреть варианты или обсудить условия?"
+        
+        log(f"✅ [{channel.upper()}] Generator ответил")
+        return answer
         
     except Exception as e:
-        log(f"❌ [{channel.upper()}] Ошибка GPT: {e}")
+        log(f"❌ [{channel.upper()}] Generator error: {e}")
         return "Простите, связь подвисла. Напишите ещё раз?"
-
 
 # ============================================
 # WEBHOOK HANDLER
