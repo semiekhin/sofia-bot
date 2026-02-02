@@ -26,6 +26,7 @@ from state_manager import StateManager
 from message_processor import process_message
 from sofia_prompt import get_system_prompt
 from rag_module import search_examples, format_examples_for_prompt
+from message_queue import process_with_queue
 from stage_detector import detect_stage
 
 load_dotenv()
@@ -460,6 +461,72 @@ async def generate_response(channel: str, chat_id: int, user_id: int, user_messa
         return "Простите, связь подвисла. Напишите ещё раз?"
 
 # ============================================
+
+# ============================================
+# WRAPPER ДЛЯ ОЧЕРЕДИ СООБЩЕНИЙ
+# ============================================
+
+async def process_message_wrapper(combined_message: str, context: dict) -> dict:
+    """
+    Wrapper для обработки сообщений с поддержкой очереди.
+    Генерирует ответ, но НЕ отправляет — возвращает callback для отправки.
+    """
+    channel = context["channel"]
+    connection_id = context["connection_id"]
+    chat_id = context["chat_id"]
+    contact_id = context["contact_id"]
+    phone = context["phone"]
+    user_name = context["user_name"]
+    
+    channel_offset = {"max": 1000000, "telegram": 2000000, "whatsapp": 3000000}
+    offset = channel_offset.get(channel, 9000000)
+    user_id = -(offset + chat_id)
+    
+    if not user_name:
+        user_name = phone
+    
+    emoji = CHANNEL_EMOJI.get(channel, "📨")
+    log(f"{emoji} [{channel.upper()}] {phone}: {combined_message}")
+    
+    # Сохраняем входящее сообщение
+    save_message(channel, connection_id, chat_id, contact_id, phone, "user", combined_message)
+    
+    # Отправляем в Observer
+    await notify_observer(channel, phone, user_name, "in", combined_message)
+    
+    # Получаем историю
+    history = get_history(channel, chat_id, limit=8)
+    
+    # Обработка через message_processor
+    result = await process_message(
+        user_id=user_id,
+        user_name=user_name,
+        message=combined_message,
+        history=history,
+        state_manager=state_manager,
+        channel=channel
+    )
+    
+    # Если WAIT — не отвечаем
+    if result["skip_response"]:
+        log(f"⏸️ [{channel.upper()}] WAIT: пропускаем ответ")
+        return {"response": None, "send_callback": None}
+    
+    action_context = result["action_context"]
+    
+    # Генерация ответа
+    response = await generate_response(channel, chat_id, user_id, combined_message, user_name, action_context)
+    
+    # Callback для отправки (вызывается после проверки очереди)
+    async def send_callback():
+        save_message(channel, connection_id, chat_id, contact_id, phone, "assistant", response)
+        success = await send_message(connection_id, chat_id, response)
+        if success:
+            log(f"{emoji} [{channel.upper()}] → {user_name}: {response[:50]}...")
+            await notify_observer(channel, phone, user_name, "out", response)
+    
+    return {"response": response, "send_callback": send_callback}
+
 # WEBHOOK HANDLER
 # ============================================
 
@@ -514,9 +581,18 @@ async def handle_webhook(request):
                 # Сохраняем информацию о чате
                 save_chat(channel, connection_id, chat_id, contact_id, phone, user_name)
                 
-                # Обрабатываем асинхронно
+                # Обрабатываем через очередь (защита от race condition)
+                user_key = f"{channel}:{chat_id}"
+                context = {
+                    "channel": channel,
+                    "connection_id": connection_id,
+                    "chat_id": chat_id,
+                    "contact_id": contact_id,
+                    "phone": phone,
+                    "user_name": user_name
+                }
                 asyncio.create_task(
-                    process_incoming_message(channel, connection_id, chat_id, contact_id, phone, user_message, user_name)
+                    process_with_queue(user_key, user_message, context, process_message_wrapper)
                 )
         
         return web.json_response({"status": "ok"})
