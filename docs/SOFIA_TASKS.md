@@ -140,3 +140,25 @@
 - Модель: https://huggingface.co/nvidia/personaplex-7b-v1
 - Архитектура Moshi: https://arxiv.org/abs/2410.00037
 
+
+---
+
+## 🎛️ Управление диалогами (Observer Chat)
+
+### Цель
+Быстрые команды для операторов прямо в Telegram Observer Chat.
+
+### Команды
+- `/stop 79831007777` — остановить диалог по номеру телефона
+- `/resume 79831007777` — возобновить диалог
+- `/status 79831007777` — показать статус клиента
+
+### Шаги
+- [ ] Добавить обработчик команд в bot_server.py
+- [ ] Поиск user_id по номеру телефона (radist_chats)
+- [ ] UPDATE dialog_finished в client_state
+- [ ] Подтверждение в Observer Chat
+
+### Приоритет
+Средний — удобство операторов
+
