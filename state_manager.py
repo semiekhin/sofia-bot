@@ -91,6 +91,9 @@ class ClientState:
     engagement: Optional[str] = "medium"            # low/medium/high
     urgency: Optional[str] = "unclear"              # now/week/month/unclear
     
+    # NEW v3.1: Тип лида
+    lead_type: Optional[str] = None                  # 'cold' | 'warm' | 'hot'
+    
     def is_qualified(self) -> bool:
         """Проверка полноты квалификации (минимум для созвона)"""
         return all([
@@ -252,7 +255,8 @@ class StateManager:
                 friction REAL DEFAULT 0.3,
                 call_readiness REAL DEFAULT 0.5,
                 engagement TEXT DEFAULT 'medium',
-                urgency TEXT DEFAULT 'unclear'
+                urgency TEXT DEFAULT 'unclear',
+                lead_type TEXT DEFAULT NULL
             )
         """)
         conn.execute("CREATE INDEX IF NOT EXISTS idx_client_state_user ON client_state(user_id)")
@@ -308,7 +312,8 @@ class StateManager:
             friction=row["friction"] if "friction" in row.keys() else 0.3,
             call_readiness=row["call_readiness"] if "call_readiness" in row.keys() else 0.5,
             engagement=row["engagement"] if "engagement" in row.keys() else "medium",
-            urgency=row["urgency"] if "urgency" in row.keys() else "unclear"
+            urgency=row["urgency"] if "urgency" in row.keys() else "unclear",
+            lead_type=row["lead_type"] if "lead_type" in row.keys() else None
         )
         return state
     
@@ -351,8 +356,9 @@ class StateManager:
                 branch, strategy, usage, family,
                 call_proposal_count, materials_request_count,
                 dialog_finished, finish_type,
-                friction, call_readiness, engagement, urgency
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                friction, call_readiness, engagement, urgency,
+                lead_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             state.user_id, state.goal, state.goal_confidence,
             state.location, state.location_confidence,
@@ -368,7 +374,8 @@ class StateManager:
             state.branch, state.strategy, state.usage, state.family,
             state.call_proposal_count, state.materials_request_count,
             state.dialog_finished, state.finish_type,
-            state.friction, state.call_readiness, state.engagement, state.urgency
+            state.friction, state.call_readiness, state.engagement, state.urgency,
+            state.lead_type
         ))
         conn.commit()
         conn.close()
