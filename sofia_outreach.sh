@@ -1,8 +1,8 @@
 #!/bin/bash
 # Sofia Outreach — проактивная отправка через Radist
 # Использование:
-#   ./sofia_outreach.sh telegram @username [Имя]
-#   ./sofia_outreach.sh max 79001234567 [Имя]
+#   ./sofia_outreach.sh telegram @username [Имя] [cold|warm|hot]
+#   ./sofia_outreach.sh max 79001234567 [Имя] [cold|warm|hot]
 
 API_KEY="-cCC1Lbcwc6Et-s8mClF8_qPkE7mNF35VmTVUoZEIKYAZurc_Oyjjf2AdXTHqjvWm8cMp_U6NzJD_xNzl4jOZA"
 COMPANY_ID="205054"
@@ -20,24 +20,36 @@ TG_BOT_TOKEN="8409538626:AAGqB4bkk81dCZutNmLfTd95mi_4Ky19U5M"
 CHANNEL=$1
 TARGET=$2
 NAME=$3
+LEAD_TYPE=${4:-cold}  # cold|warm|hot
 
 if [ -z "$CHANNEL" ] || [ -z "$TARGET" ]; then
     echo "❌ Использование:"
-    echo "   $0 telegram @username [Имя]"
-    echo "   $0 max 79001234567 [Имя]"
+    echo "   $0 telegram @username [Имя] [cold|warm|hot]"
+    echo "   $0 max 79001234567 [Имя] [cold|warm|hot]"
     echo ""
     echo "Примеры:"
-    echo "   $0 telegram @ivan_petrov Иван"
-    echo "   $0 max 79161234567"
+    echo "   $0 telegram @ivan_petrov Иван cold"
+    echo "   $0 max 79161234567 "" warm"
     exit 1
 fi
 
-# Шаблон приветствия
-if [ -n "$NAME" ]; then
-    MESSAGE="$NAME, добрый день! Это София, по недвижимости. Вы оставляли заявку на сайте — удобно сейчас пообщаться?"
-else
-    MESSAGE="Добрый день! Это София, по недвижимости. Вы оставляли заявку на сайте — удобно сейчас пообщаться?"
-fi
+# Шаблон приветствия по типу лида
+GREETING_NAME="${NAME:+$NAME, }"
+
+case $LEAD_TYPE in
+    cold)
+        MESSAGE="${GREETING_NAME}добрый день! Это София из Oazis Estate — курортная недвижимость в Сочи) Вы оставляли заявку — ещё актуально?"
+        ;;
+    warm)
+        MESSAGE="${GREETING_NAME}добрый день! Это София из Oazis Estate. Вы интересовались недвижимостью в Сочи — удобно сейчас пообщаться?"
+        ;;
+    hot)
+        MESSAGE="${GREETING_NAME}добрый день! Это София из Oazis Estate. Мы подготовили для вас подборку — удобно обсудить?"
+        ;;
+    *)
+        MESSAGE="${GREETING_NAME}добрый день! Это София из Oazis Estate — курортная недвижимость в Сочи) Вы оставляли заявку — ещё актуально?"
+        ;;
+esac
 
 save_to_db() {
     local channel="$1"
@@ -48,6 +60,14 @@ save_to_db() {
     local message="$6"
     
     sqlite3 "$DB_PATH" "INSERT INTO radist_messages (channel, connection_id, chat_id, contact_id, phone, role, content) VALUES ('$channel', $connection_id, $chat_id, $contact_id, '$phone', 'assistant', '$message');"
+}
+
+save_lead_type() {
+    local chat_id="$1"
+    local lead_type="$2"
+    
+    # Upsert lead_type in client_state
+    sqlite3 "$DB_PATH" "INSERT INTO client_state (client_id, lead_type) VALUES ('$chat_id', '$lead_type') ON CONFLICT(client_id) DO UPDATE SET lead_type='$lead_type';"
 }
 
 notify_observer() {
@@ -102,7 +122,8 @@ send_telegram() {
         echo "✅ Сообщение отправлено!"
         # Сохраняем в БД для контекста
         save_to_db "telegram" "$TG_CONNECTION" "$CHAT_ID" "${CONTACT_ID:-0}" "$username" "$message"
-        echo "💾 Сохранено в БД"
+        save_lead_type "$CHAT_ID" "$LEAD_TYPE"
+        echo "💾 Сохранено в БД (lead_type=$LEAD_TYPE)"
         notify_observer "telegram" "@$username" "$message"
         echo "👁️ Копия в Observer"
     else
@@ -144,7 +165,8 @@ send_max() {
         echo "✅ Сообщение отправлено!"
         # Сохраняем в БД для контекста
         save_to_db "max" "$MAX_CONNECTION" "$CHAT_ID" "${CONTACT_ID:-0}" "$phone" "$message"
-        echo "💾 Сохранено в БД"
+        save_lead_type "$CHAT_ID" "$LEAD_TYPE"
+        echo "💾 Сохранено в БД (lead_type=$LEAD_TYPE)"
         notify_observer "max" "$phone" "$message"
         echo "👁️ Копия в Observer"
     else
