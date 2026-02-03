@@ -390,7 +390,7 @@ async def generate_response(channel: str, chat_id: int, user_id: int, user_messa
             instructions=analyzer_prompt,
             input=analyzer_input,
             reasoning={"effort": "medium"},
-            max_output_tokens=300
+            max_output_tokens=1000
         )
         
         analyzer_text = analyzer_response.output_text or ""
@@ -438,10 +438,22 @@ async def generate_response(channel: str, chat_id: int, user_id: int, user_messa
             instructions=system_prompt,
             input=messages,
             reasoning={"effort": "high"},
-            max_output_tokens=800
+            max_output_tokens=4000
         )
         
         answer = response.output_text or ""
+
+        # === BUG-003: логируем длину и проверяем обрезку ===
+        log(f"📏 [{channel.upper()}] Generator: len={len(answer)}, output_tokens={getattr(response.usage, 'output_tokens', '?')}")
+        try:
+            stop_reason = getattr(response.output[-1], 'stop_reason', None) if response.output else None
+            if stop_reason:
+                log(f"📏 [{channel.upper()}] stop_reason={stop_reason}")
+            if stop_reason == "max_tokens" or (len(answer) > 50 and not answer.rstrip().endswith(("?", "!", ".", ")", "»", '"'))):
+                log(f"⚠️ [{channel.upper()}] ОБРЕЗКА ОБНАРУЖЕНА! stop={stop_reason}, len={len(answer)}")
+        except Exception as e:
+            log(f"⚠️ stop_reason check error: {e}")
+        # === конец BUG-003 ===
         
         # Проверяем [END] маркер
         if "[END]" in answer or "[end]" in answer:
