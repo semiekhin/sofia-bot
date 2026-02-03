@@ -67,6 +67,7 @@ ACTION_TO_RAG_STAGE = {
     "propose_meeting_2": "MEETING",
     "confirm_meeting": "CLOSING",
     "finish_with_materials": "CLOSING",
+    "actualize": "ACTUALIZATION",
     "ease_pressure": "OBJECTION",
     "send_materials": "PRESENTATION",
     "greeting": "GREETING",
@@ -358,6 +359,7 @@ async def generate_response(channel: str, chat_id: int, user_id: int, user_messa
 
 ЭТАПЫ:
 - GREETING — приветствие, начало диалога
+- ACTUALIZATION — актуализация интереса холодного лида (не помнит заявку, давно оставлял, спрашивает "кто вы?", "какой сайт?")
 - QUALIFICATION — выясняем цель, бюджет, сроки, способ оплаты
 - MEETING — предлагаем созвон
 - OBJECTION — клиент возражает (дорого, подумаю, не сейчас, пришлите материалы)
