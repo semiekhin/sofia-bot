@@ -201,3 +201,21 @@
 4. Обновить первое сообщение в outreach
 5. Добавить стадию ACTUALIZATION в Analyzer
 6. Тестировать
+
+---
+
+## 📅 03.02.2026: Статус задач холодной ветки
+
+### ✅ Выполнено
+- [x] BUG-003: max_output_tokens fix + truncation logging
+- [x] 2а: lead_type (cold/warm/hot) в ClientState + БД
+- [x] 2б: Блок АКТУАЛИЗАЦИЯ в промпте sofia_prompt_v2.py
+- [x] 2в: sofia_outreach.sh — шаблоны по типу лида + save_lead_type
+
+### 🔄 В работе
+- [ ] 2г: ACTUALIZATION stage в Analyzer — распознавание стадии актуализации
+- [ ] 2д: Примеры из Лидоруба в RAG (стадия ACTUALIZATION)
+
+### ⏳ Ожидает
+- [ ] Тестирование cold outreach end-to-end
+- [ ] Мониторинг BUG-003 на live трафике
