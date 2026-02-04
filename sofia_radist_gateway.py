@@ -310,13 +310,11 @@ async def process_incoming_message(channel: str, connection_id: int, chat_id: in
         log(f"⏸️ [{channel.upper()}] WAIT: пропускаем ответ")
         return
     
-    action_context = result["action_context"]
-    
     # ════════════════════════════════════════════════════════════════════════
     # Генерация ответа
     # ════════════════════════════════════════════════════════════════════════
     
-    response = await generate_response(channel, chat_id, user_id, user_message, user_name, action_context)
+    response = await generate_response(channel, chat_id, user_id, user_message, user_name)
     
     # Сохраняем ответ
     save_message(channel, connection_id, chat_id, contact_id, phone, "assistant", response)
@@ -330,7 +328,7 @@ async def process_incoming_message(channel: str, connection_id: int, chat_id: in
         await notify_observer(channel, phone, user_name, "out", response)
 
 
-async def generate_response(channel: str, chat_id: int, user_id: int, user_message: str, user_name: str, action_context: dict) -> str:
+async def generate_response(channel: str, chat_id: int, user_id: int, user_message: str, user_name: str) -> str:
     """Генерирует ответ с LLM-Аналитиком + RAG (v3.0)"""
     
     history = get_history(channel, chat_id)
@@ -526,10 +524,8 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
         log(f"⏸️ [{channel.upper()}] WAIT: пропускаем ответ")
         return {"response": None, "send_callback": None}
     
-    action_context = result["action_context"]
-    
     # Генерация ответа
-    response = await generate_response(channel, chat_id, user_id, combined_message, user_name, action_context)
+    response = await generate_response(channel, chat_id, user_id, combined_message, user_name)
     
     # Callback для отправки (вызывается после проверки очереди)
     async def send_callback():
