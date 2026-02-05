@@ -14,7 +14,7 @@ TG_CONNECTION=80200
 MAX_CONNECTION=80024
 
 # Observer group
-OBSERVER_CHAT_ID="-5206139579"
+OBSERVER_CHAT_ID="-1003874757033"
 TG_BOT_TOKEN="8409538626:AAGqB4bkk81dCZutNmLfTd95mi_4Ky19U5M"
 
 CHANNEL=$1
@@ -84,19 +84,42 @@ notify_observer() {
     local target="$2"
     local message="$3"
     
+    # Получаем или создаём тему для клиента
+    THREAD_ID=$(sqlite3 "$DB_PATH" "SELECT thread_id FROM observer_topics WHERE phone = '$target';" 2>/dev/null)
+    
+    if [ -z "$THREAD_ID" ]; then
+        # Создаём новую тему
+        TOPIC_NAME="$target"
+        RESPONSE=$(curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/createForumTopic" \
+          -H "Content-Type: application/json" \
+          -d "{\"chat_id\": \"$OBSERVER_CHAT_ID\", \"name\": \"$TOPIC_NAME\"}")
+        
+        THREAD_ID=$(echo "$RESPONSE" | python3 -c "import sys,json; print(json.load(sys.stdin).get('result',{}).get('message_thread_id',''))" 2>/dev/null)
+        
+        if [ -n "$THREAD_ID" ]; then
+            sqlite3 "$DB_PATH" "INSERT OR REPLACE INTO observer_topics (phone, thread_id, user_name) VALUES ('$target', $THREAD_ID, '$target');"
+            echo "👁️ Создана тема: $TOPIC_NAME"
+        fi
+    fi
+    
     if [ "$channel" = "telegram" ]; then
         EMOJI="✈️"
     else
         EMOJI="💬"
     fi
     
-    TEXT="${EMOJI} [${channel^^}] Sofia → $target
-
+    TEXT="↪️ <b>София:</b>
 $message"
     
-    curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
-      -H "Content-Type: application/json" \
-      -d "{\"chat_id\": \"$OBSERVER_CHAT_ID\", \"text\": \"$TEXT\"}" > /dev/null
+    if [ -n "$THREAD_ID" ]; then
+        curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+          -H "Content-Type: application/json" \
+          -d "{\"chat_id\": \"$OBSERVER_CHAT_ID\", \"message_thread_id\": $THREAD_ID, \"text\": \"$TEXT\", \"parse_mode\": \"HTML\"}" > /dev/null
+    else
+        curl -s -X POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage" \
+          -H "Content-Type: application/json" \
+          -d "{\"chat_id\": \"$OBSERVER_CHAT_ID\", \"text\": \"$TEXT\", \"parse_mode\": \"HTML\"}" > /dev/null
+    fi
 }
 
 send_telegram() {

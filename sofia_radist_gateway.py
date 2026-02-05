@@ -110,20 +110,66 @@ CHANNEL_EMOJI = {
 OBSERVER_CHAT_ID = os.getenv("OBSERVER_CHAT_ID")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
+async def get_or_create_topic(phone: str, user_name: str) -> int:
+    """Получает или создаёт тему для клиента в группе наблюдателей"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    # Проверяем есть ли уже тема
+    c.execute("SELECT thread_id FROM observer_topics WHERE phone = ?", (phone,))
+    row = c.fetchone()
+    if row:
+        conn.close()
+        return row[0]
+    
+    # Создаём новую тему
+    display_name = user_name if user_name and user_name != phone else phone
+    topic_name = f"{display_name}"
+    
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/createForumTopic"
+    payload = {
+        "chat_id": OBSERVER_CHAT_ID,
+        "name": topic_name[:128]  # Лимит Telegram
+    }
+    
+    thread_id = None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    thread_id = data["result"]["message_thread_id"]
+                    log(f"👁️ Observer: создана тема '{topic_name}' (thread_id={thread_id})")
+                else:
+                    error = await resp.text()
+                    log(f"⚠️ Observer: не удалось создать тему — {error[:100]}")
+    except Exception as e:
+        log(f"⚠️ Observer createTopic exception: {e}")
+    
+    # Сохраняем в БД
+    if thread_id:
+        c.execute("INSERT OR REPLACE INTO observer_topics (phone, thread_id, user_name) VALUES (?, ?, ?)",
+                  (phone, thread_id, user_name))
+        conn.commit()
+    
+    conn.close()
+    return thread_id
+
+
 async def notify_observer(channel: str, phone: str, user_name: str, direction: str, message: str):
-    """Отправляет копию сообщения в группу наблюдателей"""
+    """Отправляет копию сообщения в тему клиента в группе наблюдателей"""
     if not OBSERVER_CHAT_ID or not TELEGRAM_BOT_TOKEN:
         return
+    
+    # Получаем или создаём тему для этого клиента
+    thread_id = await get_or_create_topic(phone, user_name)
     
     emoji = CHANNEL_EMOJI.get(channel, "📨")
     
     if direction == "in":
-        # Входящее от клиента
-        header = f"{emoji} [{channel.upper()}] {user_name or phone}"
-        text = f"{header}\n\n{message}"
+        text = f"{emoji} <b>Клиент:</b>\n{message}"
     else:
-        # Исходящее от Софии
-        text = f"↪️ София → {user_name or phone}:\n{message}"
+        text = f"↪️ <b>София:</b>\n{message}"
     
     # Ограничиваем длину
     if len(text) > 4000:
@@ -136,11 +182,14 @@ async def notify_observer(channel: str, phone: str, user_name: str, direction: s
         "parse_mode": "HTML"
     }
     
+    if thread_id:
+        payload["message_thread_id"] = thread_id
+    
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(url, json=payload) as resp:
                 if resp.status == 200:
-                    log(f"👁️ Observer: отправлено")
+                    log(f"👁️ Observer: отправлено в тему {thread_id}")
                 else:
                     error = await resp.text()
                     log(f"⚠️ Observer error: {resp.status} — {error[:100]}")
@@ -185,6 +234,14 @@ def init_radist_db():
     # Индексы
     c.execute('CREATE INDEX IF NOT EXISTS idx_radist_messages_chat ON radist_messages(channel, chat_id)')
     c.execute('CREATE INDEX IF NOT EXISTS idx_radist_chats_channel ON radist_chats(channel)')
+    
+    # Таблица для топиков наблюдателя (каждый клиент = отдельная тема)
+    c.execute('''CREATE TABLE IF NOT EXISTS observer_topics (
+        phone TEXT PRIMARY KEY,
+        thread_id INTEGER,
+        user_name TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )''')
     
     conn.commit()
     conn.close()
