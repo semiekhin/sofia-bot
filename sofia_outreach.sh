@@ -20,7 +20,7 @@ TG_BOT_TOKEN="8409538626:AAGqB4bkk81dCZutNmLfTd95mi_4Ky19U5M"
 CHANNEL=$1
 TARGET=$2
 NAME=$3
-LEAD_TYPE=${4:-cold}  # cold|warm|hot
+LEAD_TYPE=${4:-warm}  # cold|warm|hot
 
 if [ -z "$CHANNEL" ] || [ -z "$TARGET" ]; then
     echo "❌ Использование:"
