@@ -63,11 +63,20 @@ save_to_db() {
 }
 
 save_lead_type() {
-    local chat_id="$1"
-    local lead_type="$2"
+    local channel="$1"
+    local chat_id="$2"
+    local lead_type="$3"
     
-    # Upsert lead_type in client_state
-    sqlite3 "$DB_PATH" "INSERT INTO client_state (client_id, lead_type) VALUES ('$chat_id', '$lead_type') ON CONFLICT(client_id) DO UPDATE SET lead_type='$lead_type';"
+    # user_id по формуле gateway: -(offset + chat_id)
+    case $channel in
+        max) OFFSET=1000000 ;;
+        telegram) OFFSET=2000000 ;;
+        whatsapp) OFFSET=3000000 ;;
+        *) OFFSET=9000000 ;;
+    esac
+    USER_ID=$(( -(OFFSET + chat_id) ))
+    
+    sqlite3 "$DB_PATH" "INSERT INTO client_state (user_id, lead_type) VALUES ($USER_ID, '$lead_type') ON CONFLICT(user_id) DO UPDATE SET lead_type='$lead_type';"
 }
 
 notify_observer() {
@@ -122,7 +131,7 @@ send_telegram() {
         echo "✅ Сообщение отправлено!"
         # Сохраняем в БД для контекста
         save_to_db "telegram" "$TG_CONNECTION" "$CHAT_ID" "${CONTACT_ID:-0}" "$username" "$message"
-        save_lead_type "$CHAT_ID" "$LEAD_TYPE"
+        save_lead_type "telegram" "$CHAT_ID" "$LEAD_TYPE"
         echo "💾 Сохранено в БД (lead_type=$LEAD_TYPE)"
         notify_observer "telegram" "@$username" "$message"
         echo "👁️ Копия в Observer"
@@ -165,7 +174,7 @@ send_max() {
         echo "✅ Сообщение отправлено!"
         # Сохраняем в БД для контекста
         save_to_db "max" "$MAX_CONNECTION" "$CHAT_ID" "${CONTACT_ID:-0}" "$phone" "$message"
-        save_lead_type "$CHAT_ID" "$LEAD_TYPE"
+        save_lead_type "max" "$CHAT_ID" "$LEAD_TYPE"
         echo "💾 Сохранено в БД (lead_type=$LEAD_TYPE)"
         notify_observer "max" "$phone" "$message"
         echo "👁️ Копия в Observer"
