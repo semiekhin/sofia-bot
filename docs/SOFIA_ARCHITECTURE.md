@@ -1,105 +1,182 @@
-# Архитектура Sofia-GPT v3.0 (Эва)
+# Архитектура Sofia-GPT v3.0
 
 ## Общая схема
 ```
-Клиент (Max / Telegram)
-           ↓
-    Radist Webhook (:5001)
+Radist Webhook (Max/Telegram/WhatsApp)
            ↓
     sofia_radist_gateway.py
            ↓
-    message_processor.py
-           ↓
 ┌──────────────────────────────────────┐
-│  EXTRACTOR (gpt-5.2)                 │
-│  Извлекает факты: goal, budget,      │
-│  payment, objection, signals         │
+│  MESSAGE PROCESSOR                   │
+│  message_processor.py                │
+│                                      │
+│  ┌─────────────────────────────────┐ │
+│  │ EXTRACTOR (gpt-5.2)             │ │
+│  │ extractor.py                    │ │
+│  │ - Извлекает факты из сообщения  │ │
+│  │ - goal, budget, location и др.  │ │
+│  │ - signals (friction, readiness) │ │
+│  └─────────────────────────────────┘ │
+│              ↓                       │
+│  ┌─────────────────────────────────┐ │
+│  │ STATE MANAGER                   │ │
+│  │ state_manager.py                │ │
+│  │ - Мержит extraction в state     │ │
+│  │ - Хранит в SQLite               │ │
+│  │ - lead_type (cold/warm/hot)     │ │
+│  └─────────────────────────────────┘ │
 └──────────────────────────────────────┘
            ↓
 ┌──────────────────────────────────────┐
-│  LLM-АНАЛИТИК (gpt-5.2) — НОВОЕ!     │
-│  Читает ВСЮ историю диалога          │
-│  Определяет: stage, client_intent    │
-│  Формирует запрос для RAG            │
+│  ANALYZER (gpt-5.2)                  │
+│  Внутри gateway                      │
+│  - Определяет stage диалога          │
+│  - Формирует rag_query               │
+│  Выход: stage + rag_query            │
 └──────────────────────────────────────┘
            ↓
 ┌──────────────────────────────────────┐
 │  RAG (ChromaDB)                      │
-│  1965 примеров из реальных продаж    │
-│  Ищет по запросу Аналитика           │
+│  rag_module.py                       │
+│  - 2001 пример из 124+ диалогов      │
+│  - 10 примеров на запрос             │
+│  - Фильтр по stage                   │
+│  - 29 примеров ACTUALIZATION         │
 └──────────────────────────────────────┘
            ↓
 ┌──────────────────────────────────────┐
-│  LLM-ГЕНЕРАТОР (gpt-5.2)             │
-│  Промпт: sofia_prompt_v2.py          │
-│  Пишет ответ с учётом примеров       │
-│  Ставит [END] при завершении         │
+│  GENERATOR (gpt-5.2)                 │
+│  - Промпт: sofia_prompt_v2.py        │
+│  - Получает state_summary + RAG      │
+│  - reasoning=high                    │
+│  Выход: текст ответа                 │
 └──────────────────────────────────────┘
            ↓
     Radist API → Клиент
-           ↓
-    Observer Chat (группа "Диалоги Софья")
+
+           ↓ (копия)
+┌──────────────────────────────────────┐
+│  OBSERVER (Telegram Forum Topics)    │
+│  - Каждый клиент = отдельная тема    │
+│  - БД: observer_topics               │
+└──────────────────────────────────────┘
 ```
-
-## Ключевые отличия v3.0 от v2.x
-
-| Аспект | v2.x (старая) | v3.0 (Эва) |
-|--------|---------------|------------|
-| Выбор RAG stage | Код по маппингу | LLM-Аналитик |
-| Понимание контекста | Правила | LLM читает историю |
-| Завершение диалога | Проверка фраз | LLM ставит [END] |
-| Время ответа | ~10 сек | ~15-20 сек |
 
 ## Компоненты
 
-### 1. LLM-Аналитик (новый)
-- **Модель:** gpt-5.2
-- **Задача:** Понять контекст диалога
-- **Выход:** JSON с stage, client_intent, rag_query
-- **Этапы:** GREETING, QUALIFICATION, MEETING, OBJECTION, CLOSING
+### 1. Extractor (extractor.py)
+- **Модель:** gpt-5.2 (Responses API)
+- **Вход:** сообщение клиента + история
+- **Выход:** JSON с полями:
+  - goal, location, budget, payment_type, lpr + confidence
+  - strategy (для инвесторов), usage (для "для себя"), family
+  - question_type, objection, wants_materials
+  - meeting_agreed, meeting_datetime
+  - signals: friction, call_readiness, engagement, urgency
 
-### 2. RAG (обновлён)
-- **База:** ChromaDB
-- **Примеров:** 1965 (102 диалога)
-- **Поиск:** По запросу Аналитика (не по action)
+### 2. State Manager (state_manager.py)
+- **БД:** SQLite, таблица `client_state`
+- **Основные поля:** goal, location, budget, payment_type, lpr + confidence
+- **v3.0 поля:** lead_type (cold/warm/hot), branch, strategy, usage, family
+- **Счётчики:** call_proposal_count, materials_request_count
+- **Завершение:** dialog_finished, finish_type
 
-### 3. Генератор (обновлён)
-- **Промпт:** sofia_prompt_v2.py
-- **Особенности:**
-  - Женский род ("Поняла", "Узнала")
-  - Алтай в локациях
-  - Финансовый блок (ставка ЦБ, сравнение с депозитом)
-  - Маркер [END] для завершения
+### 3. Analyzer (внутри gateway)
+- **Модель:** gpt-5.2 (Responses API)
+- **Вход:** история диалога + последнее сообщение + state_summary
+- **Выход:** JSON {stage, rag_query}
+- **Stages:** GREETING, ACTUALIZATION, QUALIFICATION, MEETING, OBJECTION, CLOSING
 
-## Каналы связи
+### 4. RAG (rag_module.py)
+- **БД:** ChromaDB (chroma_db/)
+- **Примеры:** 2001 из 124+ диалогов
+- **Поиск:** semantic search по rag_query + фильтр по stage
+- **Выход:** 10 релевантных примеров
 
-| Канал | Connection ID | Тип | Аккаунт |
-|-------|---------------|-----|---------|
-| Max | 80024 | Личный | +79284466701 |
-| Telegram | 80200 | Личный | +79181038493 (@SofiaOazis) |
+### 5. Generator (sofia_prompt_v2.py + gpt-5.2)
+- **Модель:** gpt-5.2 с reasoning=high
+- **Промпт:** state_summary + RAG примеры + инструкции
+- **Блоки:** КВАЛИФИКАЦИЯ, АКТУАЛИЗАЦИЯ (для cold), СОЗВОН, ЗАВЕРШЕНИЕ
+- **Выход:** текст ответа клиенту
 
-## Ключевые файлы
-
-| Файл | Размер | Назначение |
-|------|--------|------------|
-| sofia_radist_gateway.py | 23KB | Gateway + LLM-Аналитик |
-| sofia_prompt_v2.py | 20KB | Промпт генератора |
-| message_processor.py | 8KB | Extractor → State |
-| rag_training_data.json | 1.9MB | 1965 примеров |
-
-## Логи Эвы (маркеры)
-```
-🧠 [КАНАЛ] Analyzer запрос...
-🧠 [КАНАЛ] Analyzer: stage=..., query='...'
-📚 [КАНАЛ] RAG [...]: X примеров
-🔄 [КАНАЛ] Generator запрос...
-✅ [КАНАЛ] Generator ответил
-```
+### 6. Observer (Telegram Forum Topics)
+- **Группа:** Диалоги Софья
+- **Механизм:** каждый клиент = отдельная тема
+- **БД:** observer_topics (phone → thread_id)
 
 ## База данных
 
-Без изменений — SQLite `sofia_gpt.db`:
-- `client_state` — состояние клиентов
-- `messages` — история сообщений
-- `radist_messages` — сообщения через Radist
-- `radist_chats` — чаты Radist
+### Таблица: client_state
+| Поле | Тип | Описание |
+|------|-----|----------|
+| user_id | INTEGER | PK (отрицательный для Radist) |
+| lead_type | TEXT | cold/warm/hot |
+| goal | TEXT | investment/personal |
+| goal_confidence | TEXT | confirmed/mentioned |
+| location | TEXT | sochi/crimea/altai/sea/mountains/all |
+| budget | INTEGER | в рублях |
+| payment_type | TEXT | full/mortgage/installment/any |
+| strategy | TEXT | rental/growth/any (для инвесторов) |
+| usage | TEXT | permanent/vacation/any (для "для себя") |
+| dialog_finished | BOOLEAN | диалог завершён |
+| finish_type | TEXT | meeting/materials/llm_end |
+
+### Таблица: radist_messages
+| Поле | Тип | Описание |
+|------|-----|----------|
+| id | INTEGER | PK |
+| channel | TEXT | max/telegram/whatsapp |
+| chat_id | INTEGER | ID чата в Radist |
+| phone | TEXT | телефон клиента |
+| role | TEXT | user/assistant |
+| content | TEXT | текст сообщения |
+| timestamp | TIMESTAMP | время |
+
+### Таблица: observer_topics
+| Поле | Тип | Описание |
+|------|-----|----------|
+| phone | TEXT | PK |
+| thread_id | INTEGER | ID темы в Telegram |
+| user_name | TEXT | имя клиента |
+
+## Формула user_id
+
+Radist даёт chat_id (положительный). Для совместимости с client_state используем отрицательный user_id:
+```
+Max:      user_id = -(1000000 + chat_id)
+Telegram: user_id = -(2000000 + chat_id)
+WhatsApp: user_id = -(3000000 + chat_id)
+```
+
+## Потоки данных
+
+### Поток: Холодный лид (ACTUALIZATION)
+1. Outreach: `sofia_outreach.sh max 79... "" cold`
+2. Клиент: "Кто это?" / "Откуда номер?"
+3. Analyzer → stage=ACTUALIZATION
+4. RAG → 10 примеров ACTUALIZATION
+5. Generator → объясняет откуда контакт, мягко к квалификации
+6. Клиент: "Не актуально" → Generator завершает с [END]
+
+### Поток: Тёплый лид (QUALIFICATION → MEETING)
+1. Outreach: `sofia_outreach.sh max 79... Имя`
+2. Клиент отвечает → Analyzer → stage=QUALIFICATION
+3. Generator квалифицирует (goal, budget, location)
+4. Достаточно данных → Generator предлагает созвон
+5. Клиент соглашается → CLOSING
+
+## Конфигурация (.env)
+```
+OPENAI_API_KEY=...
+TELEGRAM_BOT_TOKEN=...
+OBSERVER_CHAT_ID=...
+```
+
+## Конфигурация Radist (config/radist_config.py)
+```python
+CHANNELS = {
+    "max": {"enabled": True, "connection_id": 80024},
+    "telegram": {"enabled": True, "connection_id": 80200},
+    "whatsapp": {"enabled": False, "connection_id": None}
+}
+```

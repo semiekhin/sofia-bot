@@ -1,99 +1,67 @@
-# Sofia-GPT — Контекст проекта
+# Sofia-GPT v3.0
 
-📅 **Обновлено:** 31.01.2026
+AI-бот для продажи курортной недвижимости Oazis Estate. Квалифицирует лидов через Max и Telegram, конвертирует в видео-консультации.
 
-## 🎯 Что это
+## Инфраструктура
+- **Сервер:** 72.56.64.91:2222 (SSH)
+- **Путь:** /opt/sofia-gpt/
+- **Бот:** @humanAINeural_bot
+- **Сервис:** sofia-radist.service
+- **База:** sofia_gpt.db (SQLite)
 
-Sofia-GPT — AI-бот для продажи недвижимости Oazis Estate в Сочи.
-Работает в Telegram и Max через Radist.Online, квалифицирует лиды и записывает на видеоконсультации.
+## Стек
+- Python 3 + aiohttp (webhook сервер)
+- OpenAI API (gpt-5.2, Responses API)
+- ChromaDB (RAG, 2001 пример)
+- Radist.Online (Max, Telegram, WhatsApp)
 
-## 🖥 Инфраструктура
+## Архитектура v3.0
+```
+Webhook → Extractor (gpt-5.2) → State → Analyzer (gpt-5.2) → RAG → Generator (gpt-5.2) → Ответ
+```
 
-| Компонент | Значение |
-|-----------|----------|
-| Сервер | 72.56.64.91:2222 |
-| Путь | /opt/sofia-gpt/ |
-| Python | 3.11 |
-| База данных | SQLite |
+Философия: доверяем LLM с полным контекстом (state_summary + RAG + промпт) вместо жёсткого Planner.
 
-## 📱 Каналы связи
+## Ключевые файлы
+- `sofia_radist_gateway.py` — webhook сервер, Analyzer, RAG, Generator
+- `message_processor.py` — Extractor → State → Signals
+- `extractor.py` — NLU, извлечение фактов из сообщений
+- `state_manager.py` — состояние клиента (SQLite)
+- `sofia_prompt_v2.py` — промпт генератора
+- `rag_module.py` — векторный поиск примеров (ChromaDB)
+- `sofia_outreach.sh` — скрипт для outreach (cold/warm/hot)
 
-### Telegram Bot
-| Параметр | Значение |
-|----------|----------|
-| Бот | @humanAINeural_bot |
-| Сервис | sofia-gpt.service |
-
-### Telegram через Radist
-| Параметр | Значение |
-|----------|----------|
-| Номер | +79181038493 |
-| Connection ID | 80200 |
-
-### Max через Radist
-| Параметр | Значение |
-|----------|----------|
-| Номер | +79284466701 |
-| Connection ID | 80024 |
-
-### Radist.Online
-| Параметр | Значение |
-|----------|----------|
-| API | https://api-ru.radist.online/v2 |
-| Company ID | 205054 |
-| Gateway сервис | sofia-radist.service |
-| Webhook | http://72.56.64.91:5001/webhook/radist |
-
-## 🔧 Основные команды
+## Быстрые команды
 ```bash
-# Проактивная отправка (первый контакт с клиентом)
-/opt/sofia-gpt/sofia_outreach.sh telegram @username [Имя]
-/opt/sofia-gpt/sofia_outreach.sh max 79001234567 [Имя]
+# Outreach тёплый
+bash /opt/sofia-gpt/sofia_outreach.sh max 79XXXXXXXXX Имя
 
-# Перезапуск сервисов
-systemctl restart sofia-gpt        # Telegram Bot
-systemctl restart sofia-radist     # Radist Gateway (Max + Telegram)
+# Outreach холодный
+bash /opt/sofia-gpt/sofia_outreach.sh max 79XXXXXXXXX "" cold
+
+# Рестарт
+systemctl restart sofia-radist
 
 # Логи
-tail -f /opt/sofia-gpt/sofia_bot.log      # Telegram Bot
-tail -f /opt/sofia-gpt/sofia_radist.log   # Radist Gateway
+tail -f /opt/sofia-gpt/sofia_radist.log
 
 # Статус
-systemctl status sofia-gpt
 systemctl status sofia-radist
+
+# Состояние клиента
+sqlite3 /opt/sofia-gpt/sofia_gpt.db "SELECT * FROM client_state WHERE user_id = -(1000000 + CHAT_ID);"
+
+# Диалог клиента
+sqlite3 /opt/sofia-gpt/sofia_gpt.db "SELECT role, content FROM radist_messages WHERE chat_id = CHAT_ID ORDER BY timestamp;"
+
+# Остановить диалог
+sqlite3 /opt/sofia-gpt/sofia_gpt.db "UPDATE client_state SET dialog_finished = 1 WHERE user_id = -(1000000 + (SELECT chat_id FROM radist_chats WHERE phone LIKE '%79XXXXXXXXX%'));"
 ```
 
-## 📊 Observer Chat
-
-Группа "Диалоги Софья" — все диалоги из всех каналов в одном месте.
-Chat ID: -5206139579
-
-## 🧠 Архитектура
-```
-Сообщение → Extractor (GPT-5.2) → State Manager → Planner → RAG → Generator → Ответ
-```
-
-Подробнее: SOFIA_ARCHITECTURE.md
-
-## 📁 Ключевые файлы
-
-| Файл | Назначение |
-|------|------------|
-| bot_server.py | Telegram Bot |
-| sofia_radist_gateway.py | Gateway для Max/Telegram через Radist |
-| sofia_outreach.sh | Проактивная отправка |
-| message_processor.py | Единая логика обработки |
-| extractor.py | NLU — понимание сообщений |
-| planner.py | Выбор действия |
-| state_manager.py | Состояние клиента |
-| sofia_prompt.py | Промпт генератора |
-| rag_module.py | RAG с примерами |
-
-## 📚 Документация
-
-- SOFIA_CONTEXT.md — этот файл
-- SOFIA_CURRENT.md — текущий статус
-- SOFIA_ARCHITECTURE.md — архитектура
-- SOFIA_TASKS.md — задачи
-- SOFIA_BUGS.md — известные баги
-- SOFIA_KNOWLEDGE.md — база знаний
+## Документация
+- `docs/SOFIA_CONTEXT.md` — этот файл
+- `docs/SOFIA_CURRENT.md` — текущий статус
+- `docs/SOFIA_ARCHITECTURE.md` — детальная архитектура v3.0
+- `docs/SOFIA_KNOWLEDGE.md` — база знаний
+- `docs/SOFIA_TASKS.md` — задачи
+- `docs/SESSION_END_TEMPLATE.md` — шаблон завершения сессии
