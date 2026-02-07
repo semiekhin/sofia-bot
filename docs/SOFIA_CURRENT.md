@@ -1,35 +1,67 @@
 # Текущий статус Sofia-GPT
 
-📅 **Последняя сессия:** 03.02.2026
+📅 **Последняя сессия:** 05-06.02.2026
+🏷️ **Версия:** v3.0 — "LLM с контекстом" (Planner убран)
 
-## ✅ Что сделано
-- BUG-003: Обрезанные ответы — max_output_tokens увеличен (Analyzer 300→1000, Generator 800→4000) + логирование truncation
-- lead_type (cold/warm/hot) — новое поле в ClientState + БД (ALTER TABLE)
-- Блок АКТУАЛИЗАЦИЯ в промпте — этап 0 для холодных лидов (проверка актуальности перед квалификацией)
-- lead_type отображается в format_state_summary() с эмодзи (❄️/🔥/🔥🔥)
-- sofia_outreach.sh — шаблоны приветствий по типу лида + запись lead_type в client_state
+## ✅ Что сделано (05-06.02.2026)
+
+### Архитектура
+- [x] Planner cleanup — убран лишний вызов gpt-5.2 (экономия 2-5 сек и ~$0.01-0.05 на сообщение)
+- [x] message_processor.py: 75 строк вместо 160
+- [x] gateway: убран action_context из generate_response
+
+### Cold Lead система
+- [x] Баг save_lead_type — lead_type теперь сохраняется по правильному user_id
+- [x] Дефолт warm в outreach — обычные клиенты работают как раньше
+- [x] End-to-end тест холодного лида — работает
+
+### Observer с темами
+- [x] Каждый клиент в отдельной теме (Forum Topics)
+- [x] gateway: get_or_create_topic() + notify_observer с thread_id
+- [x] outreach: создание тем при первом сообщении
+- [x] БД: таблица observer_topics
+
+### Массовая рассылка
+- [x] Протестирована рассылка тёплым лидам из CSV
 
 ## 🔄 Текущее состояние
-- Сервис sofia-radist: active (running)
-- BUG-003: исправлен, ожидает проверки на live трафике
-- Холодная ветка: промпт и БД готовы, НЕ готовы Analyzer и RAG
-- Очередь сообщений (BUG-002): развёрнута, работает
+
+### ✅ Работает
+- sofia-radist.service — active
+- Обработка Max и Telegram через Radist
+- Cold/Warm lead разделение
+- Темы в Observer группе
+- RAG: 2001 пример (включая 29 ACTUALIZATION)
+
+### 📊 Архитектура v3.0
+```
+Webhook → Extractor (gpt-5.2) → State → Analyzer (gpt-5.2) → RAG → Generator (gpt-5.2) → Ответ
+```
 
 ## 🔜 Следующие шаги
-1. 🔴 Задача 2г: ACTUALIZATION stage в Analyzer — чтобы Analyzer распознавал стадию актуализации
-2. 🟡 Задача 2д: Примеры из Лидоруба в RAG (стадия ACTUALIZATION)
-3. 🟡 Тестирование cold outreach end-to-end
-4. 🟡 Мониторинг BUG-003 на live трафике
-5. 🔵 Голосовая Эва (Vapi/Voximplant)
+1. Мониторинг диалогов с холодными/тёплыми лидами
+2. Оптимизация формулировок на основе реальных паттернов
+3. Интеграция Битрикс → София (webhook для ночных лидов)
+4. Мёртвый код в gateway (stage_detector import, ACTION_TO_RAG_STAGE)
+5. Обновить остальную документацию на GitHub
 
-## 📁 Последние изменения (03.02.2026)
-- `sofia_radist_gateway.py` — BUG-003 fix: tokens + truncation logging
-- `state_manager.py` — lead_type field in ClientState + DB schema
-- `sofia_prompt_v2.py` — блок АКТУАЛИЗАЦИЯ + lead_type в state summary
-- `sofia_outreach.sh` — cold/warm/hot шаблоны + save_lead_type()
+## 📁 Последние коммиты
+- `35a34886` — feat: темы в Observer
+- `fa4e11b4` — fix: дефолт lead_type warm
+- `19afa0db` — fix: save_lead_type правильный user_id
+- `a3fe07d1` — refactor: Planner cleanup
 
-## 🔙 Откат
-- BUG-003: `cp sofia_radist_gateway.py.bak_20260203 sofia_radist_gateway.py && systemctl restart sofia-radist`
-- lead_type: `cp state_manager.py.bak_20260203 state_manager.py && systemctl restart sofia-radist`
-- Prompt: `cp sofia_prompt_v2.py.bak_20260203 sofia_prompt_v2.py && systemctl restart sofia-radist`
-- Outreach: `cp sofia_outreach.sh.bak_20260203 sofia_outreach.sh`
+## 🚀 Быстрые команды
+```bash
+# Outreach тёплый
+bash /opt/sofia-gpt/sofia_outreach.sh max 79XXXXXXXXX Имя
+
+# Outreach холодный
+bash /opt/sofia-gpt/sofia_outreach.sh max 79XXXXXXXXX "" cold
+
+# Логи
+tail -f /opt/sofia-gpt/sofia_radist.log
+
+# Рестарт
+systemctl restart sofia-radist
+```
