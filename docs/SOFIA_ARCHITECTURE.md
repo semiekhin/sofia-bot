@@ -207,3 +207,48 @@ CHANNELS = {
 ```
 Вариант 1 (рекомендован): Битрикс пушит нам, не даём им доступ к CRM.
 Вариант 2 (запасной): Мы опрашиваем crm.lead.list по входящему вебхуку.
+
+## Web API (добавлено 10.02.2026)
+
+### Схема
+```
+Браузер (atlantis-invest.ru)
+    ↓ fetch()
+Nginx (443, SSL) → api.atlantis-invest.ru
+    ↓ proxy_pass
+web_api.py (localhost:8080, FastAPI)
+    ↓
+process_message() → Analyzer → RAG → Generator
+    ↓
+JSON response → Браузер
+```
+
+### Компоненты
+- **web_api.py** — FastAPI сервер, точка входа для виджета
+- **nginx** — reverse proxy + SSL (Let's Encrypt)
+- **sessionStorage** — хранение session_id в браузере
+
+### Endpoints
+| Метод | URL | Описание |
+|-------|-----|----------|
+| GET | /api/health | Проверка работоспособности |
+| POST | /api/session | Создание сессии (возвращает session_id) |
+| POST | /api/chat | Отправка сообщения (возвращает reply) |
+| GET | /api/history/{session_id} | История сообщений |
+
+### Формула user_id для Web
+```
+user_id = 9_000_000 + (hash(session_id) % 1_000_000)
+```
+Диапазон 9M–10M, не пересекается с Telegram и Radist ID.
+
+### Хранение данных
+- Сообщения: общая таблица `messages` (chat_id = user_id)
+- Состояние: общая таблица `client_state`
+- Сессии: в памяти (dict), теряются при рестарте (TODO: SQLite)
+
+### CORS
+Разрешённые origins: atlantis-invest.ru, www.atlantis-invest.ru, localhost:3000
+
+### Fallback
+Если API недоступен — виджет показывает демо-ответы из getDemoResponse() (захардкожены в index.html).

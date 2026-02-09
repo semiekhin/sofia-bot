@@ -1,62 +1,71 @@
 # Sofia-GPT v3.0
 
-AI-бот для продажи курортной недвижимости Oazis Estate. Квалифицирует лидов через мессенджеры, конвертирует в видео-консультации.
+AI-бот для продажи курортной недвижимости Oazis Estate. Квалифицирует лидов через мессенджеры и сайт, конвертирует в видео-консультации.
 
 ## Инфраструктура
 - **Сервер:** 72.56.64.91:2222 (SSH)
 - **Путь:** /opt/sofia-gpt/
 - **Бот:** @humanAINeural_bot
-- **Сервис:** sofia-radist.service (порт 5001)
+- **Сервисы:**
+  - sofia-radist.service (порт 5001) — Radist gateway
+  - sofia-web-api.service (порт 8080) — Web API для виджета
+- **API:** https://api.atlantis-invest.ru
+- **Сайт:** https://atlantis-invest.ru (reg.ru хостинг)
 - **База:** sofia_gpt.db (SQLite)
 
-## Каналы (на 07.02.2026)
-- **Max:** ❌ ЗАБАНЕН (номер заблокирован после массовой рассылки)
-- **Telegram:** ⚠️ входящие работают, outreach (sofia_outreach.sh telegram) — не проверен
-- **WABA:** ⏳ не подключен — приоритет №1 (Radist.Online + 360Dialog)
-- **Виджет на сайте:** ⏳ планируется
+## Каналы (на 10.02.2026)
+- **Telegram:** ✅ входящие работают (@humanAINeural_bot)
+- **Виджет на сайте:** ✅ работает (atlantis-invest.ru → api.atlantis-invest.ru)
+- **Max:** ❌ ЗАБАНЕН
+- **WABA:** ⏳ не подключен
 
 ## Стек
-- Python 3 + aiohttp (webhook сервер, порт 5001)
+- Python 3 + aiohttp (Radist webhook, порт 5001)
+- Python 3 + FastAPI/uvicorn (Web API, порт 8080)
 - OpenAI API (gpt-5.2, Responses API)
 - ChromaDB (RAG, 2001 пример)
-- Radist.Online (Max, Telegram; вопрос — нужен ли Radist вообще?)
+- Nginx + Let's Encrypt (SSL для api.atlantis-invest.ru)
 
 ## Архитектура v3.0
 ```
-Webhook → Extractor (gpt-5.2) → State → Analyzer (gpt-5.2) → RAG → Generator (gpt-5.2) → Ответ
+[Каналы]                              [Сервер 72.56.64.91]
+                                      
+Telegram Bot ─────────────┐
+                          ├──→ process_message() → Analyzer → RAG → Generator → Ответ
+Radist Webhook (Max) ─────┤
+                          │
+Web Widget (сайт) ── nginx/SSL ──→ web_api.py (:8080) ─┘
 ```
 
 Философия: доверяем LLM с полным контекстом (state_summary + RAG + промпт) вместо жёсткого Planner.
 
 ## Ключевые файлы
-- `sofia_radist_gateway.py` — webhook сервер (порт 5001), Analyzer, RAG, Generator
+- `web_api.py` — FastAPI сервер для виджета (порт 8080)
+- `sofia_radist_gateway.py` — Radist webhook сервер (порт 5001)
 - `message_processor.py` — Extractor → State → Signals
-- `extractor.py` — NLU, извлечение фактов из сообщений
+- `extractor.py` — NLU, извлечение фактов
 - `state_manager.py` — состояние клиента (SQLite)
-- `sofia_prompt_v2.py` — промпт генератора (включая блок "ЭКСПЕРТ")
+- `sofia_prompt_v2.py` — промпт генератора
 - `rag_module.py` — векторный поиск примеров (ChromaDB)
-- `sofia_outreach.sh` — скрипт для outreach (cold/warm/hot)
-- `config/radist_config.py` — конфигурация каналов и вебхука
 
 ## Быстрые команды
 ```bash
-# Рестарт
-systemctl restart sofia-radist
+# Web API
+systemctl status sofia-web-api
+systemctl restart sofia-web-api
+tail -f /opt/sofia-gpt/web_api.log
+curl -s https://api.atlantis-invest.ru/api/health
 
-# Логи
+# Radist gateway
+systemctl restart sofia-radist
 tail -f /opt/sofia-gpt/sofia_radist.log
 
-# Статус
-systemctl status sofia-radist
+# Nginx
+systemctl status nginx
+cat /etc/nginx/sites-available/sofia-api
 
-# Секции промпта (ВСЕГДА проверяй перед патчем!)
-grep -A1 "═══" /opt/sofia-gpt/sofia_prompt_v2.py | grep -v "═══" | grep -v "^--$" | grep .
-
-# Состояние клиента
-sqlite3 /opt/sofia-gpt/sofia_gpt.db "SELECT * FROM client_state WHERE user_id = -(1000000 + CHAT_ID);"
-
-# Диалог клиента
-sqlite3 /opt/sofia-gpt/sofia_gpt.db "SELECT role, content FROM radist_messages WHERE chat_id = CHAT_ID ORDER BY timestamp;"
+# Состояние веб-клиента
+sqlite3 /opt/sofia-gpt/sofia_gpt.db "SELECT * FROM client_state WHERE user_id >= 9000000;"
 ```
 
 ## Документация

@@ -712,3 +712,36 @@ goal → strategy → budget → MEETING_1 → [отказ] → payment → loca
 - WABA можно подключить напрямую через 360Dialog без Radist
 - Radist стоит ~5000₽/мес, даёт единое окно для каналов
 - Решение отложено, требует детального анализа
+
+---
+
+### 10.02.2026: Web API для чат-виджета
+
+**Задача:** Подключить виджет на сайте atlantis-invest.ru к реальной Софье.
+
+**Решение:** Создан `web_api.py` — FastAPI сервер на порту 8080. Тот же пайплайн что Telegram и Radist: process_message() → Analyzer → RAG → Generator. Никакие существующие файлы не тронуты.
+
+**Инфраструктура:**
+- DNS: `api.atlantis-invest.ru` → 72.56.64.91 (A-запись в reg.ru)
+- Nginx reverse proxy: 443 → localhost:8080
+- SSL: Let's Encrypt (автообновление certbot)
+- Systemd: `sofia-web-api.service`
+- CORS: atlantis-invest.ru
+
+**Веб-юзеры:** user_id = 9_000_000 + hash(session_id) % 1_000_000. Не пересекаются с Telegram ID.
+
+**Решение по HTTPS:** Сайт на HTTPS → браузер блокирует HTTP-запросы (mixed content). Поэтому обязателен SSL на API. Субдомен + Let's Encrypt — самый простой путь.
+
+---
+
+### 10.02.2026: BUG-004 — Generator знает, Extractor забывает
+
+**Проблема:** Клиент написал "lkz bydtcnbwbq" (EN-раскладка = "для инвестиций"). Generator понял контекст и ответил "Поняла, для инвестиций". Но Extractor не распарсил транслит → goal=null в state. При следующем сообщении Generator увидел пустой goal → переспросил.
+
+**Причина:** Generator и Extractor — два независимых LLM-вызова. Generator видит всю историю и понимает контекст. Extractor парсит конкретное сообщение буквально.
+
+**Варианты решения:**
+- (А) Автоконверсия EN→RU раскладки перед Extractor (быстро, 10 строк, но покрывает только русский в англ. раскладке)
+- (Б) Extractor/Analyzer учитывает предыдущий ответ Generator (правильнее, но сложнее)
+
+**Статус:** НЕ ИСПРАВЛЕН
