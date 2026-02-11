@@ -373,6 +373,10 @@ async def process_incoming_message(channel: str, connection_id: int, chat_id: in
     
     response = await generate_response(channel, chat_id, user_id, user_message, user_name)
     
+    if response is None:
+        log(f"🔇 [{channel.upper()}] Ответ не требуется — молчим")
+        return
+    
     # Сохраняем ответ
     save_message(channel, connection_id, chat_id, contact_id, phone, "assistant", response)
     
@@ -520,6 +524,11 @@ async def generate_response(channel: str, chat_id: int, user_id: int, user_messa
             log(f"🏁 [{channel.upper()}] LLM завершил диалог [END]")
         
         if not answer.strip():
+            # Проверяем — если диалог уже завершён, не отвечаем
+            state = state_manager.get_state(user_id)
+            if state and getattr(state, 'dialog_finished', False):
+                log(f"🔇 [{channel.upper()}] Диалог завершён, пустой ответ — молчим")
+                return None
             answer = "Подскажите, что для вас сейчас важнее — посмотреть варианты или обсудить условия?"
         
         log(f"✅ [{channel.upper()}] Generator ответил")
@@ -583,6 +592,10 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
     
     # Генерация ответа
     response = await generate_response(channel, chat_id, user_id, combined_message, user_name)
+    
+    if response is None:
+        log(f"🔇 [{channel.upper()}] Ответ не требуется — молчим")
+        return
     
     # Callback для отправки (вызывается после проверки очереди)
     async def send_callback():

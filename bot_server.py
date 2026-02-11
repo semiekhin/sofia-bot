@@ -572,9 +572,13 @@ async def delayed_response(chat_id, user_id, user_name, context):
         stop_typing.set()
         await typing_task
     
+    if response is None:
+        log(f"🔇 Ответ не требуется — молчим")
+        return
+    
     msg_id = save_message(chat_id, 0, BOT_NAME, "assistant", response, processed=1, stage=stage)
     
-    await context.bot.send_message(chat_id=chat_id, text=response, reply_markup=get_rating_keyboard(msg_id))
+    await context.bot.send_message(chat_id=chat_id, text=response)
     log(f"📤 София → {user_name}: {response[:100]}...")
     
     if chat_id in pending_responses:
@@ -741,6 +745,10 @@ async def generate_response_with_rag(chat_id, user_id, user_message, user_name, 
             log(f"🏁 LLM завершил диалог [END]")
 
         if not assistant_message.strip():
+            state = state_manager.get_state(user_id)
+            if state and getattr(state, 'dialog_finished', False):
+                log(f"🔇 Диалог завершён, пустой ответ — молчим")
+                return None, rag_stage
             assistant_message = "Подскажите, что для вас сейчас важнее — посмотреть варианты или обсудить условия?"
 
         log(f"✅ Generator ответил")
