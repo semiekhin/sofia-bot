@@ -540,7 +540,7 @@ async def delayed_response(chat_id, user_id, user_name, context):
     # Унифицированная обработка через message_processor
     # ════════════════════════════════════════════════════════════════════════
     
-    history = get_conversation_history(chat_id, limit=8)
+    history = get_conversation_history(chat_id, limit=100)
     result = await process_message(
         state_manager=state_manager,
         user_id=user_id,

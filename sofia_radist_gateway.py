@@ -260,7 +260,7 @@ def save_message(channel: str, connection_id: int, chat_id: int, contact_id: int
     conn.close()
 
 
-def get_history(channel: str, chat_id: int, limit: int = 8) -> list:
+def get_history(channel: str, chat_id: int, limit: int = 100) -> list:
     """Получает историю сообщений"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()

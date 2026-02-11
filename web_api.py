@@ -80,7 +80,7 @@ def save_message(chat_id, user_id, user_name, role, content):
     conn.close()
 
 
-def get_history(chat_id, limit=20):
+def get_history(chat_id, limit=100):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
@@ -112,7 +112,7 @@ def get_web_user_id(session_id):
 # ============================================================
 
 async def generate_response(user_id, user_message, user_name):
-    history = get_history(user_id, limit=20)
+    history = get_history(user_id, limit=100)
     state = state_manager.get_state(user_id)
 
     history_text = "\n".join([
@@ -235,7 +235,7 @@ async def generate_response(user_id, user_message, user_name):
 async def handle_web_message(user_id, user_name, message):
     save_message(chat_id=user_id, user_id=user_id, user_name=user_name, role="user", content=message)
 
-    history = get_history(user_id, limit=20)
+    history = get_history(user_id, limit=100)
     await process_message(
         user_id=user_id,
         user_name=user_name,
