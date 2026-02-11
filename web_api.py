@@ -132,11 +132,11 @@ async def generate_response(user_id, user_message, user_name):
 
 ЭТАПЫ:
 - GREETING — приветствие, начало диалога
-- ACTUALIZATION — актуализация интереса холодного лида
+- ACTUALIZATION — актуализация интереса холодного лида (не помнит заявку, давно оставлял, спрашивает "кто вы?", "какой сайт?")
 - QUALIFICATION — выясняем цель, бюджет, сроки, способ оплаты
 - MEETING — предлагаем созвон
-- OBJECTION — клиент возражает
-- CLOSING — завершение
+- OBJECTION — клиент возражает (дорого, подумаю, не сейчас, пришлите материалы)
+- CLOSING — завершение (договорились о созвоне, отправляем подборку, прощаемся)
 
 Ответь СТРОГО в формате JSON:
 {
@@ -164,8 +164,7 @@ async def generate_response(user_id, user_message, user_name):
             model="gpt-5.2",
             instructions=analyzer_prompt,
             input=analyzer_input,
-            reasoning={"effort": "medium"},
-            max_output_tokens=1000
+            reasoning={"effort": "medium"}
         )
         analyzer_text = analyzer_response.output_text or ""
         json_match = re.search(r'\{[^}]+\}', analyzer_text, re.DOTALL)
