@@ -18,10 +18,14 @@ from telegram.ext import Application, MessageHandler, CommandHandler, CallbackQu
 
 import os
 from dotenv import load_dotenv
-from sofia_prompt import get_system_prompt, BOT_NAME
+from sofia_prompt_v2 import get_system_prompt_v2, format_state_summary, BOT_NAME
 
 # NEW: RAG модули
-from stage_detector import detect_stage, get_stage_context
+# stage_detector убран в v3.0 — используем LLM-Analyzer
+try:
+    from stage_detector import get_stage_context  # только для /stage команды
+except ImportError:
+    get_stage_context = lambda s: {"goal": "N/A", "next_step": "N/A"}
 from rag_module import search_examples, format_examples_for_prompt, init_vector_store, get_collection_stats
 
 # NEW: Agent Architecture
@@ -73,33 +77,6 @@ RAG_EXAMPLES_COUNT = 10  # Сколько примеров добавлять в
 RAG_ENABLED = True      # Включить/выключить RAG
 
 # Маппинг Action → Stage для RAG (чтобы RAG искал по действию Planner, а не Stage Detector)
-ACTION_TO_RAG_STAGE = {
-    "ask_goal": "QUALIFICATION",
-    "ask_location": "QUALIFICATION",
-    "ask_budget": "QUALIFICATION",
-    "ask_strategy": "QUALIFICATION",
-    "ask_usage": "QUALIFICATION",
-    "ask_family": "QUALIFICATION",
-    "ask_payment": "QUALIFICATION",
-    "ask_first_payment": "QUALIFICATION",
-    "ask_lpr": "QUALIFICATION",
-    "help_goal": "QUALIFICATION",
-    "help_location": "QUALIFICATION",
-    "help_budget": "QUALIFICATION",
-    "help_payment": "QUALIFICATION",
-    "help_lpr": "QUALIFICATION",
-    "answer_question": "PRESENTATION",
-    "handle_objection": "OBJECTION",
-    "clarify_mentioned": "QUALIFICATION",
-    "propose_meeting": "MEETING",
-    "propose_meeting_1": "MEETING",
-    "propose_meeting_2": "MEETING",
-    "confirm_meeting": "CLOSING",
-    "finish_with_materials": "CLOSING",
-    "ease_pressure": "OBJECTION",
-    "send_materials": "PRESENTATION",
-    "greeting": "GREETING",
-}
 
 # ============================================
 # WAIT-ЛОГИКА: не отвечать после договорённости
@@ -577,12 +554,12 @@ async def delayed_response(chat_id, user_id, user_name, context):
     if result["skip_response"]:
         return
     
-    action_context = result["action_context"]
+    action_context = result.get("action_context")
     client_state = result["client_state"]
     
     # Уведомление менеджеру при завершении диалога
-    if result["should_notify"]:
-        await notify_manager_deal(context.bot, client_state, user_name, result["notification_type"])
+    if result.get("should_notify"):
+        await notify_manager_deal(context.bot, client_state, user_name, result.get("notification_type", "unknown"))
 
     # ════════════════════════════════════════════════════════════════════════
     
@@ -644,112 +621,134 @@ def _format_known_facts(facts: dict) -> str:
 
 async def generate_response_with_rag(chat_id, user_id, user_message, user_name, was_offline=False, action_context=None):
     """
-    Генерирует ответ с использованием Stage-Aware RAG + детекторов.
-    
-    Returns:
-        (response_text, detected_stage)
+    Генерирует ответ v3.0: LLM-Analyzer -> RAG -> LLM-Generator.
+    Аналогично web_api.py и sofia_radist_gateway.py.
     """
+    import re as _re
+    import json as _json
+
     history = get_conversation_history(chat_id)
-    last_stage = get_user_stage(chat_id)
-    
-    # Детекторы отключены — RAG + промпт управляют диалогом
-    
-    # NEW: Определяем этап
-    stage_result = detect_stage(user_message, history, last_stage)
-    current_stage = stage_result["stage"]
-    confidence = stage_result["confidence"]
-    substage = stage_result["substage"]
-    
-    # Обновляем этап пользователя
-    set_user_stage(chat_id, current_stage)
-    
-    log(f"🎯 Stage: {current_stage} ({confidence}) [{substage}]")
-    
-    # NEW: Ищем примеры из RAG
-    examples = []
+    state = state_manager.get_state(user_id)
+
+    history_text = "\n".join([
+        f"{'София' if m['role']=='assistant' else 'Клиент'}: {m['content']}"
+        for m in history[-20:]
+    ])
+
+    state_summary = format_state_summary(state) if state else "Новый клиент"
+
+    # ШАГ 1: LLM-Аналитик
+    analyzer_prompt = """Ты — аналитик диалогов продаж недвижимости.
+
+Прочитай диалог и последнее сообщение клиента. Определи:
+1. На какой вопрос/тему отвечает клиент?
+2. Какой сейчас этап продажи?
+3. Какие примеры из базы помогут менеджеру ответить?
+
+ЭТАПЫ:
+- GREETING — приветствие, начало диалога
+- ACTUALIZATION — актуализация интереса холодного лида
+- QUALIFICATION — выясняем цель, бюджет, сроки, способ оплаты
+- MEETING — предлагаем созвон
+- OBJECTION — клиент возражает
+- CLOSING — завершение
+
+Ответь СТРОГО в формате JSON:
+{
+  "client_intent": "краткое описание что имеет в виду клиент",
+  "stage": "ОДИН ИЗ ЭТАПОВ",
+  "rag_query": "что искать в базе примеров (на русском, 3-7 слов)"
+}"""
+
+    analyzer_input = f"""ИСТОРИЯ ДИАЛОГА:
+{history_text if history_text else "Диалог только начался"}
+
+НОВОЕ СООБЩЕНИЕ КЛИЕНТА:
+{user_message}
+
+ЧТО ИЗВЕСТНО О КЛИЕНТЕ:
+{state_summary}"""
+
+    rag_stage = "QUALIFICATION"
+    rag_query = user_message
+
+    try:
+        log(f"🧠 Analyzer запрос...")
+        analyzer_response = await asyncio.to_thread(
+            client.responses.create,
+            model="gpt-5.2",
+            instructions=analyzer_prompt,
+            input=analyzer_input,
+            reasoning={"effort": "medium"},
+            max_output_tokens=1000
+        )
+        analyzer_text = analyzer_response.output_text or ""
+        json_match = _re.search(r'\{[^}]+\}', analyzer_text, _re.DOTALL)
+        if json_match:
+            analysis = _json.loads(json_match.group())
+            rag_stage = analysis.get("stage", "QUALIFICATION")
+            rag_query = analysis.get("rag_query", user_message)
+            log(f"🧠 Analyzer: stage={rag_stage}, query='{rag_query[:40]}...'")
+        else:
+            log(f"⚠️ Analyzer: JSON не найден, fallback")
+    except Exception as e:
+        log(f"⚠️ Analyzer error: {e}, fallback")
+
+    set_user_stage(chat_id, rag_stage)
+
+    # ШАГ 2: RAG
     examples_prompt = ""
-    
     if RAG_ENABLED:
-        # Определяем stage для RAG по action от Planner
-        rag_stage = current_stage  # fallback
-        if action_context:
-            action = action_context.get("action", "")
-            rag_stage = ACTION_TO_RAG_STAGE.get(action, current_stage)
-        examples = search_examples(rag_stage, user_message, limit=RAG_EXAMPLES_COUNT)
+        examples = search_examples(rag_stage, rag_query, limit=RAG_EXAMPLES_COUNT)
         if examples:
             examples_prompt = format_examples_for_prompt(examples)
-            log(f"📚 RAG: {len(examples)} примеров для {rag_stage}")
-        
-        # Сохраняем лог RAG
-        save_rag_log(chat_id, user_message, current_stage, confidence, examples)
-    
-    # Формируем system prompt (унифицировано с userbot)
-    system_prompt = get_system_prompt(user_name, action_context)
-    
-    # Добавляем RAG примеры
-    if examples_prompt:
-        system_prompt += f"""
+            log(f"📚 RAG [{rag_stage}]: {len(examples)} примеров")
+        save_rag_log(chat_id, user_message, rag_stage, 0.0, examples if examples else [])
 
-════════════════════════════════════════════════════════════════════════════════
-ПРИМЕРЫ ХОРОШИХ ОТВЕТОВ (RAG)
-════════════════════════════════════════════════════════════════════════════════
-{examples_prompt}
-"""
-    
+    # ШАГ 3: LLM-Генератор
+    system_prompt = get_system_prompt_v2(state_summary, examples_prompt)
+
     if was_offline:
         user_message = f"[Клиент написал несколько сообщений пока меня не было:\n{user_message}\n]\nОтветь на актуальный вопрос, можешь мягко извиниться что ненадолго отходила."
-    
-    # Формируем сообщения для GPT
-    messages = []
-    for msg in history:
-        messages.append({
-            "role": msg["role"],
-            "content": msg["content"]
-        })
-    messages.append({"role": "user", "content": user_message})
-    
-    config = get_model_config()
-    
-    def call_openai():
-        if config["use_responses_api"]:
-            # GPT-5.2 responses API
-            params = {
-                "model": config["model"],
-                "instructions": system_prompt,
-                "input": messages,
-                "text": {"verbosity": "low"},
-            }
-            if config.get("reasoning"):
-                params["reasoning"] = config["reasoning"]
-            return client.responses.create(**params)
-        else:
-            # GPT-4o chat completions API
-            chat_msgs = [{"role": "system", "content": system_prompt}] + messages
-            return client.chat.completions.create(
-                model=config["model"],
-                messages=chat_msgs,
-                temperature=config.get("temperature", 0.4),
-                max_tokens=config["max_tokens"]
-            )
-    
-    try:
-        log(f"🔄 GPT запрос ({MODEL_MODE}) для {user_name} (stage: {current_stage})...")
-        response = await asyncio.to_thread(call_openai)
-        log(f"✅ GPT ответил ({MODEL_MODE})")
-        
-        if config["use_responses_api"]:
-            assistant_message = response.output_text
-        else:
-            assistant_message = response.choices[0].message.content
-        if not assistant_message or assistant_message.strip() == "":
-            assistant_message = "Вы на связи? 😊"
-        
 
-        return assistant_message, current_stage
-        
+    messages = [{"role": m["role"], "content": m["content"]} for m in history]
+    messages.append({"role": "user", "content": user_message})
+
+    try:
+        log(f"🔄 Generator запрос для {user_name} (stage: {rag_stage})...")
+        response = await asyncio.to_thread(
+            client.responses.create,
+            model="gpt-5.2",
+            instructions=system_prompt,
+            input=messages,
+            reasoning={"effort": "high"},
+            max_output_tokens=4000
+        )
+        assistant_message = response.output_text or ""
+
+        log(f"📏 Generator: len={len(assistant_message)}, output_tokens={getattr(response.usage, 'output_tokens', '?')}")
+
+        try:
+            stop_reason = getattr(response.output[-1], 'stop_reason', None) if response.output else None
+            if stop_reason == "max_tokens" or (len(assistant_message) > 50 and not assistant_message.rstrip().endswith(("?", "!", ".", ")", "»", '"'))):
+                log(f"⚠️ ОБРЕЗКА! stop={stop_reason}, len={len(assistant_message)}")
+        except Exception:
+            pass
+
+        if "[END]" in assistant_message or "[end]" in assistant_message:
+            assistant_message = assistant_message.replace("[END]", "").replace("[end]", "").strip()
+            state_manager.update_state(user_id, {"dialog_finished": True, "finish_type": "llm_end"})
+            log(f"🏁 LLM завершил диалог [END]")
+
+        if not assistant_message.strip():
+            assistant_message = "Подскажите, что для вас сейчас важнее — посмотреть варианты или обсудить условия?"
+
+        log(f"✅ Generator ответил")
+        return assistant_message, rag_stage
+
     except Exception as e:
-        log(f"❌ Ошибка GPT: {e}")
-        return "Простите, связь подвисла. Напишите ещё раз?", current_stage
+        log(f"❌ Generator error: {e}")
+        return "Простите, связь подвисла. Напишите ещё раз?", rag_stage
 
 # Legacy wrapper
 async def generate_response(chat_id, user_id, user_message, user_name, was_offline=False):
