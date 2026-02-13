@@ -47,6 +47,86 @@ DB_PATH = os.path.join(SOFIA_PATH, "sofia_gpt.db")
 # Observer (трансляция в Telegram-группу)
 OBSERVER_CHAT_ID = os.getenv("OBSERVER_CHAT_ID")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+# Битрикс CRM
+BITRIX_WEBHOOK_URL = "https://oazisestate.bitrix24.ru/rest/426/z61dwivdmdy9dk4f/crm.lead.add"
+BITRIX_SOURCE_ID = "504"
+BITRIX_ASSIGNED_ID = 426  # тест: 426, прод: 24932
+
+
+def extract_phone_from_history(history):
+    """Ищет номер телефона в сообщениях клиента"""
+    import re
+    phone_pattern = re.compile(r'(?:\+?7|8)[\s\-\(]*(\d{3})[\s\-\)]*(\d{3})[\s\-]*(\d{2})[\s\-]*(\d{2})')
+    for msg in reversed(history):
+        if msg["role"] == "user":
+            match = phone_pattern.search(msg["content"])
+            if match:
+                digits = "7" + match.group(1) + match.group(2) + match.group(3) + match.group(4)
+                return digits
+    # Fallback: ищем просто 10-11 цифр подряд
+    digit_pattern = re.compile(r'(?<!\d)(\d{10,11})(?!\d)')
+    for msg in reversed(history):
+        if msg["role"] == "user":
+            match = digit_pattern.search(msg["content"].replace(" ", "").replace("-", ""))
+            if match:
+                d = match.group(1)
+                if len(d) == 10:
+                    return "7" + d
+                if len(d) == 11 and d[0] in ("7", "8"):
+                    return "7" + d[1:]
+    return None
+
+
+async def send_lead_to_bitrix(user_id, user_name, state, history):
+    """Отправляет квалифицированный лид в Битрикс24"""
+    phone = extract_phone_from_history(history)
+    
+    # Собираем данные из state
+    goal_map = {"investment": "Инвестиции", "personal": "Для себя", "combined": "Комбинированно"}
+    payment_map = {"full": "Полная оплата", "mortgage": "Ипотека", "installment": "Рассрочка"}
+    
+    goal = goal_map.get(getattr(state, "goal", None) or "", "Не указана")
+    budget = getattr(state, "budget", None)
+    budget_str = f"{budget / 1_000_000:.1f} млн ₽" if budget else "Не указан"
+    payment = payment_map.get(getattr(state, "payment_type", None) or "", "Не указан")
+    finish_type = getattr(state, "finish_type", "llm_end")
+    
+    # Последние сообщения для комментария
+    last_msgs = history[-10:] if len(history) > 10 else history
+    chat_text = "\n".join([f"{'София' if m['role']=='assistant' else 'Клиент'}: {m['content']}" for m in last_msgs])
+    
+    comments = f"""Лид от AI-бота София (виджет на сайте)
+Цель: {goal}
+Бюджет: {budget_str}
+Оплата: {payment}
+Тип завершения: {"созвон" if "meeting" in str(finish_type) else "подборка/диалог"}
+
+--- Последние сообщения ---
+{chat_text}"""
+    
+    fields = {
+        "TITLE": f"AI-бот: {user_name or 'Клиент с сайта'}",
+        "NAME": user_name or "Клиент",
+        "COMMENTS": comments,
+        "SOURCE_ID": BITRIX_SOURCE_ID,
+        "ASSIGNED_BY_ID": BITRIX_ASSIGNED_ID,
+    }
+    
+    if phone:
+        fields["PHONE"] = [{"VALUE": phone, "VALUE_TYPE": "MOBILE"}]
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(BITRIX_WEBHOOK_URL, json={"fields": fields}) as resp:
+                result = await resp.json()
+                lead_id = result.get("result")
+                if lead_id:
+                    log.info(f"✅ [BITRIX] Лид создан #{lead_id}, phone={phone or 'нет'}")
+                else:
+                    log.warning(f"⚠️ [BITRIX] Ответ без ID: {result}")
+    except Exception as e:
+        log.error(f"❌ [BITRIX] Ошибка: {e}")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 RAG_EXAMPLES_COUNT = 10
 RAG_ENABLED = True
@@ -203,7 +283,27 @@ async def generate_response(user_id, user_message, user_name):
 - Планировки: студия 36.7м², 1-спальня 47м², 2-спальни 65.7м². Цены от 5.2 млн ₽
 - Рассрочка/ипотека доступны, сделка по ФЗ-214 через эскроу-счета
 - НЕ спрашивай про локацию — клиент уже выбрал Крым и этот объект
-- Фокусируйся на Атлантисе, квалифицируй: цель, бюджет, способ оплаты → созвон"""
+- Фокусируйся на Атлантисе
+
+СТРАТЕГИЯ ВЕБ-ЧАТА (ты общаешься через виджет на сайте):
+Клиент анонимный, вовлечённость низкая — может закрыть вкладку в любой момент.
+
+ПРИНЦИП: давай ценность, спрашивай мало.
+- Отвечай полноценно и интересно: конкретные цифры доходности, планировки, преимущества объекта
+- НЕ говори «подробнее расскажу на созвоне» — дай информацию ЗДЕСЬ, этим ты вовлекаешь
+- Будь экспертом который делится знаниями, а не анкетой которая допрашивает
+
+КВАЛИФИКАЦИЯ — максимум 3 вопроса за весь диалог:
+1. Цель (уже спросила в приветствии: отдых / доход / комбинированно)
+2. Бюджет (естественно: «В каком бюджете смотрите?»)
+3. Способ оплаты (рассрочка / ипотека / полная)
+Всё. Никаких дополнительных вопросов (ЛПР, сроки, локация и т.д.)
+
+СБОР КОНТАКТА (ОБЯЗАТЕЛЬНО):
+- Контакт клиента НЕ ИЗВЕСТЕН — без номера договорённость бесполезна
+- Когда клиент согласился на созвон или подборку → спроси: «Куда удобнее — WhatsApp, Telegram? Напишите номер»
+- Пока не дал номер → НЕ ставь [END], мягко повтори просьбу
+- Получила номер → «Спасибо! Специалист перезвонит/отправит подборку в ближайшее время 😊» → [END]"""
     
 
     # ШАГ 1: LLM-Аналитик
@@ -299,6 +399,14 @@ async def generate_response(user_id, user_message, user_name):
             answer = answer.replace("[END]", "").replace("[end]", "").strip()
             state_manager.update_state(user_id, {"dialog_finished": True, "finish_type": "llm_end"})
             log.info(f"🏁 [WEB] LLM завершил диалог [END]")
+            
+            # Отправляем лид в Битрикс
+            try:
+                state_fresh = state_manager.get_state(user_id)
+                history_fresh = get_history(user_id, limit=100)
+                await send_lead_to_bitrix(user_id, user_name, state_fresh, history_fresh)
+            except Exception as e:
+                log.error(f"❌ [BITRIX] send error: {e}")
 
         if not answer.strip():
             answer = "Подскажите, что для вас сейчас важнее — посмотреть варианты или обсудить условия?"
@@ -403,6 +511,9 @@ async def create_session(req: SessionRequest):
         greeting = "Здравствуйте! 😊 Я София, менеджер отдела продаж. Помогу подобрать варианты. Какая цель: отдых / доход / комбинированно?"
     else:
         greeting = "Здравствуйте! 😊 Я София, эксперт Oazis Estate по курортной недвижимости. Чем могу помочь?"
+    
+    # BUG-005 fix: сохраняем greeting в историю чтобы LLM видел свой вопрос
+    save_message(chat_id=user_id, user_id=user_id, user_name="Sofia", role="assistant", content=greeting)
     
     return {
         "session_id": session_id,
