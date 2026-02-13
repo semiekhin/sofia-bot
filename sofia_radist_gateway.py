@@ -162,7 +162,8 @@ async def notify_observer(channel: str, phone: str, user_name: str, direction: s
         return
     
     # Получаем или создаём тему для этого клиента
-    thread_id = await get_or_create_topic(phone, user_name)
+    topic_key = phone if phone else user_name
+    thread_id = await get_or_create_topic(topic_key, user_name)
     
     emoji = CHANNEL_EMOJI.get(channel, "📨")
     

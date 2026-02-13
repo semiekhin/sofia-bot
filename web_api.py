@@ -38,10 +38,15 @@ from state_manager import StateManager
 from message_processor import process_message
 from rag_module import search_examples, format_examples_for_prompt
 from sofia_prompt_v2 import get_system_prompt_v2, format_state_summary
+import aiohttp
 from openai import OpenAI
 
 # === Константы ===
 DB_PATH = os.path.join(SOFIA_PATH, "sofia_gpt.db")
+
+# Observer (трансляция в Telegram-группу)
+OBSERVER_CHAT_ID = os.getenv("OBSERVER_CHAT_ID")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 RAG_EXAMPLES_COUNT = 10
 RAG_ENABLED = True
@@ -111,6 +116,73 @@ def get_web_user_id(session_id):
 # ГЕНЕРАЦИЯ ОТВЕТА — Analyzer → RAG → Generator
 # ============================================================
 
+async def get_or_create_web_topic(session_id: str, user_name: str) -> int:
+    """Получает или создаёт тему для веб-клиента в группе наблюдателей"""
+    import sqlite3
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    
+    topic_key = f"web_{session_id[:8]}"
+    c.execute("SELECT thread_id FROM observer_topics WHERE phone = ?", (topic_key,))
+    row = c.fetchone()
+    if row:
+        conn.close()
+        return row[0]
+    
+    display_name = f"\U0001f310 {user_name}" if user_name else f"\U0001f310 Web {session_id[:8]}"
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/createForumTopic"
+    payload = {"chat_id": OBSERVER_CHAT_ID, "name": display_name[:128]}
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as resp:
+                data = await resp.json()
+                if data.get("ok"):
+                    thread_id = data["result"]["message_thread_id"]
+                    c.execute("INSERT OR REPLACE INTO observer_topics (phone, thread_id, user_name) VALUES (?, ?, ?)",
+                              (topic_key, thread_id, display_name))
+                    conn.commit()
+                    conn.close()
+                    return thread_id
+    except Exception as e:
+        log.warning(f"\u26a0\ufe0f [WEB] Observer topic error: {e}")
+    
+    conn.close()
+    return None
+
+
+async def notify_web_observer(session_id: str, user_name: str, direction: str, message: str):
+    """Отправляет копию сообщения из веб-виджета в группу наблюдателей"""
+    if not OBSERVER_CHAT_ID or not TELEGRAM_BOT_TOKEN:
+        return
+    
+    thread_id = await get_or_create_web_topic(session_id, user_name)
+    
+    if direction == "in":
+        text = f"\U0001f310 <b>Клиент:</b>\n{message}"
+    else:
+        text = f"\u21a9\ufe0f <b>София:</b>\n{message}"
+    
+    if len(text) > 4000:
+        text = text[:4000] + "..."
+    
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": OBSERVER_CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML"
+    }
+    if thread_id:
+        payload["message_thread_id"] = thread_id
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as resp:
+                pass
+    except Exception as e:
+        log.warning(f"\u26a0\ufe0f [WEB] Observer send error: {e}")
+
+
 async def generate_response(user_id, user_message, user_name):
     history = get_history(user_id, limit=100)
     state = state_manager.get_state(user_id)
@@ -121,6 +193,18 @@ async def generate_response(user_id, user_message, user_name):
     ])
 
     state_summary = format_state_summary(state) if state else "Новый клиент"
+    
+    # Контекст источника: клиент пришёл с сайта ЖК Атлантис
+    state_summary += """
+
+КОНТЕКСТ ИСТОЧНИКА:
+Клиент пришёл с сайта atlantis-invest.ru — это сайт апарт-отеля «Атлантис» в Крыму.
+- Объект: первая береговая линия Крыма, wellness-курорт, управление Cosmos Hotel Group
+- Планировки: студия 36.7м², 1-спальня 47м², 2-спальни 65.7м². Цены от 5.2 млн ₽
+- Рассрочка/ипотека доступны, сделка по ФЗ-214 через эскроу-счета
+- НЕ спрашивай про локацию — клиент уже выбрал Крым и этот объект
+- Фокусируйся на Атлантисе, квалифицируй: цель, бюджет, способ оплаты → созвон"""
+    
 
     # ШАГ 1: LLM-Аналитик
     analyzer_prompt = """Ты — аналитик диалогов продаж недвижимости.
@@ -244,7 +328,12 @@ async def handle_web_message(user_id, user_name, message):
         channel="web"
     )
 
+    await notify_web_observer(str(user_id), user_name, "in", message)
+    
     reply = await generate_response(user_id, message, user_name)
+    
+    if reply:
+        await notify_web_observer(str(user_id), user_name, "out", reply)
     save_message(chat_id=user_id, user_id=user_id, user_name=user_name, role="assistant", content=reply)
 
     return reply
@@ -273,6 +362,10 @@ app.add_middleware(
         "http://www.atlantis-invest.ru",
         "http://localhost:3000",
         "http://127.0.0.1:5500",
+        "https://sochiremstroy.tilda.ws",
+        "http://sochiremstroy.tilda.ws",
+        "https://invest-apartmens.online",
+        "http://invest-apartmens.online",
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST"],
@@ -305,9 +398,15 @@ async def create_session(req: SessionRequest):
     session_id = str(uuid.uuid4())
     user_id = get_web_user_id(session_id)
     log.info(f"📱 Новая сессия: {session_id[:8]}... from {req.page_url or 'unknown'}")
+    # Приветствие зависит от источника
+    if req.page_url and "atlantis" in req.page_url.lower():
+        greeting = "Здравствуйте! 😊 Я София, менеджер отдела продаж. Помогу подобрать варианты. Какая цель: отдых / доход / комбинированно?"
+    else:
+        greeting = "Здравствуйте! 😊 Я София, эксперт Oazis Estate по курортной недвижимости. Чем могу помочь?"
+    
     return {
         "session_id": session_id,
-        "greeting": "Здравствуйте! 😊 Я София, эксперт Oazis Estate по курортной недвижимости. Чем могу помочь?"
+        "greeting": greeting
     }
 
 
