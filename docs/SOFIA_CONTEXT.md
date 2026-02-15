@@ -12,10 +12,11 @@ AI-бот для продажи курортной недвижимости Oazi
 - **API:** https://api.atlantis-invest.ru
 - **Сайт:** https://atlantis-invest.ru (reg.ru хостинг)
 - **База:** sofia_gpt.db (SQLite)
+- **Битрикс CRM:** oazisestate.bitrix24.ru (webhook, SOURCE:504)
 
-## Каналы (на 10.02.2026)
+## Каналы (на 15.02.2026)
 - **Telegram:** ✅ входящие работают (@humanAINeural_bot)
-- **Виджет на сайте:** ✅ работает (atlantis-invest.ru → api.atlantis-invest.ru)
+- **Виджет на сайте: ✅ работает (atlantis-invest.ru, invest-apartmens.online/atlantis, sochiremstroy.tilda.ws)
 - **Max:** ❌ ЗАБАНЕН
 - **WABA:** ⏳ не подключен
 
@@ -47,6 +48,8 @@ Web Widget (сайт) ── nginx/SSL ──→ web_api.py (:8080) ─┘
 - `state_manager.py` — состояние клиента (SQLite)
 - `sofia_prompt_v2.py` — промпт генератора
 - `rag_module.py` — векторный поиск примеров (ChromaDB)
+- `finance_calculator.py` — сравнение недвижимости vs депозит
+- `finance_data.json` — ставка ЦБ, прогнозы, параметры расчётов
 
 ## Быстрые команды
 ```bash
@@ -75,3 +78,5 @@ sqlite3 /opt/sofia-gpt/sofia_gpt.db "SELECT * FROM client_state WHERE user_id >=
 - `docs/SOFIA_KNOWLEDGE.md` — база знаний
 - `docs/SOFIA_TASKS.md` — задачи
 - `docs/SESSION_END_TEMPLATE.md` — шаблон завершения сессии
+- `docs/ATLANTIS_PRICES.md` — прайс-лист Атлантиса
+- `docs/WIDGET_INSTALL.md` — установка виджета
