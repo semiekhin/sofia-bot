@@ -252,3 +252,38 @@ user_id = 9_000_000 + (hash(session_id) % 1_000_000)
 
 ### Fallback
 Если API недоступен — виджет показывает демо-ответы из getDemoResponse() (захардкожены в index.html).
+
+## Битрикс CRM интеграция
+
+### Как работает
+1. LLM ставит маркер `[END]` когда диалог завершён
+2. web_api.py перехватывает `[END]` (строка ~400)
+3. Вызывает `send_lead_to_bitrix()` с данными:
+   - Телефон: `extract_phone_from_history()` — ищет номер в сообщениях клиента (regex)
+   - Квалификация из state: goal, budget, payment_type
+   - Последние 10 сообщений переписки в COMMENTS
+4. POST на webhook Битрикса → лид создан
+
+### Endpoint
+```
+POST https://oazisestate.bitrix24.ru/rest/426/z61dwivdmdy9dk4f/crm.lead.add
+```
+
+### Поля лида
+- TITLE: "AI-бот: {имя клиента}"
+- NAME: имя
+- PHONE: [{VALUE: телефон, VALUE_TYPE: MOBILE}]
+- COMMENTS: цель + бюджет + оплата + переписка
+- SOURCE_ID: "504" (источник "София ИИ")
+- ASSIGNED_BY_ID: 426 (тест) → 24932 (прод)
+
+### Где в коде
+- `web_api.py` строка ~52: константы BITRIX_*
+- `web_api.py` строка ~57: extract_phone_from_history()
+- `web_api.py` строка ~81: send_lead_to_bitrix()
+- `web_api.py` строка ~403: вызов при [END]
+
+### Важно
+- Только web-канал (web_api.py), Telegram и Max пока не отправляют
+- Обёрнуто в try/except — если Битрикс недоступен, клиент получит ответ как обычно
+- Без контакта лид всё равно уйдёт, но без телефона (PHONE будет пустым)
