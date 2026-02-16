@@ -78,9 +78,21 @@ def extract_phone_from_history(history):
     return None
 
 
+def extract_telegram_from_history(history):
+    """Ищет @username в сообщениях клиента"""
+    import re
+    for msg in reversed(history):
+        if msg["role"] == "user":
+            match = re.search(r'@([A-Za-z0-9_]{5,32})', msg["content"])
+            if match:
+                return "@" + match.group(1)
+    return None
+
+
 async def send_lead_to_bitrix(user_id, user_name, state, history):
     """Отправляет квалифицированный лид в Битрикс24"""
     phone = extract_phone_from_history(history)
+    telegram = extract_telegram_from_history(history)
     
     # Собираем данные из state
     goal_map = {"investment": "Инвестиции", "personal": "Для себя", "combined": "Комбинированно"}
@@ -96,7 +108,11 @@ async def send_lead_to_bitrix(user_id, user_name, state, history):
     last_msgs = history[-10:] if len(history) > 10 else history
     chat_text = "\n".join([f"{'София' if m['role']=='assistant' else 'Клиент'}: {m['content']}" for m in last_msgs])
     
+    tg_str = telegram or "Не указан"
+    phone_str = phone or "Не указан"
     comments = f"""Лид от AI-бота София (виджет на сайте)
+Телефон: {phone_str}
+Telegram: {tg_str}
 Цель: {goal}
 Бюджет: {budget_str}
 Оплата: {payment}
@@ -122,7 +138,7 @@ async def send_lead_to_bitrix(user_id, user_name, state, history):
                 result = await resp.json()
                 lead_id = result.get("result")
                 if lead_id:
-                    log.info(f"✅ [BITRIX] Лид создан #{lead_id}, phone={phone or 'нет'}")
+                    log.info(f"✅ [BITRIX] Лид создан #{lead_id}, phone={phone or 'нет'}, tg={telegram or 'нет'}")
                 else:
                     log.warning(f"⚠️ [BITRIX] Ответ без ID: {result}")
     except Exception as e:
@@ -182,14 +198,42 @@ def get_history(chat_id, limit=100):
 # ============================================================
 
 _session_to_uid = {}
+_uid_counter_lock = __import__('threading').Lock()
+
+
+def _get_next_web_uid():
+    """Стабильный автоинкремент вместо hash()"""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT COALESCE(MAX(user_id), ?) FROM web_sessions", (WEB_USER_ID_OFFSET,))
+    max_uid = c.fetchone()[0]
+    conn.close()
+    return max_uid + 1
 
 
 def get_web_user_id(session_id):
-    if session_id not in _session_to_uid:
-        uid = WEB_USER_ID_OFFSET + (hash(session_id) % 1_000_000)
-        _session_to_uid[session_id] = uid
-        log.info(f"Новая сессия: {session_id[:8]}... -> user_id={uid}")
-    return _session_to_uid[session_id]
+    # 1. Кэш в памяти (быстрый путь)
+    if session_id in _session_to_uid:
+        return _session_to_uid[session_id]
+    # 2. SQLite (переживает рестарт)
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM web_sessions WHERE session_id = ?", (session_id,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        _session_to_uid[session_id] = row[0]
+        return row[0]
+    # 3. Новая сессия — стабильный ID
+    with _uid_counter_lock:
+        uid = _get_next_web_uid()
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("INSERT INTO web_sessions (session_id, user_id) VALUES (?, ?)", (session_id, uid))
+        conn.commit()
+        conn.close()
+    _session_to_uid[session_id] = uid
+    log.info(f"Новая сессия: {session_id[:8]}... -> user_id={uid}")
+    return uid
 
 
 # ============================================================
@@ -324,10 +368,14 @@ async def generate_response(user_id, user_message, user_name):
 Всё. Никаких дополнительных вопросов (ЛПР, сроки, локация и т.д.)
 
 СБОР КОНТАКТА (ОБЯЗАТЕЛЬНО):
-- Контакт клиента НЕ ИЗВЕСТЕН — без номера договорённость бесполезна
-- Когда клиент согласился на созвон или подборку → спроси: «Куда удобнее — WhatsApp, Telegram? Напишите номер»
-- Пока не дал номер → НЕ ставь [END], мягко повтори просьбу
-- Получила номер → «Спасибо! Специалист перезвонит/отправит подборку в ближайшее время 😊» → [END]"""
+- Контакт клиента НЕ ИЗВЕСТЕН — без контакта договорённость бесполезна
+- Предлагай ВЫБОР: «Могу отправить материалы или организовать короткий звонок со специалистом — как удобнее?»
+- Если клиент хочет МАТЕРИАЛЫ/подборку/презентацию → спроси ник в Telegram: «Напишите ваш @username в Telegram, отправлю туда»
+- Если клиент хочет СОЗВОН/звонок → спроси телефон: «Напишите номер, специалист перезвонит»
+- Пока не получила контакт (@username или телефон) → НЕ ставь [END], мягко повтори просьбу
+- ⚠️ ПОЛУЧИЛА КОНТАКТ (@username или телефон) → НЕМЕДЛЕННО: «Спасибо! Передам специалисту, свяжется в ближайшее время 😊» → [END]
+- НЕ переспрашивай «WhatsApp или Telegram?» — у нас только Telegram и телефон
+- Если клиент задаёт вопрос ОДНОВРЕМЕННО с контактом — ответь на вопрос, потом [END]"""
     
 
     # ШАГ 1: LLM-Аналитик
@@ -539,10 +587,49 @@ async def create_session(req: SessionRequest):
     # BUG-005 fix: сохраняем greeting в историю чтобы LLM видел свой вопрос
     save_message(chat_id=user_id, user_id=user_id, user_name="Sofia", role="assistant", content=greeting)
     
+    # Сохраняем page_url в web_sessions
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("UPDATE web_sessions SET page_url = ? WHERE session_id = ?", (req.page_url, session_id))
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        log.error(f"web_sessions update error: {e}")
+    
     return {
         "session_id": session_id,
         "greeting": greeting
     }
+
+@app.post("/api/session/resume")
+async def resume_session(req: ChatRequest):
+    """Восстановить сессию по session_id из localStorage"""
+    # Проверяем есть ли сессия в БД
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM web_sessions WHERE session_id = ?", (req.session_id,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    user_id = row[0]
+    _session_to_uid[req.session_id] = user_id  # восстанавливаем кэш
+    
+    # Возвращаем историю переписки
+    history = get_history(user_id, limit=50)
+    
+    # Обновляем last_active
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("UPDATE web_sessions SET last_active = CURRENT_TIMESTAMP WHERE session_id = ?", (req.session_id,))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+    
+    log.info(f"♻️ Сессия восстановлена: {req.session_id[:8]}... user_id={user_id}, msgs={len(history)}")
+    return {"session_id": req.session_id, "history": history}
 
 
 @app.post("/api/chat", response_model=ChatResponse)
