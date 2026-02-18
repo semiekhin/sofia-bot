@@ -348,7 +348,7 @@ async def process_incoming_message(channel: str, connection_id: int, chat_id: in
     await notify_observer(channel, phone, user_name, "in", user_message)
     
     # Получаем историю
-    history = get_history(channel, chat_id, limit=8)
+    history = get_history(channel, chat_id, limit=100)
     
     # ════════════════════════════════════════════════════════════════════════
     # Единая обработка через message_processor
@@ -574,7 +574,7 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
     await notify_observer(channel, phone, user_name, "in", combined_message)
     
     # Получаем историю
-    history = get_history(channel, chat_id, limit=8)
+    history = get_history(channel, chat_id, limit=100)
     
     # Обработка через message_processor
     result = await process_message(
