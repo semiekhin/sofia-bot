@@ -31,17 +31,24 @@
 - ✅ Битрикс интеграция — webhook рабочий, лиды приходят
 - ✅ Сервер готов к localStorage (web_sessions + resume)
 - ✅ Виджет v2 протестирован на Тильде
-- ⚠️ Виджет v2 НЕ установлен на atlantis-invest.ru — ждём заказчика
+- ✅ Виджет v2 установлен на atlantis-invest.ru, sochiremstroy.tilda.ws, invest-apartmens.online
 - ⚠️ ASSIGNED_BY_ID = 426 (тест), нужно 24932 (прод)
 
 ## 🔜 Следующие шаги
 1. Виджет v2 (localStorage) → заказчику для установки (P0)
 2. Таймаут — авто-лид в Битрикс если клиент ушёл (P1)
 3. Битрикс ASSIGNED_BY_ID: 426 → 24932 (P0, ждём программиста)
-4. WABA (WhatsApp Business API) (P1)
+4. ~~WABA~~ — ❌ Отменён
 5. BUG-004: EN-layout → Extractor (P2)
 6. Единый message_processor.py (P2)
 
 ## 📁 Последние изменения
 - `web_api.py` — web_sessions, resume endpoint, промпт контактов, extract_telegram
 - `sofia-widget-v2.html` — localStorage persistence
+
+### Сессия 17.02.2026
+- Фикс: "@username" → "ник в Telegram" в промпте (синяя ссылка в виджете)
+- Аудит кода: сверка PROJECT_MAP с реальным кодом
+- Выявлены расхождения: Bitrix только в web_api, radist limit=8, ставка ЦБ ~16% в промпте
+- Новые задачи из аудита: #8-11 (см. SOFIA_TASKS.md)
+- Подготовлен проектный документ АН Эва (RIZALTA WebChat на архитектуре Софии)

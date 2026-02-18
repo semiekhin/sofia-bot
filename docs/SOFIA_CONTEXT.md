@@ -18,7 +18,7 @@ AI-бот для продажи курортной недвижимости Oazi
 - **Telegram:** ✅ входящие работают (@humanAINeural_bot)
 - **Виджет на сайте: ✅ работает (atlantis-invest.ru, invest-apartmens.online/atlantis, sochiremstroy.tilda.ws)
 - **Max:** ❌ ЗАБАНЕН
-- **WABA:** ⏳ не подключен
+- **WABA:** ❌ Отменён
 
 ## Стек
 - Python 3 + aiohttp (Radist webhook, порт 5001)
