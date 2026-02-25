@@ -79,10 +79,14 @@ git push
 
 TODO: {что нужно сделать}
 
-Документация на GitHub:
-https://raw.githubusercontent.com/semiekhin/sofia-bot/main/docs/SOFIA_CURRENT.md
-https://raw.githubusercontent.com/semiekhin/sofia-bot/main/docs/SOFIA_KNOWLEDGE.md
-https://raw.githubusercontent.com/semiekhin/sofia-bot/main/docs/SOFIA_TASKS.md
+Инструкция для завершения сессии: https://api.atlantis-invest.ru/api/docs/file?path=docs/SESSION_END_TEMPLATE.md
+
+Документация (через эндпоинт — всегда актуальная):
+https://api.atlantis-invest.ru/api/docs/file?path=docs/SOFIA_CURRENT.md
+https://api.atlantis-invest.ru/api/docs/file?path=docs/SOFIA_KNOWLEDGE.md
+https://api.atlantis-invest.ru/api/docs/file?path=docs/SOFIA_TASKS.md
+
+Список файлов проекта: https://api.atlantis-invest.ru/api/docs/file
 
 SOFIA_ARCHITECTURE.md — в Project Knowledge Claude.ai (не дублировать).
 ```
