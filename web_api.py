@@ -567,6 +567,28 @@ class ChatResponse(BaseModel):
     timestamp: str
 
 
+@app.get("/api/docs/file")
+async def docs_file(path: str = ""):
+    from pathlib import Path
+    BASE_DIR = Path("/opt/sofia-gpt")
+    if not path:
+        # Без параметра — список файлов
+        files = sorted([f.name for f in BASE_DIR.iterdir() if f.is_file() and f.suffix in {'.py','.md','.json','.txt','.sh'}])
+        docs = sorted([f"docs/{f.name}" for f in (BASE_DIR / 'docs').iterdir() if f.is_file()] if (BASE_DIR / 'docs').exists() else [])
+        return {"files": files, "docs": docs}
+    resolved = (BASE_DIR / path).resolve()
+    if not str(resolved).startswith(str(BASE_DIR.resolve())):
+        raise HTTPException(status_code=403, detail="Access denied")
+    if not resolved.exists() or not resolved.is_file():
+        raise HTTPException(status_code=404, detail=f"{path} not found")
+    ALLOWED_EXT = {'.py', '.md', '.txt', '.json', '.js', '.html', '.css', '.toml', '.yaml', '.yml', '.cfg', '.ini', '.sh'}
+    if resolved.suffix.lower() not in ALLOWED_EXT:
+        raise HTTPException(status_code=403, detail=f"Extension {resolved.suffix} not allowed")
+    from fastapi.responses import Response
+    text = resolved.read_text(encoding="utf-8")
+    return Response(content=text, media_type="text/plain; charset=utf-8", headers={"Cache-Control": "no-cache"})
+
+
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok", "version": "2.0.0", "timestamp": datetime.now().isoformat()}
