@@ -1,33 +1,46 @@
 # Текущий статус Sofia-GPT
 
-📅 **Последняя сессия:** 18.02.2026
+📅 **Последняя сессия:** 25.02.2026
 
 ## ✅ Что сделано
-- Реструктуризация документации: 7 файлов (85 КБ) → 2 основных (29 КБ)
-- SOFIA_CONTEXT.md удалён — влит в SOFIA_ARCHITECTURE.md
-- SOFIA_ARCHITECTURE.md — единый файл (заменяет CONTEXT + ARCHITECTURE + PROJECT_MAP)
-- SOFIA_KNOWLEDGE.md — сжат с 50 КБ до 9 КБ (удалена история Planner v2.0)
-- SESSION_END_TEMPLATE.md обновлён под новую структуру
-- Project Knowledge в Claude.ai обновлён (SOFIA_ARCHITECTURE.md)
-- Добавлены операционные команды (outreach, управление диалогом, поиск по телефону)
-- Добавлены таблицы radist_chats, radist_messages в документацию БД
-- Добавлены настройки модели (gpt-5.2, reasoning.effort: high) и правило полной истории
+
+### Сессия 25.02.2026
+- Новая стратегия продаж: цены в рублях НЕ озвучиваются, при запросе цен → сбор контакта
+- Проценты доходности оставлены и усилены (вместо конкретных сумм)
+- Выбор Telegram/звонок при сборе контакта (раньше только Telegram)
+- Убран @username из промпта (снова — не применился с прошлой сессии)
+- Замер скорости пайплайна: 17-24с (vs 11с у АН Эва)
+- Разбивка по этапам: Extractor 6.4с, Analyzer 5.4с, RAG 2.8с, Generator 9.2с
+- Смена OpenAI API ключа во всех сервисах (.env → рестарт всех 3)
+- Найден и отключён дублирующий sofia-bot.service (конфликт с sofia-gpt.service)
+- Добавлен эндпоинт /api/docs/file — чтение файлов проекта через HTTP (Claude-оркестратор)
+
+### Сессия 17-18.02.2026
+- Полное изучение архитектуры, аудит кода
+- Фикс: "@username" → "ник в Telegram" в web_api.py
+- Реструктуризация документации (85→29 КБ)
 
 ## 🔄 Текущее состояние
-- ✅ Telegram-бот работает (входящие)
-- ✅ Web-виджет работает (atlantis-invest.ru)
-- ❌ Max — забанен
-- ❌ WABA — не подключен
-- ❌ Bitrix — только в web_api.py, не подключен в bot_server.py и radist_gateway.py
+- ✅ Web API (sofia-web-api) — работает, порт 8080, обновлённый промпт, Bitrix подключён
+- ✅ Telegram бот (@humanAINeural_bot) — работает через sofia-gpt.service (старый промпт!)
+- ✅ Radist gateway — работает (с 13.02)
+- ✅ /api/docs/file — эндпоинт для чтения файлов проекта
+- ✅ sofia-bot.service отключён (был дублём sofia-gpt.service)
+- ✅ Новая стратегия: цены только через контакт, проценты вместо рублей
+- ⚠️ ASSIGNED_BY_ID = 426 (тест), нужно 24932 (прод)
+- ⚠️ Лиды из Telegram бота и Max НЕ уходят в Битрикс
+- ⚠️ Скорость 17-24с — нужна оптимизация (стриминг, модели)
 
 ## 🔜 Следующие шаги
-1. WABA подключение (SIM, 360Dialog, шаблон)
-2. Bitrix endpoint для bot_server.py и radist_gateway.py
-3. Обновить finance_data (ЦБ 15.5%)
-4. BUG-004 (EN-раскладка)
+1. **P0:** Битрикс ASSIGNED_BY_ID: 426 → 24932 (ждём программиста)
+2. **P1:** Bitrix в bot_server.py и radist_gateway — лиды теряются
+3. **P1:** radist_gateway history limit 8→100
+4. **P2:** sofia_prompt_v2 ставка ЦБ ~16% → 15.5%
+5. **P2:** BUG-004: EN-layout → Extractor
+6. **P2:** Оптимизация скорости (стриминг Generator, облегчение Analyzer)
+7. **P3:** Единый message_processor.py (DRY)
 
 ## 📁 Последние изменения
-- `docs/SOFIA_ARCHITECTURE.md` — полностью переписан, единый файл
-- `docs/SOFIA_KNOWLEDGE.md` — сжат до 9 КБ, только уроки и принципы
-- `docs/SOFIA_CONTEXT.md` — удалён
-- `docs/SESSION_END_TEMPLATE.md` — обновлён под новую структуру
+- `web_api.py` — новая стратегия продаж (цены через контакт), /api/docs/file эндпоинт
+- `.env` — новый OpenAI API ключ
+- `sofia-bot.service` — отключён (disabled)
