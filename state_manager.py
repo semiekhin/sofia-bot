@@ -93,6 +93,9 @@ class ClientState:
     
     # NEW v3.1: Тип лида
     lead_type: Optional[str] = None                  # 'cold' | 'warm' | 'hot'
+
+    # NEW: Source routing
+    source_object: Optional[str] = None              # 'atlantis' | 'crimea_spa' | etc
     
     def is_qualified(self) -> bool:
         """Проверка полноты квалификации (минимум для созвона)"""
@@ -313,7 +316,8 @@ class StateManager:
             call_readiness=row["call_readiness"] if "call_readiness" in row.keys() else 0.5,
             engagement=row["engagement"] if "engagement" in row.keys() else "medium",
             urgency=row["urgency"] if "urgency" in row.keys() else "unclear",
-            lead_type=row["lead_type"] if "lead_type" in row.keys() else None
+            lead_type=row["lead_type"] if "lead_type" in row.keys() else None,
+            source_object=row["source_object"] if "source_object" in row.keys() else None
         )
         return state
     
@@ -357,8 +361,9 @@ class StateManager:
                 call_proposal_count, materials_request_count,
                 dialog_finished, finish_type,
                 friction, call_readiness, engagement, urgency,
-                lead_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                lead_type,
+                source_object
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             state.user_id, state.goal, state.goal_confidence,
             state.location, state.location_confidence,
@@ -375,7 +380,8 @@ class StateManager:
             state.call_proposal_count, state.materials_request_count,
             state.dialog_finished, state.finish_type,
             state.friction, state.call_readiness, state.engagement, state.urgency,
-            state.lead_type
+            state.lead_type,
+            state.source_object
         ))
         conn.commit()
         conn.close()

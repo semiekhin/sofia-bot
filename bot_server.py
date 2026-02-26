@@ -711,6 +711,15 @@ async def generate_response_with_rag(chat_id, user_id, user_message, user_name, 
 
     # ШАГ 3: LLM-Генератор
     system_prompt = get_system_prompt_v2(state_summary, examples_prompt)
+    
+    # Source routing: инъекция контекста объекта
+    state = state_manager.get_state(user_id)
+    if state and state.source_object:
+        from config.source_objects import load_object_context, get_object_by_key
+        obj_config = get_object_by_key(state.source_object)
+        if obj_config:
+            object_context = load_object_context(obj_config)
+            system_prompt += f"\n\n═══ ТВОЙ ОБЪЕКТ: {obj_config['short_name']} ═══\n{object_context}\n\nСсылка на презентацию: {obj_config['presentation_url']}\nПри запросе презентации — отправь эту ссылку клиенту."
 
     if was_offline:
         user_message = f"[Клиент написал несколько сообщений пока меня не было:\n{user_message}\n]\nОтветь на актуальный вопрос, можешь мягко извиниться что ненадолго отходила."
@@ -775,8 +784,11 @@ async def keep_typing(chat_id, bot, stop_event):
 # ПРИВЕТСТВИЕ
 # ============================================
 
-async def send_greeting(chat_id, user_id, user_name, context):
-    greeting_msg = f"{user_name}, добрый день! Это София, по недвижимости. Вы оставляли заявку на сайте — удобно сейчас пообщаться?"
+async def send_greeting(chat_id, user_id, user_name, context, source_object=None):
+    if source_object:
+        greeting_msg = f"{user_name}, добрый день! {source_object['greeting']}\nВот презентация: {source_object['presentation_url']}"
+    else:
+        greeting_msg = f"{user_name}, добрый день! Это София, по недвижимости. Вы оставляли заявку на сайте — удобно сейчас пообщаться?"
     
     await context.bot.send_chat_action(chat_id=chat_id, action="typing")
     await asyncio.sleep(2)
@@ -808,7 +820,19 @@ async def cmd_start(update, context: ContextTypes.DEFAULT_TYPE):
     state_manager.reset_state(user_id)  # Сброс агентного состояния
     update_user(user_id, chat_id, user_name, stage="GREETING")
     
-    await send_greeting(chat_id, user_id, user_name, context)
+    # Source routing: парсинг параметра /start ATL
+    source_object = None
+    if context.args:
+        from config.source_objects import SOURCE_OBJECTS
+        param = context.args[0].upper()
+        for obj_id, config in SOURCE_OBJECTS.items():
+            if param in [k.upper().replace("#","") for k in config["keywords"]]:
+                source_object = config
+                state_manager.update_state(user_id, {"source_object": config["key"]})
+                log(f"🏷️ /start с объектом: {config['short_name']}")
+                break
+
+    await send_greeting(chat_id, user_id, user_name, context, source_object=source_object)
 
 async def cmd_reset(update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id

@@ -24,7 +24,7 @@ from config.radist_config import (
 # Импорт компонентов Sofia
 from state_manager import StateManager
 from message_processor import process_message
-from sofia_prompt import get_system_prompt
+# from sofia_prompt import get_system_prompt  # REMOVED: dead import v1
 from rag_module import search_examples, format_examples_for_prompt
 from message_queue import process_with_queue
 from stage_detector import detect_stage
@@ -101,8 +101,6 @@ CHANNEL_EMOJI = {
     "whatsapp": "📱",
     "unknown": "❓"
 }
-
-
 # ============================================
 # OBSERVER CHAT — отправка копий диалогов
 # ============================================
@@ -154,8 +152,6 @@ async def get_or_create_topic(phone: str, user_name: str) -> int:
     
     conn.close()
     return thread_id
-
-
 async def notify_observer(channel: str, phone: str, user_name: str, direction: str, message: str):
     """Отправляет копию сообщения в тему клиента в группе наблюдателей"""
     if not OBSERVER_CHAT_ID or not TELEGRAM_BOT_TOKEN:
@@ -247,8 +243,6 @@ def init_radist_db():
     conn.commit()
     conn.close()
     log("📦 БД инициализирована (radist_messages, radist_chats)")
-
-
 def save_message(channel: str, connection_id: int, chat_id: int, contact_id: int, phone: str, role: str, content: str):
     """Сохраняет сообщение в БД"""
     conn = sqlite3.connect(DB_PATH)
@@ -259,8 +253,6 @@ def save_message(channel: str, connection_id: int, chat_id: int, contact_id: int
     )
     conn.commit()
     conn.close()
-
-
 def get_history(channel: str, chat_id: int, limit: int = 100) -> list:
     """Получает историю сообщений"""
     conn = sqlite3.connect(DB_PATH)
@@ -272,8 +264,6 @@ def get_history(channel: str, chat_id: int, limit: int = 100) -> list:
     rows = c.fetchall()
     conn.close()
     return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
-
-
 def save_chat(channel: str, connection_id: int, chat_id: int, contact_id: int, phone: str, user_name: str = None):
     """Сохраняет информацию о чате"""
     conn = sqlite3.connect(DB_PATH)
@@ -284,8 +274,6 @@ def save_chat(channel: str, connection_id: int, chat_id: int, contact_id: int, p
     )
     conn.commit()
     conn.close()
-
-
 # ============================================
 # RADIST API — отправка сообщений
 # ============================================
@@ -316,8 +304,6 @@ async def send_message(connection_id: int, chat_id: int, text: str) -> bool:
     except Exception as e:
         log(f"❌ [{channel.upper()}] Исключение при отправке: {e}")
         return False
-
-
 # ============================================
 # ОБРАБОТКА СООБЩЕНИЙ
 # ============================================
@@ -341,6 +327,17 @@ async def process_incoming_message(channel: str, connection_id: int, chat_id: in
     emoji = CHANNEL_EMOJI.get(channel, "📨")
     log(f"{emoji} [{channel.upper()}] {phone}: {user_message}")
     
+    # ════════════════════════════════════════════════════════════════════════
+    # Source routing: парсим маркер объекта из первого сообщения
+    # ════════════════════════════════════════════════════════════════════════
+    log(f"🔍 [{channel.upper()}] Source routing check: {user_message[:50]}")
+    from config.source_objects import detect_source
+    obj_config, clean_text = detect_source(user_message)
+    if obj_config:
+        state_manager.update_state(user_id, {"source_object": obj_config["key"]})
+        log(f"🏷️ [{channel.upper()}] Объект распознан: {obj_config['short_name']} → source_object={obj_config['key']}")
+        user_message = clean_text
+
     # Сохраняем входящее сообщение
     save_message(channel, connection_id, chat_id, contact_id, phone, "user", user_message)
     
@@ -388,8 +385,6 @@ async def process_incoming_message(channel: str, connection_id: int, chat_id: in
         
         # Отправляем в Observer (исходящее)
         await notify_observer(channel, phone, user_name, "out", response)
-
-
 async def generate_response(channel: str, chat_id: int, user_id: int, user_message: str, user_name: str) -> str:
     """Генерирует ответ с LLM-Аналитиком + RAG (v3.0)"""
     
@@ -488,6 +483,16 @@ async def generate_response(channel: str, chat_id: int, user_id: int, user_messa
     from sofia_prompt_v2 import get_system_prompt_v2
     system_prompt = get_system_prompt_v2(state_summary, examples_prompt)
     
+    # Source routing: инъекция контекста объекта
+    state = state_manager.get_state(user_id)
+    if state and state.source_object:
+        from config.source_objects import load_object_context, get_object_by_key
+        # Ищем конфиг по key
+        obj_config = get_object_by_key(state.source_object)
+        if obj_config:
+            object_context = load_object_context(obj_config)
+            system_prompt += f"\n\n═══ ТВОЙ ОБЪЕКТ: {obj_config['short_name']} ═══\n{object_context}\n\nСсылка на презентацию: {obj_config['presentation_url']}\nПри запросе презентации — отправь эту ссылку клиенту."
+    
     messages = [{"role": m["role"], "content": m["content"]} for m in history]
     messages.append({"role": "user", "content": user_message})
     
@@ -567,6 +572,15 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
     emoji = CHANNEL_EMOJI.get(channel, "📨")
     log(f"{emoji} [{channel.upper()}] {phone}: {combined_message}")
     
+    # ════════════════════════════════════════════════════════════════════════
+    # Source routing: распознаём объект из первого сообщения
+    # ════════════════════════════════════════════════════════════════════════
+    from config.source_objects import detect_source
+    obj_config, clean_text = detect_source(combined_message)
+    if obj_config:
+        state_manager.update_state(user_id, {"source_object": obj_config["key"]})
+        log(f"🏷️ [{channel.upper()}] Объект распознан: {obj_config['short_name']} → source_object={obj_config['key']}")
+        combined_message = clean_text
     # Сохраняем входящее сообщение
     save_message(channel, connection_id, chat_id, contact_id, phone, "user", combined_message)
     
@@ -681,8 +695,6 @@ async def handle_webhook(request):
     except Exception as e:
         log(f"❌ Webhook error: {e}")
         return web.json_response({"status": "error", "message": str(e)}, status=500)
-
-
 async def health_check(request):
     """Health check endpoint"""
     channels_status = {name: cfg["enabled"] for name, cfg in CHANNELS.items()}
@@ -693,8 +705,6 @@ async def health_check(request):
         "channels": channels_status,
         "timestamp": datetime.now().isoformat()
     })
-
-
 # ============================================
 # MAIN
 # ============================================
@@ -716,10 +726,6 @@ def main():
     log(f"📢 Активные каналы: {', '.join(active_channels)}")
     
     web.run_app(app, host="0.0.0.0", port=port)
-
-
 if __name__ == "__main__":
     main()
-
-
 # ============================================

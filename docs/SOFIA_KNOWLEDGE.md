@@ -116,3 +116,11 @@ hash(session_id) давал случайные числа, при рестарт
 ### Дубли systemd-сервисов
 sofia-gpt.service и sofia-bot.service запускали один и тот же bot_server.py → Telegram Conflict error, два процесса.
 **Правило:** при проблемах с дублями процессов — сначала проверь `grep -r "bot_server" /etc/systemd/system/`
+
+### process_message_wrapper vs process_incoming_message
+В radist_gateway webhook вызывает `process_message_wrapper` через очередь, а НЕ `process_incoming_message`. Код добавленный в `process_incoming_message` никогда не выполнится.
+**Правило:** перед добавлением логики — проследить цепочку от `handle_webhook` до генерации ответа через grep.
+
+### Source routing архитектура
+Надстройка поверх ядра: detect_source() → source_object в state → инъекция контекста в промпт. Без source_object — всё работает как раньше. Ядро не трогаем.
+**Правило:** новые фичи = надстройки с if/else, не переписывание основного пайплайна.
