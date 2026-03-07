@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Презентация АК Атлантис</title>
+<style>
+  body { font-family: -apple-system, sans-serif; display: flex; justify-content: center; align-items: center; min-height: 100vh; margin: 0; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-align: center; }
+  .container { padding: 40px 20px; }
+  h2 { margin-bottom: 10px; }
+  p { opacity: 0.9; margin-bottom: 30px; }
+  a.btn { background: white; color: #764ba2; padding: 16px 32px; border-radius: 12px; text-decoration: none; font-weight: 600; font-size: 18px; display: inline-block; }
+  .small { font-size: 13px; opacity: 0.7; margin-top: 20px; }
+</style>
+<script>
+  var text = "Добрый день! Отправьте, пожалуйста, презентацию АК «Атлантис»";
+  var bot = "SofiaOazis";
+  var tgDeep = "tg://resolve?domain=" + bot + "&text=" + encodeURIComponent(text);
+  var tgWeb = "https://t.me/" + bot + "?text=" + encodeURIComponent(text);
+
+  function openTelegram() {
+    var isMobile = /iPhone|iPad|Android/i.test(navigator.userAgent);
+    if (isMobile) {
+      window.location.href = tgDeep;
+      setTimeout(function() { window.location.href = tgWeb; }, 2000);
+    } else {
+      window.location.href = tgWeb;
+    }
+  }
+
+  setTimeout(openTelegram, 800);
+</script>
+</head>
+<body>
+<div class="container">
+  <h2>🏖 АК «Атлантис»</h2>
+  <p>Переходим в Telegram для получения презентации...</p>
+  <a class="btn" href="javascript:openTelegram()">Открыть в Telegram</a>
+  <div class="small">Если не произошёл автоматический переход — нажмите кнопку</div>
+</div>
+</body>
+</html>

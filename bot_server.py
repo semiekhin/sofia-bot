@@ -641,6 +641,15 @@ async def generate_response_with_rag(chat_id, user_id, user_message, user_name, 
 
     state_summary = format_state_summary(state) if state else "Новый клиент"
 
+    # Source routing: при source_object + первые сообщения → GREETING, пропуск Analyzer
+    user_msg_count = sum(1 for m in history if m['role'] == 'user')
+    skip_analyzer = False
+    if state and state.source_object and user_msg_count <= 2:
+        rag_stage = "GREETING"
+        rag_query = "приветствие клиент с сайта интерес к объекту"
+        skip_analyzer = True
+        log(f"\U0001f3f7\ufe0f Source routing: force stage=GREETING (user_msgs={user_msg_count}, object={state.source_object})")
+
     # ШАГ 1: LLM-Аналитик
     analyzer_prompt = """Ты — аналитик диалогов продаж недвижимости.
 
@@ -673,30 +682,36 @@ async def generate_response_with_rag(chat_id, user_id, user_message, user_name, 
 ЧТО ИЗВЕСТНО О КЛИЕНТЕ:
 {state_summary}"""
 
-    rag_stage = "QUALIFICATION"
-    rag_query = user_message
+    if not skip_analyzer:
+        rag_stage = "QUALIFICATION"
+        rag_query = user_message
 
-    try:
-        log(f"🧠 Analyzer запрос...")
-        analyzer_response = await asyncio.to_thread(
-            client.responses.create,
-            model="gpt-5.2",
-            instructions=analyzer_prompt,
-            input=analyzer_input,
-            reasoning={"effort": "medium"},
-            max_output_tokens=1000
-        )
-        analyzer_text = analyzer_response.output_text or ""
-        json_match = _re.search(r'\{[^}]+\}', analyzer_text, _re.DOTALL)
-        if json_match:
-            analysis = _json.loads(json_match.group())
-            rag_stage = analysis.get("stage", "QUALIFICATION")
-            rag_query = analysis.get("rag_query", user_message)
-            log(f"🧠 Analyzer: stage={rag_stage}, query='{rag_query[:40]}...'")
-        else:
-            log(f"⚠️ Analyzer: JSON не найден, fallback")
-    except Exception as e:
-        log(f"⚠️ Analyzer error: {e}, fallback")
+        # Подсказка Analyzer про source routing
+        if state and state.source_object:
+            analyzer_input += "\n\nВАЖНО: Клиент пришёл с сайта объекта (" + state.source_object + "). Первые сообщения — НЕ возражения, а начало диалога."
+
+
+        try:
+            log(f"🧠 Analyzer запрос...")
+            analyzer_response = await asyncio.to_thread(
+                client.responses.create,
+                model="gpt-5.2",
+                instructions=analyzer_prompt,
+                input=analyzer_input,
+                reasoning={"effort": "medium"},
+                max_output_tokens=1000
+            )
+            analyzer_text = analyzer_response.output_text or ""
+            json_match = _re.search(r'\{[^}]+\}', analyzer_text, _re.DOTALL)
+            if json_match:
+                analysis = _json.loads(json_match.group())
+                rag_stage = analysis.get("stage", "QUALIFICATION")
+                rag_query = analysis.get("rag_query", user_message)
+                log(f"🧠 Analyzer: stage={rag_stage}, query='{rag_query[:40]}...'")
+            else:
+                log(f"⚠️ Analyzer: JSON не найден, fallback")
+        except Exception as e:
+            log(f"⚠️ Analyzer error: {e}, fallback")
 
     set_user_stage(chat_id, rag_stage)
 
@@ -786,21 +801,35 @@ async def keep_typing(chat_id, bot, stop_event):
 
 async def send_greeting(chat_id, user_id, user_name, context, source_object=None):
     if source_object:
-        greeting_msg = f"{user_name}, добрый день! {source_object['greeting']}\nВот презентация: {source_object['presentation_url']}"
+        # Сообщение 1: приветствие + ссылка на презентацию
+        msg1 = f"{user_name}, добрый день! {source_object['greeting']}"
+        msg2_link = source_object['presentation_url']
+        # Сообщение 2: квалификационный вопрос
+        msg3 = "Для себя смотрите или как инвестицию?"
+        
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+        await asyncio.sleep(2)
+        await context.bot.send_message(chat_id=chat_id, text=f"{msg1}\n{msg2_link}")
+        await asyncio.sleep(5)
+        await context.bot.send_message(chat_id=chat_id, text=msg3)
+        
+        full_greeting = f"{msg1}\n{msg2_link}\n{msg3}"
+        log(f"📤 София: {full_greeting}")
+        save_message(chat_id, user_id, user_name, "user", "/start", processed=1, stage="GREETING")
+        save_message(chat_id, 0, BOT_NAME, "assistant", full_greeting, processed=1, stage="GREETING")
     else:
         greeting_msg = f"{user_name}, добрый день! Это София, по недвижимости. Вы оставляли заявку на сайте — удобно сейчас пообщаться?"
-    
-    await context.bot.send_chat_action(chat_id=chat_id, action="typing")
-    await asyncio.sleep(2)
-    await context.bot.send_message(chat_id=chat_id, text=greeting_msg)
-    
-    log(f"📤 София: {greeting_msg}")
-    save_message(chat_id, user_id, user_name, "user", "/start", processed=1, stage="GREETING")
-    save_message(chat_id, 0, BOT_NAME, "assistant", greeting_msg, processed=1, stage="GREETING")
+        
+        await context.bot.send_chat_action(chat_id=chat_id, action="typing")
+        await asyncio.sleep(2)
+        await context.bot.send_message(chat_id=chat_id, text=greeting_msg)
+        
+        log(f"📤 София: {greeting_msg}")
+        save_message(chat_id, user_id, user_name, "user", "/start", processed=1, stage="GREETING")
+        save_message(chat_id, 0, BOT_NAME, "assistant", greeting_msg, processed=1, stage="GREETING")
     
     # Устанавливаем начальный этап
     set_user_stage(chat_id, "GREETING")
-
 # ============================================
 # ОБРАБОТЧИКИ
 # ============================================

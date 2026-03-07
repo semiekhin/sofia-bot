@@ -17,7 +17,7 @@ SOURCE_OBJECTS = {
         "keywords": ["атлантис", "atlantis", "#ATL"],
         "context_file": "objects/atlantis_context.md",
         "presentation_url": "https://api.atlantis-invest.ru/objects/atlantis_presentation.pdf",
-        "greeting": "Рада, что заинтересовались Атлантисом! Отправляю презентацию — посмотрите, а я пока расскажу о ключевых преимуществах)",
+        "greeting": "Рада, что заинтересовались Атлантисом! Вот презентация с планировками. Спрашивайте что угодно — а я задам пару вопросов, чтобы подобрать лучший вариант)",
     },
 }
 
