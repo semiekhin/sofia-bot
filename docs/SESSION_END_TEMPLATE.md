@@ -4,6 +4,21 @@
 
 ---
 
+## 0. Генерация ссылок для нового чата (запускать в терминале)
+```bash
+V=$(date +%Y%m%d_%H%M) && echo "
+Документация (свежие ссылки без кэша):
+https://api.atlantis-invest.ru/api/docs/file?path=docs/SOFIA_CURRENT.md&v=$V
+https://api.atlantis-invest.ru/api/docs/file?path=docs/SOFIA_TASKS.md&v=$V
+https://api.atlantis-invest.ru/api/docs/file?path=docs/SOFIA_KNOWLEDGE.md&v=$V
+https://api.atlantis-invest.ru/api/docs/file?path=docs/SESSION_END_TEMPLATE.md&v=$V
+"
+```
+
+Вставляй эти ссылки в начало нового чата — каждый раз уникальный параметр, кэш не срабатывает.
+
+---
+
 ## 1. Обнови документацию на сервере
 
 ### SOFIA_CURRENT.md (ОБЯЗАТЕЛЬНО)
@@ -47,9 +62,6 @@ CURRENT
 
 ### SOFIA_ARCHITECTURE.md (если изменилась структура)
 ⚠️ Этот файл также загружен в **Project Knowledge Claude.ai** — напомни пользователю обновить его там тоже.
-- Новые компоненты, таблицы БД
-- Изменённые потоки данных
-- Новые сервисы/порты
 
 ---
 
@@ -72,30 +84,25 @@ git push
 
 Если хоть один пункт не выполнен — сначала выполни его. Блок не генерируется до завершения всех пунктов.
 
-⚠️ SOFIA_ARCHITECTURE.md загружен в Project Knowledge — Claude видит его автоматически. В блоке давать только оперативные ссылки.
+⚠️ SOFIA_ARCHITECTURE.md загружен в Project Knowledge — Claude видит его автоматически.
 
-Формат:
+Формат блока:
 ```
 Актуализируем проект Sofia-GPT.
 Сервер: 72.56.64.91:2222
-Путь: /opt/sofia-gpt/
-Бот: @humanAINeural_bot
+Прод: /opt/sofia-gpt/ | Dev: /opt/sofia-gpt-dev/
+Бот: @humanAINeural_bot | Dev: @SofiaDev01_bot
 Последняя сессия: {дата} — {что сделали}
-
-{Краткое описание главного изменения}
 
 TODO: {что нужно сделать}
 
-Инструкция для завершения сессии: https://api.atlantis-invest.ru/api/docs/file?path=docs/SESSION_END_TEMPLATE.md
+Инструкция завершения:
+{ссылка с &v=}
 
-Документация (через эндпоинт — всегда актуальная):
-https://api.atlantis-invest.ru/api/docs/file?path=docs/SOFIA_CURRENT.md&v={ДАТА_YYYYMMDD}
-https://api.atlantis-invest.ru/api/docs/file?path=docs/SOFIA_KNOWLEDGE.md&v={ДАТА_YYYYMMDD}
-https://api.atlantis-invest.ru/api/docs/file?path=docs/SOFIA_TASKS.md&v={ДАТА_YYYYMMDD}
+Документация:
+{ссылки с &v= из п.0}
 
-Список файлов проекта: https://api.atlantis-invest.ru/api/docs/file
-
-SOFIA_ARCHITECTURE.md — в Project Knowledge Claude.ai (не дублировать).
+SOFIA_ARCHITECTURE.md — в Project Knowledge Claude.ai (обновлён {дата}).
 ```
 
 ---
@@ -103,9 +110,9 @@ SOFIA_ARCHITECTURE.md — в Project Knowledge Claude.ai (не дублиров�
 ## 4. Проверь перед завершением
 
 - [ ] SOFIA_CURRENT.md обновлён с датой и статусом
-- [ ] Все изменённые файлы указаны
+- [ ] SOFIA_TASKS.md актуален
 - [ ] Git commit + push выполнен
-- [ ] Следующие шаги понятны для нового чата
+- [ ] Ссылки сгенерированы через `date +%Y%m%d_%H%M`
 - [ ] Блок для копирования готов
 - [ ] Если менял ARCHITECTURE — напомнил обновить в Project Knowledge
 
