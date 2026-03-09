@@ -586,7 +586,7 @@ async def docs_file(path: str = ""):
         raise HTTPException(status_code=403, detail=f"Extension {resolved.suffix} not allowed")
     from fastapi.responses import Response
     text = resolved.read_text(encoding="utf-8")
-    return Response(content=text, media_type="text/plain; charset=utf-8", headers={"Cache-Control": "no-cache"})
+    return Response(content=text, media_type="text/plain; charset=utf-8", headers={"Cache-Control": "no-store, no-cache, must-revalidate", "Pragma": "no-cache"})
 
 
 @app.get("/api/health")
