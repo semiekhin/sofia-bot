@@ -4,6 +4,8 @@
 Каналы: Max, Telegram, WhatsApp (будет добавлен)
 """
 
+import os
+
 # ============================================
 # API НАСТРОЙКИ
 # ============================================
@@ -50,11 +52,17 @@ CONNECTION_TO_CHANNEL = {
 }
 
 # ============================================
+# DEV MODE
+# ============================================
+# True = логировать ответы, НЕ отправлять клиенту (dev получает те же webhook что прод)
+DEV_MODE = os.getenv("RADIST_DEV_MODE", "false").lower() == "true"
+
+# ============================================
 # WEBHOOK НАСТРОЙКИ
 # ============================================
 
 WEBHOOK_CONFIG = {
-    "port": 5001,
+    "port": 5002 if DEV_MODE else 5001,
     "path": "/webhook/radist",
 }
 
@@ -77,12 +85,10 @@ RADIST_CONFIG = {
 # HELPER FUNCTIONS
 # ============================================
 
+
 def get_headers():
     """Возвращает заголовки для API запросов"""
-    return {
-        "X-Api-Key": RADIST_API["api_key"],
-        "Content-Type": "application/json"
-    }
+    return {"X-Api-Key": RADIST_API["api_key"], "Content-Type": "application/json"}
 
 
 def get_base_url():

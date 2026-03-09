@@ -20,17 +20,25 @@
 - [x] KNOWLEDGE_INDEX.md
 - [x] Хуки flake8 + black
 
-## ⚙️ Шаг 3 — Единое ядро
+## ⚙️ Шаг 3 — Единое ядро (в процессе)
 
-- [ ] core/pipeline.py
+- [x] core/pipeline.py — Analyzer → RAG → Generator
 - [ ] core/channel.py
 - [ ] core/bitrix.py
 - [ ] core/observer.py
-- [ ] Переключить web_api.py
-- [ ] Переключить bot_server.py
-- [ ] Переключить radist_gateway.py
-- [ ] Удалить мёртвый импорт
+- [x] Переключить bot_server.py → run_pipeline()
+- [x] Переключить web_api.py → run_pipeline()
+- [x] Переключить radist_gateway.py → run_pipeline()
+- [x] Удалить мёртвый импорт (radist: ACTION_TO_RAG_STAGE, OpenAI client, rag_module, stage_detector)
 - [ ] history limit 8→100
+- [ ] Atlantis context → config/source_objects.py (убрать hardcode из web_api.py)
+
+## 🔧 Dev-окружение Radist
+
+- [x] sofia-radist-dev.service (порт 5002)
+- [x] DEV_MODE — send disabled
+- [x] Radist webhook зарегистрированы (Max + Telegram → :5002)
+- [x] ufw порт 5002
 
 ## 🔥 Технический долг
 
