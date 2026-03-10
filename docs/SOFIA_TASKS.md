@@ -1,12 +1,18 @@
 # Задачи Sofia-GPT
 
-📅 Обновлено: 09.03.2026
+📅 Обновлено: 10.03.2026
 
-## 🎙️ Шаг 1 — Тест голоса
+## 🎙️ Шаг 1 — Голосовой агент Retell AI (в процессе)
 
-- [ ] Написать промпт под Retell AI
-- [ ] Настройка агента в Retell
-- [ ] Протестировать
+- [x] Создать voice_api.py — WebSocket адаптер
+- [x] Маршрут в web_api.py
+- [x] Nginx location /llm-websocket/
+- [x] Агент в Retell Dashboard
+- [x] Браузерный тест — Sofia отвечает ✅
+- [ ] Переделать voice_api.py: response_required через пайплайн без source_object (путь bot/radist)
+- [ ] Русский голос (MiniMax или Cartesia в Retell)
+- [ ] Голос в БД и Observer
+- [ ] Интеграция с Задарма (SIP)
 
 ## 🏗️ Шаг 2 — Безопасная среда ✅ ЗАВЕРШЁН
 
@@ -29,8 +35,7 @@
 - [x] Переключить bot_server.py → run_pipeline()
 - [x] Переключить web_api.py → run_pipeline()
 - [x] Переключить radist_gateway.py → run_pipeline()
-- [x] Удалить мёртвый импорт (radist: ACTION_TO_RAG_STAGE, OpenAI client, rag_module, stage_detector)
-- [ ] history limit 8→100
+- [x] Удалить мёртвый импорт (radist)
 - [ ] Atlantis context → config/source_objects.py (убрать hardcode из web_api.py)
 
 ## 🔧 Dev-окружение Radist
@@ -50,13 +55,6 @@
 - [ ] ASSIGNED_BY_ID 426→24932
 - [ ] ЦБ 16%→15.5%
 - [ ] BUG-004 EN-раскладка
-
-## 📈 Шаг 4 — Голос как канал
-
-- [ ] channels/voice.py
-- [ ] Retell + Задарма
-- [ ] n8n оркестратор
-- [ ] Голос в БД и Observer
 
 ## ⚡ Оптимизация
 

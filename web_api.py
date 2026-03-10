@@ -17,7 +17,7 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
@@ -347,7 +347,7 @@ async def notify_web_observer(
         log.warning(f"\u26a0\ufe0f [WEB] Observer send error: {e}")
 
 
-async def generate_response(user_id, user_message, user_name):
+async def generate_response(user_id, user_message, user_name, channel="web"):
     """Генерирует ответ через core/pipeline.py. Bitrix при [END] остаётся здесь."""
     history = get_history(user_id, limit=100)
 
@@ -357,7 +357,7 @@ async def generate_response(user_id, user_message, user_name):
         user_name=user_name,
         history=history,
         state_manager=state_manager,
-        channel="web",
+        channel=channel,
     )
 
     # Bitrix при [END] — специфично для web
@@ -636,7 +636,19 @@ async def get_session_history(session_id: str, limit: int = 50):
     }
 
 
+# ============================================================
+# VOICE: Retell AI WebSocket
+# ============================================================
+
+
+@app.websocket("/llm-websocket/{call_id}")
+async def voice_ws(websocket: WebSocket, call_id: str):
+    from voice_api import handle_voice_ws
+
+    await handle_voice_ws(websocket, call_id)
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    uvicorn.run(app, host="0.0.0.0", port=8081)

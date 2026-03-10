@@ -11,6 +11,22 @@
 
 ---
 
+## 10.03.2026 — voice_api.py: Retell AI голосовой агент
+
+- **Что сделано:** WebSocket адаптер для Retell AI Custom LLM, маршрут в web_api.py, nginx location
+- **Почему:** Шаг 1 — голосовой канал для Sofia
+- **Файлы:**
+  - `voice_api.py` — новый: handle_voice_ws(), call_id_to_user_id(), clean_for_voice()
+  - `web_api.py` — добавлен WebSocket маршрут `/llm-websocket/{call_id}`, порт 8081, channel param
+  - `/etc/nginx/sites-available/sofia-api` — location /llm-websocket/ → 8081
+- **Retell данные:**
+  - API Key: `key_efd60e45e3721404e9239c41a9dd`
+  - Agent ID: `agent_d428a1d13067a563faf30a88bb`
+  - URL: `wss://api.atlantis-invest.ru/llm-websocket/`
+- **Открытая проблема:** voice_api использует generate_response() из web_api.py. При reminder_required (клиент молчит) voice отправлял "(молчание)" в пайплайн → LLM без контекста фантазировала (упоминала Атлантис из знаний модели + 2 RAG-примера в QUALIFICATION). Фикс: reminder и greeting — фиксированные фразы без пайплайна. Следующий шаг: response_required должен идти без source_object привязки.
+- **User ID формула:** `7_000_000 + (md5(call_id)[:8] as int % 1_000_000)`
+- **Как откатить:** Удалить voice_api.py, убрать WebSocket маршрут из web_api.py, убрать location из nginx, reload nginx
+
 ## 09.03.2026 — core/pipeline.py: единый пайплайн
 
 - **Что сделано:** Вынесен дублированный пайплайн (Analyzer → RAG → Generator) из трёх транспортов в `core/pipeline.py`

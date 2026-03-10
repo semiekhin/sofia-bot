@@ -20,11 +20,11 @@
 
 ## Архитектура: пайплайн обработки сообщений
 
-Все 3 канала используют единый пайплайн:
+Все 4 канала используют единый пайплайн:
 ```
 Входящее сообщение
     ↓
-Канал (bot_server.py / web_api.py / sofia_radist_gateway.py)
+Канал (bot_server.py / web_api.py / sofia_radist_gateway.py / voice_api.py)
     ↓
 message_processor.process_message()
     ├─ extractor.extract_sync() → NLU: факты, слоты, сигналы (JSON)
@@ -53,6 +53,7 @@ LLM-Generator (gpt-5.2, reasoning=high)
 | Radist Max | sofia_radist_gateway.py | 5002 | -(1_000_000 + chat_id) |
 | Radist Telegram | sofia_radist_gateway.py | 5002 | -(2_000_000 + chat_id) |
 | Radist WhatsApp | sofia_radist_gateway.py | 5002 | -(3_000_000 + chat_id) |
+| Voice (Retell AI) | voice_api.py | 8081 (ws) | 7_000_000 + md5(call_id)[:8] % 1_000_000 |
 
 ⚠️ **User ID формулы критичны** — коллизия = смешанные чаты двух клиентов.
 
@@ -67,6 +68,7 @@ LLM-Generator (gpt-5.2, reasoning=high)
 | message_queue.py | Per-user asyncio.Lock, защита от race condition |
 | finance_calculator.py | Сравнение недвижимости vs депозит |
 | message_processor.py | Центральный роутер: extractor → state update |
+| voice_api.py | WebSocket адаптер для Retell AI Custom LLM |
 
 **Устаревшие (v1, не использовать):** planner.py, llm_planner.py, stage_detector.py, sofia_prompt.py
 
