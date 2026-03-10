@@ -1,9 +1,10 @@
 # Задачи Sofia-GPT
 
-📅 Обновлено: 10.03.2026 (вечер)
+📅 Обновлено: 10.03.2026 (ночь)
 
-## 🎙️ Шаг 1 — Голосовой агент Retell AI (в процессе)
+## 🎙️ Шаг 1 — Голосовой агент (в процессе)
 
+### Retell AI (текущая интеграция)
 - [x] Создать voice_api.py — WebSocket адаптер
 - [x] Маршрут в web_api.py
 - [x] Nginx location /llm-websocket/
@@ -11,7 +12,14 @@
 - [x] Браузерный тест — Sofia отвечает ✅
 - [x] Оптимизация латенси: voice_mode в pipeline (~2с вместо 6-10с)
 - [ ] Русский голос (MiniMax или Cartesia в Retell)
-- [ ] Вернуть Extractor для voice (async в фоне или после оптимизации)
+
+### Dasha.ai (исследование — P0)
+- [ ] Изучить Custom LLM интеграцию через DashaScript/API (старая версия dasha.ai)
+- [ ] Blackbox не подходит (нет кастомной LLM) — подтверждено менеджером
+- [ ] Прототип интеграции Sofia → Dasha Custom LLM
+
+### Voice общее
+- [ ] Вернуть Extractor для voice (async в фоне — P0)
 - [ ] Голос в БД и Observer
 - [ ] Интеграция с Задарма (SIP)
 

@@ -18,7 +18,11 @@
 
 **Результат:** ответ ~2с вместо 6-10с. Остальные каналы не затронуты.
 
+**⚠️ Архитектурная заметка:** `voice_mode` — это **намеренное временное упрощение** базовой архитектуры только для голоса. Отключены: Extractor (state не обновляется), Analyzer, reasoning, RAG 10→3, ответ макс 2 предложения. По мере оптимизации латенси — возвращать компоненты по одному.
+
 **Баг найден и исправлен:** `rag_stage` не определён при `voice_mode=True` — дефолты вынесены до условия Analyzer.
+
+**Dasha.ai (исследование):** Retell AI работает, но параллельно изучаем Dasha.ai (старая версия, dasha.ai) — Custom LLM интеграция через DashaScript/API. Blackbox-версия не подходит (нет кастомной LLM). Менеджер Dasha подтвердил возможность через старую платформу.
 
 ### Сессия 10.03.2026 (утро) — Голосовой агент Retell AI
 
@@ -73,11 +77,12 @@
 - ⚠️ Observer ОТКЛЮЧЁН в dev
 
 ## 🔜 Следующие шаги
-1. **P0:** Русский голос в Retell (MiniMax/Cartesia)
-2. **P0:** Voice: вернуть Extractor когда латенси позволит (или async в фоне)
-3. **P1:** Bitrix в bot_server.py и radist_gateway.py при [END]
-4. **P2:** core/channel.py, core/bitrix.py, core/observer.py
-5. **P2:** Интеграция с Задарма (SIP)
+1. **P0:** Dasha.ai (старая версия) — изучить Custom LLM интеграцию через DashaScript/API
+2. **P0:** Русский голос в Retell (MiniMax/Cartesia)
+3. **P0:** Voice: вернуть Extractor async (в фоне, не блокируя ответ)
+4. **P1:** Bitrix в bot_server.py и radist_gateway.py при [END]
+5. **P2:** core/channel.py, core/bitrix.py, core/observer.py
+6. **P2:** Интеграция с Задарма (SIP)
 
 ## 📁 Ключевые файлы этой сессии
 - `core/pipeline.py` — voice_mode: без reasoning, без Analyzer, RAG 3 примера, инструкция "коротко"
