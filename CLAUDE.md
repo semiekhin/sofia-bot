@@ -161,7 +161,14 @@ cd /opt/sofia-gpt-dev && ./deploy.sh
 4. Обновить `docs/KNOWLEDGE_INDEX.md` — детали задач, как откатить
 5. Обновить `CLAUDE.md` если изменилась структура проекта
 6. `git add -A && git commit -m "docs: сессия ДД.ММ.ГГГГ — описание" && git push`
-7. Сгенерировать свежие ссылки:
+7. Синхронизировать доки в прод:
+```bash
+cp /opt/sofia-gpt-dev/docs/SOFIA_CURRENT.md /opt/sofia-gpt/docs/
+cp /opt/sofia-gpt-dev/docs/SOFIA_TASKS.md /opt/sofia-gpt/docs/
+cp /opt/sofia-gpt-dev/docs/SOFIA_KNOWLEDGE.md /opt/sofia-gpt/docs/
+cp /opt/sofia-gpt-dev/docs/KNOWLEDGE_INDEX.md /opt/sofia-gpt/docs/
+```
+8. Сгенерировать свежие ссылки:
 ```bash
 V=$(date +%Y%m%d_%H%M) && echo "
 https://api.atlantis-invest.ru/api/docs/file?path=docs/SOFIA_CURRENT.md&v=$V
@@ -171,4 +178,4 @@ https://api.atlantis-invest.ru/api/docs/file?path=docs/SESSION_END_TEMPLATE.md&v
 "
 ```
 
-8. Выдать готовый промпт для следующего чата claude.ai со свежими ссылками из п.7
+9. Выдать готовый промпт для следующего чата claude.ai со свежими ссылками из п.7
