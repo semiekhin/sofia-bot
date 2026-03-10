@@ -1,6 +1,6 @@
 # Задачи Sofia-GPT
 
-📅 Обновлено: 10.03.2026
+📅 Обновлено: 10.03.2026 (вечер)
 
 ## 🎙️ Шаг 1 — Голосовой агент Retell AI (в процессе)
 
@@ -9,8 +9,9 @@
 - [x] Nginx location /llm-websocket/
 - [x] Агент в Retell Dashboard
 - [x] Браузерный тест — Sofia отвечает ✅
-- [ ] Переделать voice_api.py: response_required через пайплайн без source_object (путь bot/radist)
+- [x] Оптимизация латенси: voice_mode в pipeline (~2с вместо 6-10с)
 - [ ] Русский голос (MiniMax или Cartesia в Retell)
+- [ ] Вернуть Extractor для voice (async в фоне или после оптимизации)
 - [ ] Голос в БД и Observer
 - [ ] Интеграция с Задарма (SIP)
 

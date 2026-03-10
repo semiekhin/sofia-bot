@@ -10,11 +10,23 @@ Endpoint: ws://.../llm-websocket/{call_id}
 import hashlib
 import json
 import logging
+import os
 import re
 
 from fastapi import WebSocket, WebSocketDisconnect
 
+from state_manager import StateManager
+from core.pipeline import run_pipeline
+from web_api import save_message, get_history
+
+# TODO: вернуть когда voice latency позволит
+# from message_processor import process_message
+
 log = logging.getLogger("sofia.voice")
+
+SOFIA_PATH = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(SOFIA_PATH, "sofia_gpt.db")
+state_manager = StateManager(DB_PATH)
 
 VOICE_USER_ID_OFFSET = 7_000_000
 
@@ -39,15 +51,6 @@ def clean_for_voice(text: str) -> str:
 
 async def handle_voice_ws(websocket: WebSocket, call_id: str):
     """Основной обработчик WebSocket для Retell AI."""
-    # Импорт здесь чтобы избежать circular imports при подключении из web_api
-    from web_api import (
-        state_manager,
-        save_message,
-        get_history,
-        generate_response,
-    )
-    from message_processor import process_message
-
     await websocket.accept()
 
     user_id = call_id_to_user_id(call_id)
@@ -121,7 +124,7 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
                     "end_call": False,
                 }
                 await websocket.send_text(json.dumps(nudge_msg))
-                log.info(f"[VOICE] Reminder nudge sent (no user text)")
+                log.info("[VOICE] Reminder nudge sent (no user text)")
                 continue
 
             if not user_text:
@@ -138,20 +141,31 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
                 content=user_text,
             )
 
-            # Обрабатываем через пайплайн (как в web_api.handle_web_message)
-            history = get_history(user_id, limit=100)
-            await process_message(
+            # Обрабатываем через единый пайплайн
+            history = get_history(user_id, limit=20)
+
+            # Extractor пропускаем для голоса — экономим ~1-2с
+            # TODO: вернуть когда латенси будет приемлемым
+            # await process_message(
+            #     user_id=user_id,
+            #     user_name=user_name,
+            #     message=user_text,
+            #     history=history,
+            #     state_manager=state_manager,
+            #     channel="voice",
+            # )
+
+            result = await run_pipeline(
                 user_id=user_id,
+                user_message=user_text,
                 user_name=user_name,
-                message=user_text,
                 history=history,
                 state_manager=state_manager,
                 channel="voice",
+                voice_mode=True,
             )
-
-            reply_raw = await generate_response(user_id, user_text, user_name)
-            end_call = "[END]" in (reply_raw or "") or "[end]" in (reply_raw or "")
-            reply_clean = clean_for_voice(reply_raw or "Повторите, пожалуйста?")
+            end_call = result.dialog_finished
+            reply_clean = clean_for_voice(result.answer or "Повторите, пожалуйста?")
 
             save_message(
                 chat_id=user_id,

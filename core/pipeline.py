@@ -76,6 +76,7 @@ async def run_pipeline(
     state_manager,
     channel: str,
     was_offline: bool = False,
+    voice_mode: bool = False,
 ) -> PipelineResult:
     """
     Единый пайплайн: Analyzer → RAG → Generator.
@@ -131,9 +132,11 @@ async def run_pipeline(
 ЧТО ИЗВЕСТНО О КЛИЕНТЕ:
 {state_summary}"""
 
-    if not skip_analyzer:
-        rag_stage = "QUALIFICATION"
-        rag_query = user_message
+    # Дефолты (используются если Analyzer пропущен)
+    rag_stage = "QUALIFICATION"
+    rag_query = user_message
+
+    if not skip_analyzer and not voice_mode:
 
         if state and state.source_object:
             analyzer_input += (
@@ -149,7 +152,7 @@ async def run_pipeline(
                 model="gpt-5.2",
                 instructions=ANALYZER_PROMPT,
                 input=analyzer_input,
-                reasoning={"effort": "medium"},
+                **({"reasoning": {"effort": "medium"}} if not voice_mode else {}),
                 max_output_tokens=1000,
             )
             analyzer_text = analyzer_response.output_text or ""
@@ -171,7 +174,8 @@ async def run_pipeline(
     # ШАГ 2: RAG
     # ═══════════════════════════════════════════════════════════════
     examples_prompt = ""
-    examples = search_examples(rag_stage, rag_query, limit=RAG_EXAMPLES_COUNT)
+    rag_limit = 3 if voice_mode else RAG_EXAMPLES_COUNT
+    examples = search_examples(rag_stage, rag_query, limit=rag_limit)
     if examples:
         examples_prompt = format_examples_for_prompt(examples)
         log.info(f"📚 [{tag}] RAG [{rag_stage}]: {len(examples)} примеров")
@@ -180,6 +184,12 @@ async def run_pipeline(
     # ШАГ 3: LLM-Generator
     # ═══════════════════════════════════════════════════════════════
     system_prompt = get_system_prompt_v2(state_summary, examples_prompt)
+
+    if voice_mode:
+        system_prompt += (
+            "\n\nВАЖНО: Это голосовой звонок. Отвечай ОЧЕНЬ коротко — "
+            "максимум 2 предложения. Без списков, без форматирования."
+        )
 
     # Source routing: инъекция контекста объекта
     state = state_manager.get_state(user_id)
@@ -214,7 +224,7 @@ async def run_pipeline(
             model="gpt-5.2",
             instructions=system_prompt,
             input=messages,
-            reasoning={"effort": "high"},
+            **({"reasoning": {"effort": "high"}} if not voice_mode else {}),
             max_output_tokens=4000,
         )
         answer = response.output_text or ""
@@ -224,22 +234,23 @@ async def run_pipeline(
             f"output_tokens={getattr(response.usage, 'output_tokens', '?')}"
         )
 
-        # Проверка обрезки
-        try:
-            stop_reason = (
-                getattr(response.output[-1], "stop_reason", None)
-                if response.output
-                else None
-            )
-            if stop_reason == "max_tokens" or (
-                len(answer) > 50
-                and not answer.rstrip().endswith(("?", "!", ".", ")", "»", '"'))
-            ):
-                log.warning(
-                    f"⚠️ [{tag}] ОБРЕЗКА! stop={stop_reason}, len={len(answer)}"
+        # Проверка обрезки (пропускаем для voice — короткие ответы ложно срабатывают)
+        if not voice_mode:
+            try:
+                stop_reason = (
+                    getattr(response.output[-1], "stop_reason", None)
+                    if response.output
+                    else None
                 )
-        except Exception as e:
-            log.warning(f"⚠️ [{tag}] stop_reason check error: {e}")
+                if stop_reason == "max_tokens" or (
+                    len(answer) > 50
+                    and not answer.rstrip().endswith(("?", "!", ".", ")", "»", '"'))
+                ):
+                    log.warning(
+                        f"⚠️ [{tag}] ОБРЕЗКА! stop={stop_reason}, len={len(answer)}"
+                    )
+            except Exception as e:
+                log.warning(f"⚠️ [{tag}] stop_reason check error: {e}")
 
         # [END] check
         dialog_finished = False

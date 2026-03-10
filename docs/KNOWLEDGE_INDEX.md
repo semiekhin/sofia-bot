@@ -11,7 +11,20 @@
 
 ---
 
-## 10.03.2026 — voice_api.py: Retell AI голосовой агент
+## 10.03.2026 (вечер) — voice_mode: оптимизация латенси голосового канала
+
+- **Что сделано:** Добавлен параметр `voice_mode` в `run_pipeline()` — отключает reasoning, Analyzer, Extractor, уменьшает RAG до 3 примеров, добавляет инструкцию "коротко"
+- **Почему:** Голосовой ответ занимал 6-10с, некомфортно для живого разговора
+- **Результат:** ~2с на ответ
+- **Файлы:**
+  - `core/pipeline.py` — `voice_mode: bool = False` в сигнатуре run_pipeline(). При True: без reasoning, без Analyzer, RAG limit=3, инструкция "2 предложения", без проверки обрезки
+  - `voice_api.py` — `run_pipeline(voice_mode=True)`, Extractor (process_message) закомментирован
+- **Баг найден:** `rag_stage` не определён при voice_mode=True — дефолты были внутри блока `if not skip_analyzer`. Фикс: вынесены до условия.
+- **Что отключено для voice:** Reasoning, Analyzer, Extractor, проверка обрезки. RAG работает (3 примера). Generator работает (без reasoning).
+- **⚠️ Компромисс:** Без Extractor state клиента не обновляется при голосовых звонках. TODO: вернуть async или после оптимизации.
+- **Как откатить:** В pipeline.py убрать все `voice_mode` условия. В voice_api.py раскомментировать process_message, убрать `voice_mode=True`. Или восстановить из backup_* файлов.
+
+## 10.03.2026 (утро) — voice_api.py: Retell AI голосовой агент
 
 - **Что сделано:** WebSocket адаптер для Retell AI Custom LLM, маршрут в web_api.py, nginx location
 - **Почему:** Шаг 1 — голосовой канал для Sofia
@@ -23,7 +36,6 @@
   - API Key: `key_efd60e45e3721404e9239c41a9dd`
   - Agent ID: `agent_d428a1d13067a563faf30a88bb`
   - URL: `wss://api.atlantis-invest.ru/llm-websocket/`
-- **Открытая проблема:** voice_api использует generate_response() из web_api.py. При reminder_required (клиент молчит) voice отправлял "(молчание)" в пайплайн → LLM без контекста фантазировала (упоминала Атлантис из знаний модели + 2 RAG-примера в QUALIFICATION). Фикс: reminder и greeting — фиксированные фразы без пайплайна. Следующий шаг: response_required должен идти без source_object привязки.
 - **User ID формула:** `7_000_000 + (md5(call_id)[:8] as int % 1_000_000)`
 - **Как откатить:** Удалить voice_api.py, убрать WebSocket маршрут из web_api.py, убрать location из nginx, reload nginx
 
