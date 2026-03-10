@@ -11,9 +11,17 @@
 1. `git diff` — посмотреть что изменилось
 2. Обновить `docs/SOFIA_CURRENT.md` — что сделано, статус, следующие шаги
 3. Обновить `docs/SOFIA_TASKS.md` — статусы чеклиста
-4. Обновить `docs/KNOWLEDGE_INDEX.md` — детали задач, как откатить
-5. Обновить `CLAUDE.md` если изменилась структура
-6. `git add -A && git commit -m "docs: сессия ДД.ММ.ГГГГ — описание" && git push`
+4. Обновить `docs/SOFIA_KNOWLEDGE.md` — новые уроки
+5. Обновить `docs/KNOWLEDGE_INDEX.md` — детали задач, как откатить
+6. Обновить `CLAUDE.md` если изменилась структура
+7. `git add -A && git commit -m "docs: сессия ДД.ММ.ГГГГ — описание" && git push`
+8. **Синхронизировать доки в прод:**
+```bash
+cp /opt/sofia-gpt-dev/docs/SOFIA_CURRENT.md /opt/sofia-gpt/docs/
+cp /opt/sofia-gpt-dev/docs/SOFIA_TASKS.md /opt/sofia-gpt/docs/
+cp /opt/sofia-gpt-dev/docs/SOFIA_KNOWLEDGE.md /opt/sofia-gpt/docs/
+cp /opt/sofia-gpt-dev/docs/KNOWLEDGE_INDEX.md /opt/sofia-gpt/docs/
+```
 
 ---
 
