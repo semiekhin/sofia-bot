@@ -11,7 +11,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import AsyncGenerator, Optional
 
 from openai import OpenAI
 
@@ -294,3 +294,111 @@ async def run_pipeline(
             dialog_finished=False,
             analysis=analysis,
         )
+
+
+async def stream_voice_response(
+    *,
+    user_id: int,
+    user_message: str,
+    user_name: str,
+    history: list,
+    state_manager,
+    channel: str = "voice",
+) -> AsyncGenerator[str, None]:
+    """
+    Стриминг ответа Generator для голосового канала.
+
+    Analyzer и Extractor пропущены (как voice_mode=True в run_pipeline).
+    Yield'ит текстовые чанки по мере получения от OpenAI.
+    После завершения стрима — проверяет [END] и обновляет state.
+    """
+    client = _get_client()
+    tag = channel.upper()
+
+    state = state_manager.get_state(user_id)
+    state_summary = format_state_summary(state) if state else "Новый клиент"
+
+    # Source routing
+    user_msg_count = sum(1 for m in history if m["role"] == "user")
+    rag_stage = "QUALIFICATION"
+    rag_query = user_message
+
+    if state and state.source_object and user_msg_count <= 2:
+        rag_stage = "GREETING"
+        rag_query = "приветствие клиент с сайта интерес к объекту"
+        log.info(
+            f"🏷️ [{tag}] Source routing: force stage=GREETING "
+            f"(user_msgs={user_msg_count}, object={state.source_object})"
+        )
+
+    # RAG (3 примера для voice)
+    examples_prompt = ""
+    examples = search_examples(rag_stage, rag_query, limit=3)
+    if examples:
+        examples_prompt = format_examples_for_prompt(examples)
+        log.info(f"📚 [{tag}] RAG [{rag_stage}]: {len(examples)} примеров")
+
+    # System prompt
+    system_prompt = get_system_prompt_v2(state_summary, examples_prompt)
+    system_prompt += (
+        "\n\nВАЖНО: Это голосовой звонок. Отвечай ОЧЕНЬ коротко — "
+        "максимум 2 предложения. Без списков, без форматирования."
+    )
+
+    # Source routing: контекст объекта
+    state = state_manager.get_state(user_id)
+    if state and state.source_object:
+        obj_config = get_object_by_key(state.source_object)
+        if obj_config:
+            object_context = load_object_context(obj_config)
+            system_prompt += (
+                f"\n\n═══ ТВОЙ ОБЪЕКТ: {obj_config['short_name']} ═══\n"
+                f"{object_context}\n\n"
+                f"Ссылка на презентацию: {obj_config['presentation_url']}\n"
+                f"При запросе презентации — отправь эту ссылку клиенту."
+            )
+
+    # Messages
+    messages = [{"role": m["role"], "content": m["content"]} for m in history]
+    messages.append({"role": "user", "content": user_message})
+
+    try:
+        log.info(f"🔄 [{tag}] Generator STREAM запрос для {user_name}...")
+
+        # stream=True возвращает синхронный итератор —
+        # создаём его в thread, затем итерируем через queue
+        queue: asyncio.Queue = asyncio.Queue()
+
+        async def _run_stream():
+            def _sync_stream():
+                stream = client.responses.create(
+                    model="gpt-5.2",
+                    instructions=system_prompt,
+                    input=messages,
+                    max_output_tokens=4000,
+                    stream=True,
+                )
+                for event in stream:
+                    if event.type == "response.output_text.delta":
+                        delta = event.delta
+                        if delta:
+                            queue.put_nowait(delta)
+                queue.put_nowait(None)  # sentinel
+
+            await asyncio.to_thread(_sync_stream)
+
+        stream_task = asyncio.create_task(_run_stream())
+
+        while True:
+            chunk = await queue.get()
+            if chunk is None:
+                break
+            yield chunk
+
+        await stream_task  # убедимся что завершился без ошибок
+
+        log.info(f"✅ [{tag}] Generator stream завершён")
+
+    except Exception as e:
+        log.error(f"❌ [{tag}] Generator stream error: {e}")
+        yield "Простите, связь подвисла. Повторите?"

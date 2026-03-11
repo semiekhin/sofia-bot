@@ -16,7 +16,7 @@ import re
 from fastapi import WebSocket, WebSocketDisconnect
 
 from state_manager import StateManager
-from core.pipeline import run_pipeline
+from core.pipeline import stream_voice_response
 from web_api import save_message, get_history
 
 # TODO: вернуть когда voice latency позволит
@@ -155,37 +155,93 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
             #     channel="voice",
             # )
 
-            result = await run_pipeline(
+            # Стриминг ответа Generator → Retell (с буферизацией)
+            FLUSH_CHARS = ".!?,"
+            MIN_BUF_LEN = 20
+
+            full_text = ""
+            buf = ""
+            chunk_count = 0
+
+            async def _flush_buf():
+                nonlocal buf, chunk_count
+                if not buf:
+                    return
+                chunk_count += 1
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "response_type": "response",
+                            "response_id": response_id,
+                            "content": buf,
+                            "content_complete": False,
+                            "end_call": False,
+                        }
+                    )
+                )
+                buf = ""
+
+            async for chunk in stream_voice_response(
                 user_id=user_id,
                 user_message=user_text,
                 user_name=user_name,
                 history=history,
                 state_manager=state_manager,
                 channel="voice",
-                voice_mode=True,
-            )
-            end_call = result.dialog_finished
-            reply_clean = clean_for_voice(result.answer or "Повторите, пожалуйста?")
+            ):
+                if not chunk:
+                    continue
+                full_text += chunk
+                buf += chunk
 
+                # Flush по знаку препинания или по длине + пробел
+                if buf[-1] in FLUSH_CHARS:
+                    await _flush_buf()
+                elif len(buf) >= MIN_BUF_LEN and buf[-1] == " ":
+                    await _flush_buf()
+
+            # Остаток буфера
+            await _flush_buf()
+
+            # Очистка полного текста от markdown для сохранения
+            full_text = clean_for_voice(full_text)
+
+            # [END] check
+            end_call = "[END]" in full_text or "[end]" in full_text
+            full_text = full_text.replace("[END]", "").replace("[end]", "").strip()
+            if end_call:
+                state_manager.update_state(
+                    user_id,
+                    {"dialog_finished": True, "finish_type": "llm_end"},
+                )
+
+            # Финальное сообщение — content_complete: true
+            await websocket.send_text(
+                json.dumps(
+                    {
+                        "response_type": "response",
+                        "response_id": response_id,
+                        "content": "",
+                        "content_complete": True,
+                        "end_call": end_call,
+                    }
+                )
+            )
+
+            # Сохраняем полный очищенный ответ
+            reply_text = full_text or "Повторите, пожалуйста?"
             save_message(
                 chat_id=user_id,
                 user_id=user_id,
                 user_name=user_name,
                 role="assistant",
-                content=reply_clean,
+                content=reply_text,
             )
 
-            response_msg = {
-                "response_type": "response",
-                "response_id": response_id,
-                "content": reply_clean,
-                "content_complete": True,
-                "end_call": end_call,
-            }
-            await websocket.send_text(json.dumps(response_msg))
             log.info(
                 f"[VOICE] Reply #{response_id}: "
-                f"end_call={end_call}, len={len(reply_clean)}"
+                f"chunks={chunk_count}, end_call={end_call}, "
+                f"len={len(reply_text)}"
             )
 
     except WebSocketDisconnect:

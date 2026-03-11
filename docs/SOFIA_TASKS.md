@@ -1,6 +1,6 @@
 # Задачи Sofia-GPT
 
-📅 Обновлено: 10.03.2026 (ночь)
+📅 Обновлено: 11.03.2026
 
 ## 🎙️ Шаг 1 — Голосовой агент (в процессе)
 
@@ -9,19 +9,22 @@
 - [x] Маршрут в web_api.py
 - [x] Nginx location /llm-websocket/
 - [x] Агент в Retell Dashboard
-- [x] Браузерный тест — Sofia отвечает ✅
+- [x] Браузерный тест — Sofia отвечает
 - [x] Оптимизация латенси: voice_mode в pipeline (~2с вместо 6-10с)
+- [x] Стриминг: stream_voice_response + буферизация чанков (незакоммичен)
 - [ ] Русский голос (MiniMax или Cartesia в Retell)
+- [ ] Тест gpt-4.1-mini для voice — P0 (первый токен ~200мс vs ~800мс)
 
-### Dasha.ai (исследование — P0)
-- [ ] Изучить Custom LLM интеграцию через DashaScript/API (старая версия dasha.ai)
-- [ ] Blackbox не подходит (нет кастомной LLM) — подтверждено менеджером
-- [ ] Прототип интеграции Sofia → Dasha Custom LLM
+### Собственный голосовой сервис (исследование)
+- [x] Анализ альтернатив: Dasha.ai, Яндекс Realtime, Voicyfy — не подходят
+- [x] Архитектура: Pipecat + Deepgram STT + ElevenLabs/Yandex TTS + наш pipeline
+- [ ] Прототип на Pipecat (~200-300 строк Python) — P1
+- [ ] Интеграция с Задарма (SIP)
 
 ### Voice общее
 - [ ] Вернуть Extractor для voice (async в фоне — P0)
 - [ ] Голос в БД и Observer
-- [ ] Интеграция с Задарма (SIP)
+- [ ] Починить SOFIA_PATH в web_api.py (voice пишет в прод БД!) — P0
 
 ## 🏗️ Шаг 2 — Безопасная среда ✅ ЗАВЕРШЁН
 
@@ -38,6 +41,7 @@
 ## ⚙️ Шаг 3 — Единое ядро (в процессе)
 
 - [x] core/pipeline.py — Analyzer → RAG → Generator
+- [x] stream_voice_response() — стриминг для voice (незакоммичен)
 - [ ] core/channel.py
 - [ ] core/bitrix.py
 - [ ] core/observer.py
@@ -46,6 +50,7 @@
 - [x] Переключить radist_gateway.py → run_pipeline()
 - [x] Удалить мёртвый импорт (radist)
 - [ ] Atlantis context → config/source_objects.py (убрать hardcode из web_api.py)
+- [ ] Деплой core/ в прод — P2
 
 ## 🔧 Dev-окружение Radist
 
@@ -56,6 +61,7 @@
 
 ## 🔥 Технический долг
 
+- [ ] **SOFIA_PATH баг** — web_api.py:26 захардкожен на /opt/sofia-gpt (прод), voice пишет в прод БД — **P0**
 - [ ] Bitrix в bot_server.py
 - [ ] Bitrix в radist_gateway.py
 - [ ] Bitrix веб-виджет crm.lead.update
@@ -67,12 +73,15 @@
 
 ## ⚡ Оптимизация
 
-- [ ] Стриминг Generator
+- [x] Стриминг Generator (voice — stream_voice_response)
+- [ ] Стриминг Generator (текстовые каналы)
 - [ ] Облегчить Analyzer
 - [ ] 17-24с → <12с
+- [ ] gpt-4.1-mini для voice (тест)
 
 ## 🤖 Будущее
 
+- [ ] Pipecat — собственный голосовой сервис
 - [ ] Cerebras GLM-4
 - [ ] Агенты
 - [ ] Новые объекты

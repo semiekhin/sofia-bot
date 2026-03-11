@@ -1,8 +1,47 @@
 # Текущий статус Sofia-GPT
 
-📅 **Последняя сессия:** 10.03.2026 (вечер)
+📅 **Последняя сессия:** 11.03.2026
+
+## Архитектурная карта: ПРОД vs DEV
+
+### ПРОД (`/opt/sofia-gpt/`, порт 8080)
+- `bot_server.py` — Telegram бот (@humanAINeural_bot)
+- `web_api.py` — веб виджет (порт 8080)
+- `sofia_radist_gateway.py` — Radist gateway (порт 5001)
+- **Голосового канала НЕТ** — `voice_api.py` и `core/` не существуют в проде
+- Пайплайн дублирован внутри каждого транспорта (старый код)
+
+### DEV (`/opt/sofia-gpt-dev/`, порт 8081)
+- Те же три канала + `voice_api.py` (голосовой адаптер Retell)
+- **`core/pipeline.py`** — единый пайплайн, все 4 канала подключены через `run_pipeline()` / `stream_voice_response()`
+- Nginx `/llm-websocket/` → порт 8081 (Retell агент смотрит на dev)
+- БД: `sofia_gpt_dev.db` (для bot_server, radist) + **ПРОД БД** для web_api/voice (баг!)
+
+### Критический баг: web_api.py → ПРОД БД
+`web_api.py:26` — `SOFIA_PATH = "/opt/sofia-gpt"` (захардкожен на прод). `voice_api.py` импортирует `save_message`/`get_history` из web_api — **голосовые сессии пишут историю в ПРОД базу**. Не исправлено.
 
 ## ✅ Что сделано
+
+### Сессия 11.03.2026 — Аудит + исследование собственного голосового сервиса
+
+**Аудит проекта:**
+- Полный аудит состояния прод/дев по каждому каналу
+- Подтверждён баг SOFIA_PATH в web_api.py (voice пишет в прод БД)
+- Проверено: `core/` не существует в проде, все изменения с 09.03 — только в dev
+- Зафиксировано: незакоммиченный стриминг (stream_voice_response + буферизация) в pipeline.py и voice_api.py
+
+**Исследование альтернатив Retell — собственный голосовой сервис:**
+- Retell: единственная платформа с Custom LLM WebSocket, но $0.07-0.14/мин + сетевой хоп
+- Dasha.ai: Custom LLM только через старую версию (Node.js SDK), архитектурно хуже
+- Яндекс AI Studio Realtime: нет Custom LLM, их модель остаётся в цепочке
+- Voicyfy: no-code поверх OpenAI/Google, нет кастомизации
+- **Вывод: можно построить свой сервис через Pipecat (open-source Python)**
+  - Архитектура: SIP (Задарма/Twilio) → Pipecat → Deepgram STT → наш pipeline → ElevenLabs/Yandex TTS
+  - `stream_voice_response()` уже готов — отдаёт чанки
+  - Стоимость: Deepgram ~$0.004/мин + ElevenLabs ~$0.01/мин + LLM = дешевле Retell
+  - Прототип: ~200-300 строк Python
+
+**Ещё не протестировано:** gpt-4.1-mini для voice (первый токен ~200мс vs ~800мс у gpt-5.2)
 
 ### Сессия 10.03.2026 (вечер) — Оптимизация латенси голосового канала
 
@@ -14,77 +53,44 @@
 - Extractor (process_message) пропущен — ещё один LLM-вызов убран
 - RAG: 10→3 примера — меньше токенов в промпте
 - Инструкция Generator: "максимум 2 предложения, без списков"
-- Проверка обрезки отключена для voice (ложные срабатывания на коротких ответах)
 
-**Результат:** ответ ~2с вместо 6-10с. Остальные каналы не затронуты.
+**Стриминг (незакоммичен, в diff):**
+- `stream_voice_response()` в `core/pipeline.py` — Generator с `stream=True`, yield чанков через asyncio.Queue
+- `voice_api.py` — буферизация чанков (flush по `.!?,` или 20+ символов + пробел), 2-8 чанков вместо 74 микро-чанков
 
-**⚠️ Архитектурная заметка:** `voice_mode` — это **намеренное временное упрощение** базовой архитектуры только для голоса. Отключены: Extractor (state не обновляется), Analyzer, reasoning, RAG 10→3, ответ макс 2 предложения. По мере оптимизации латенси — возвращать компоненты по одному.
-
-**Баг найден и исправлен:** `rag_stage` не определён при `voice_mode=True` — дефолты вынесены до условия Analyzer.
-
-**Dasha.ai (исследование):** Retell AI работает, но параллельно изучаем Dasha.ai (старая версия, dasha.ai) — Custom LLM интеграция через DashaScript/API. Blackbox-версия не подходит (нет кастомной LLM). Менеджер Dasha подтвердил возможность через старую платформу.
+**Результат:** ответ ~2с вместо 6-10с. Стриминг даёт первый звук ещё раньше.
 
 ### Сессия 10.03.2026 (утро) — Голосовой агент Retell AI
 
-**Инфраструктура:**
-- Dev сервис переведён на порт 8081 (был hardcode 8080 в `__main__`, конфликтовал с продом)
-- Nginx `location /llm-websocket/` добавлен в sofia-api, proxy_pass на 8081 (временно для теста)
-- Создан `voice_api.py` — WebSocket адаптер для Retell Custom LLM
-- В `web_api.py` добавлен маршрут `@app.websocket("/llm-websocket/{call_id}")`, импорт WebSocket
-- `generate_response()` получил параметр `channel` (дефолт "web")
+- `voice_api.py` — WebSocket адаптер для Retell Custom LLM
+- Nginx `location /llm-websocket/` → порт 8081
+- Retell агент: `agent_d428a1d13067a563faf30a88bb`
+- Голос: Nastya (ElevenLabs `YjESejviApN7SHrbfnA2`), ru-RU, eleven_v3
 
-**Retell AI:**
-- Агент: `agent_d428a1d13067a563faf30a88bb`
-- Custom LLM URL: `wss://api.atlantis-invest.ru/llm-websocket/`
-- Браузерный тест прошёл — Sofia отвечает голосом ✅
-- Голос: Julia (OpenAI) → нужен русский (MiniMax/Cartesia)
+### Сессия 09.03.2026 — core/pipeline.py + dev radist
 
-**Архитектура voice_api.py (текущее состояние):**
-- user_id: `7_000_000 + (md5(call_id)[:8] % 1_000_000)`
-- Приветствие: фиксированная строка (без пайплайна)
-- Reminder (молчание): фиксированный nudge (без пайплайна)
-- response_required: run_pipeline(voice_mode=True) — без Analyzer, без Extractor, без reasoning
-- clean_for_voice(): очистка markdown для TTS
-
-### Сессия 09.03.2026 (вечер) — core/pipeline.py + dev radist
-
-**Рефакторинг пайплайна:**
-- Создан `core/pipeline.py` — единый пайплайн Analyzer → RAG → Generator
+- `core/pipeline.py` — единый пайплайн Analyzer → RAG → Generator
 - Переключены все 3 канала: bot_server.py, web_api.py, sofia_radist_gateway.py
-- Удалено ~450 строк дублированного кода (по ~150 в каждом файле)
-- Source routing (skip analyzer + context injection) — внутри pipeline
-- was_offline поддержка — параметр pipeline
+- Dev-окружение Radist: порт 5002, DEV_MODE, webhooks
 
-**Dev-окружение для Radist:**
-- `sofia-radist-dev.service` на порту 5002 (прод на 5001)
-- `DEV_MODE=true` — логирует ответы, не отправляет клиенту
-- Webhook зарегистрированы в Radist API (Max + Telegram → :5002)
+## 🔄 Текущее состояние сервисов
 
-### Сессия 09.03.2026 (утро) — Кэш Claude и session-end протокол
-- SESSION_END_TEMPLATE.md, CLAUDE.md в git, session-end протокол
+| Сервис | Где | Статус |
+|--------|-----|--------|
+| Web API prod | :8080 | running, старый пайплайн |
+| Telegram бот prod | long polling | running, старый пайплайн |
+| Radist prod | :5001 | running, старый пайплайн |
+| Web API dev | :8081 | running, core/pipeline.py |
+| Radist dev | :5002 | running, core/pipeline.py, DEV_MODE |
+| Voice (Retell) | :8081 ws | running через dev, stream_voice_response |
 
-### Сессия 08.03.2026 — Dev-окружение
-- Dev-каталог /opt/sofia-gpt-dev/, порт 8081, deploy.sh, Claude Code
-
-## 🔄 Текущее состояние
-- ✅ Web API, Telegram бот, Radist — работают (прод)
-- ✅ core/pipeline.py — единый пайплайн, поддерживает voice_mode
-- ✅ Dev Web API на порту 8081, voice WebSocket работает
-- ✅ Retell AI агент создан, браузерный тест пройден
-- ✅ Voice latency оптимизирован (~2с вместо 6-10с)
-- ⚠️ Voice: Extractor отключён — state не обновляется при голосовых звонках
-- ⚠️ Bitrix НЕ подключён в bot_server.py и radist_gateway.py
-- ⚠️ Observer ОТКЛЮЧЁН в dev
+**Ключевое:** прод на старом коде (пайплайн дублирован в каждом транспорте), dev на `core/pipeline.py`. Деплой `core/` в прод ещё не выполнялся.
 
 ## 🔜 Следующие шаги
-1. **P0:** Dasha.ai (старая версия) — изучить Custom LLM интеграцию через DashaScript/API
-2. **P0:** Русский голос в Retell (MiniMax/Cartesia)
-3. **P0:** Voice: вернуть Extractor async (в фоне, не блокируя ответ)
-4. **P1:** Bitrix в bot_server.py и radist_gateway.py при [END]
-5. **P2:** core/channel.py, core/bitrix.py, core/observer.py
-6. **P2:** Интеграция с Задарма (SIP)
-
-## 📁 Ключевые файлы этой сессии
-- `core/pipeline.py` — voice_mode: без reasoning, без Analyzer, RAG 3 примера, инструкция "коротко"
-- `voice_api.py` — Extractor отключён, run_pipeline(voice_mode=True)
-- Бэкапы: `core/pipeline.py.backup_*`, `voice_api.py.backup_*`
+1. **P0:** Починить SOFIA_PATH в web_api.py (dev должен использовать dev БД)
+2. **P0:** Закоммитить стриминг (stream_voice_response) — сейчас в uncommitted diff
+3. **P0:** Тест gpt-4.1-mini для voice (потенциал ~200мс vs ~800мс первый токен)
+4. **P1:** Прототип собственного голосового сервиса на Pipecat
+5. **P1:** Bitrix в bot_server.py и radist_gateway.py при [END]
+6. **P2:** Деплой core/pipeline.py в прод (все 3 канала)
+7. **P2:** core/channel.py, core/bitrix.py, core/observer.py
