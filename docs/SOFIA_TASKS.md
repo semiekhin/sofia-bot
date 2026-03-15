@@ -1,6 +1,6 @@
 # Задачи Sofia-GPT
 
-📅 Обновлено: 11.03.2026
+📅 Обновлено: 15.03.2026
 
 ## 🎙️ Шаг 1 — Голосовой агент (в процессе)
 
@@ -11,7 +11,7 @@
 - [x] Агент в Retell Dashboard
 - [x] Браузерный тест — Sofia отвечает
 - [x] Оптимизация латенси: voice_mode в pipeline (~2с вместо 6-10с)
-- [x] Стриминг: stream_voice_response + буферизация чанков (незакоммичен)
+- [x] Стриминг: stream_voice_response + буферизация чанков (закоммичен)
 - [ ] Русский голос (MiniMax или Cartesia в Retell)
 - [ ] Тест gpt-4.1-mini для voice — P0 (первый токен ~200мс vs ~800мс)
 
@@ -23,6 +23,7 @@
 
 ### Voice общее
 - [ ] Вернуть Extractor для voice (async в фоне — P0)
+- [ ] Post-stream проверка [END] и обновление state — P0
 - [ ] Голос в БД и Observer
 - [ ] Починить SOFIA_PATH в web_api.py (voice пишет в прод БД!) — P0
 
@@ -41,7 +42,7 @@
 ## ⚙️ Шаг 3 — Единое ядро (в процессе)
 
 - [x] core/pipeline.py — Analyzer → RAG → Generator
-- [x] stream_voice_response() — стриминг для voice (незакоммичен)
+- [x] stream_voice_response() — стриминг для voice (закоммичен)
 - [ ] core/channel.py
 - [ ] core/bitrix.py
 - [ ] core/observer.py
@@ -61,7 +62,7 @@
 
 ## 🔥 Технический долг
 
-- [ ] **SOFIA_PATH баг** — web_api.py:26 захардкожен на /opt/sofia-gpt (прод), voice пишет в прод БД — **P0**
+- [ ] **SOFIA_PATH баг (9 файлов!)** — хардкод `/opt/sofia-gpt` в dev: web_api.py (6 мест), sofia_userbot.py, sofia_userbot_pyrogram.py (5 мест), send_report.py, finance_calculator.py, test_smart_start.py, test_userbot.py, add_actualization_examples.py, patch_bot_server.py — **P0**
 - [ ] Bitrix в bot_server.py
 - [ ] Bitrix в radist_gateway.py
 - [ ] Bitrix веб-виджет crm.lead.update
@@ -70,6 +71,7 @@
 - [ ] ASSIGNED_BY_ID 426→24932
 - [ ] ЦБ 16%→15.5%
 - [ ] BUG-004 EN-раскладка
+- [ ] Очистка мусора в проде (40+ backup файлов, legacy, файл `ystemctl enable sofia-userbot`)
 
 ## ⚡ Оптимизация
 
