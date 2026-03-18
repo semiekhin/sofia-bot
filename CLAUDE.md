@@ -77,10 +77,11 @@ LLM-Generator (gpt-5.2, reasoning=high)
 | Таблица | Назначение |
 |---------|-----------|
 | messages | История диалогов (user_id, role, content, timestamp, stage) |
-| client_state | Квалификация клиента (goal, budget, location, lead_type, source_object) |
-| web_sessions | UUID session_id → user_id (только web) |
+| client_state | Квалификация клиента (goal, budget, location, lead_type, source_object, manager_active) |
+| web_sessions | UUID session_id → user_id, page_url, bitrix_lead_id, manager_active (только web) |
 | feedback_v2 | Оценки качества |
 | radist_messages / radist_chats | История и метаданные Radist-каналов |
+| observer_topics | phone → thread_id для Radist Observer (Telegram forum) |
 
 ## Стадии диалога (RAG stages)
 
@@ -88,27 +89,36 @@ GREETING → ACTUALIZATION → QUALIFICATION → PRESENTATION → OBJECTION → 
 
 ## Dev сервисы
 
-- `sofia-web-api-dev.service` — порт 8081, БД: sofia_gpt_dev.db
+- `sofia-web-api-dev.service` — порт 8081
+- ⚠️ БД: из-за SOFIA_PATH бага dev web_api пишет в прод БД (sofia_gpt.db в /opt/sofia-gpt/). Файл sofia_gpt_dev.db = 0 bytes.
 - Бот: @SofiaDev01_bot
 - Observer: ОТКЛЮЧЁН (OBSERVER_CHAT_ID закомментирован в .env)
 
 ## Prod сервисы (не трогать)
 
-- `sofia-web-api.service` — порт 8080
-- `sofia-radist.service` — порт 5001
-- БД: sofia_gpt.db, Бот: @humanAINeural_bot
+- `sofia-gpt.service` — Telegram бот (@humanAINeural_bot), long polling
+- `sofia-web-api.service` — порт 8080, веб-виджет
+- `sofia-radist.service` — порт 5001, Radist gateway
+- БД: sofia_gpt.db
+- Боты: @humanAINeural_bot (прямой Telegram), @SofiaOazis (используется в Radist-каналах + статический редирект atlantis.html)
 
 ## Bitrix CRM
 
-`send_lead_to_bitrix()` вызывается при маркере `[END]`. Сейчас работает только в web_api.py.
-bot_server.py и radist_gateway.py — НЕ подключены (лиды теряются).
+**Прод web_api.py** — полная двусторонняя интеграция:
+- `create_or_update_bitrix_lead()`: создаёт лид при первом сообщении, обновляет COMMENTS на каждом, финализирует при `[END]`
+- `/api/bitrix/webhook`: принимает callback от Bitrix → ставит `manager_active=1` → София замолкает, менеджер ведёт
+- Колонки: `web_sessions.bitrix_lead_id`, `client_state.manager_active`
+
+**Dev web_api.py** — упрощённая версия: `send_lead_to_bitrix()` только при `[END]`.
+
+**bot_server.py и radist_gateway.py — НЕ подключены (лиды теряются).**
 
 ## Правила работы
 
 1. Каждую задачу начинать с плана — план утверждает Сергей
 2. Manual approve на каждое изменение файла
 3. После задачи: flake8 + black → коммит → обновить KNOWLEDGE_INDEX.md
-4. Деплой в прод: только через deploy.sh и только по явной команде "YES"
+4. Деплой в прод: только по явной команде "YES" (deploy.sh отсутствует — нужно создать)
 
 ## Правило подтверждений (1/2/3)
 
@@ -147,8 +157,8 @@ sudo systemctl restart sofia-web-api-dev
 # Health check
 curl -s http://localhost:8081/api/health
 
-# Деплой в прод
-cd /opt/sofia-gpt-dev && ./deploy.sh
+# Деплой в прод (deploy.sh не существует — нужно создать)
+# cd /opt/sofia-gpt-dev && ./deploy.sh
 ```
 
 ## Session-end протокол

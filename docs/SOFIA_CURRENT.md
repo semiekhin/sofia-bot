@@ -20,21 +20,17 @@
 - `stream_voice_response()` — закоммичен, async generator с asyncio.Queue bridge
 - БД: `sofia_gpt_dev.db` (для bot_server, radist) + **ПРОД БД** для web_api/voice (баг!)
 
-### Критический баг: SOFIA_PATH хардкод → ПРОД (9 файлов!)
+### Критический баг: SOFIA_PATH хардкод → ПРОД (5 файлов, было 9)
 
-**Масштаб бага больше, чем документировалось ранее.** Хардкод `/opt/sofia-gpt` найден в 9 файлах dev:
+Хардкод `/opt/sofia-gpt` в dev. Проверено 18.03.2026: 4 файла уже исправлены (send_report.py, finance_calculator.py, add_actualization_examples.py, patch_bot_server.py). Осталось 5:
 
 | Файл | Мест | Риск |
 |------|------|------|
-| `web_api.py` (строки 26, 27, 32, 42, 192, 476) | 6 | **КРИТИЧЕСКИЙ** — активный сервис, пишет в прод БД, загружает прод .env |
-| `sofia_userbot.py` | 1 | Средний |
-| `sofia_userbot_pyrogram.py` | 5 | Средний |
-| `send_report.py` | 2 | Средний — читает прод |
-| `finance_calculator.py` (fallback) | 1 | Низкий |
-| `test_smart_start.py` | 2 | Средний |
-| `test_userbot.py` | 2 | Средний |
-| `add_actualization_examples.py` | 4 | Средний |
-| `patch_bot_server.py` | 1 | Средний |
+| `web_api.py` (строки 26, 476) | 2 | **КРИТИЧЕСКИЙ** — активный сервис, пишет в прод БД, загружает прод .env |
+| `sofia_userbot.py` (строка 20) | 1 | Средний |
+| `sofia_userbot_pyrogram.py` (строка 21) | 1 | Средний |
+| `test_smart_start.py` (строка 6) | 1 | Средний |
+| `test_userbot.py` (строки 6, 15) | 2 | Средний |
 
 Только **`voice_api.py`** делает правильно: `SOFIA_PATH = os.path.dirname(os.path.abspath(__file__))`
 
@@ -46,7 +42,7 @@
 
 - Аудит структуры файлов прод/дев
 - Аудит пайплайнов по каждому каналу (dev → core/pipeline.py, prod → старый)
-- Выявлен масштаб SOFIA_PATH бага: 9 файлов, не 1
+- Выявлен масштаб SOFIA_PATH бага: 9 файлов, не 1 (к 18.03 осталось 5 — 4 уже исправлены)
 - Подтверждено: стриминг закоммичен (ранее документировался как незакоммиченный)
 - Проверка всех 5 systemd сервисов — все running
 - Проверка .env: секретов в коде нет, все через os.getenv()
@@ -133,7 +129,7 @@
 Секретов в коде нет — все через `os.getenv()`.
 
 ## 🔜 Следующие шаги
-1. **P0:** Починить SOFIA_PATH во всех 9 файлах dev (критический — dev пишет в прод БД)
+1. **P0:** Починить SOFIA_PATH в оставшихся 5 файлах dev (критический — dev пишет в прод БД)
 2. **P0:** Тест gpt-4.1-mini для voice (потенциал ~200мс vs ~800мс первый токен)
 3. **P0:** Post-stream проверка [END] в stream_voice_response()
 4. **P1:** Прототип собственного голосового сервиса на Pipecat

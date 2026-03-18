@@ -25,7 +25,7 @@
 - [ ] Вернуть Extractor для voice (async в фоне — P0)
 - [ ] Post-stream проверка [END] и обновление state — P0
 - [ ] Голос в БД и Observer
-- [ ] Починить SOFIA_PATH в web_api.py (voice пишет в прод БД!) — P0
+- [ ] Починить SOFIA_PATH в 5 файлах dev (web_api.py, sofia_userbot.py, sofia_userbot_pyrogram.py, test_smart_start.py, test_userbot.py) — P0
 
 ## 🏗️ Шаг 2 — Безопасная среда ✅ ЗАВЕРШЁН
 
@@ -33,7 +33,7 @@
 - [x] Отдельная БД
 - [x] Systemd сервис (порт 8081)
 - [x] CLAUDE.md
-- [x] deploy.sh
+- [ ] deploy.sh (файл не существует — нужно создать)
 - [x] Claude Code по SSH
 - [x] SQLite MCP
 - [x] KNOWLEDGE_INDEX.md
@@ -62,10 +62,11 @@
 
 ## 🔥 Технический долг
 
-- [ ] **SOFIA_PATH баг (9 файлов!)** — хардкод `/opt/sofia-gpt` в dev: web_api.py (6 мест), sofia_userbot.py, sofia_userbot_pyrogram.py (5 мест), send_report.py, finance_calculator.py, test_smart_start.py, test_userbot.py, add_actualization_examples.py, patch_bot_server.py — **P0**
-- [ ] Bitrix в bot_server.py
+- [ ] **SOFIA_PATH баг (5 файлов, было 9)** — хардкод `/opt/sofia-gpt` в dev: web_api.py (строки 26, 476), sofia_userbot.py, sofia_userbot_pyrogram.py, test_smart_start.py, test_userbot.py — **P0**. Уже исправлены: send_report.py, finance_calculator.py, add_actualization_examples.py, patch_bot_server.py
+- [ ] Bitrix в bot_server.py (в проде web_api.py уже имеет полную интеграцию: create+update+webhook+manager_active)
 - [ ] Bitrix в radist_gateway.py
 - [ ] Bitrix веб-виджет crm.lead.update
+- [ ] Унификация source_object: web виджет определяет atlantis по page_url, а не через config/source_objects.py как бот и radist
 - [ ] Observer в .env
 - [ ] Observer в bot_server.py
 - [ ] ASSIGNED_BY_ID 426→24932
