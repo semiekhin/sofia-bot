@@ -17,7 +17,7 @@ API_HASH = "6dc50b91611d636fcc22f5ecb8c96bc6"
 SESSION_NAME = "sofia_session"
 
 # Путь к основной логике Sofia
-SOFIA_PATH = "/opt/sofia-gpt"
+SOFIA_PATH = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SOFIA_PATH)
 
 # ============================================
@@ -33,6 +33,7 @@ try:
     from state_manager import StateManager
     from sofia_prompt import get_system_prompt
     from rag_module import search_examples, format_examples_for_prompt
+
     SOFIA_AVAILABLE = True
     print("✅ Логика Sofia подключена")
 except ImportError as e:
@@ -52,24 +53,25 @@ conversations = {}
 # ОБРАБОТКА СООБЩЕНИЙ
 # ============================================
 
+
 async def process_with_sofia(user_id: int, user_name: str, message: str) -> str:
     """Обрабатывает сообщение через логику Sofia"""
-    
+
     if not SOFIA_AVAILABLE:
         return f"Эхо: {message}"
-    
+
     try:
         # Получаем историю
         history = conversations.get(user_id, [])
-        
+
         # 1. Extractor — понимаем что сказал клиент
         extraction = extract_sync(message, history[-6:] if history else None)
-        
+
         # 2. State Manager — обновляем состояние
         client_state = state_manager.get_state(user_id)
         if extraction:
             state_updates = {}
-            for field in ['goal', 'location', 'budget', 'payment_type', 'lpr']:
+            for field in ["goal", "location", "budget", "payment_type", "lpr"]:
                 if extraction.get(field):
                     state_updates[field] = extraction[field]
                     conf_field = f"{field}_confidence"
@@ -77,38 +79,43 @@ async def process_with_sofia(user_id: int, user_name: str, message: str) -> str:
                         state_updates[conf_field] = extraction[conf_field]
             if state_updates:
                 client_state = state_manager.update_state(user_id, state_updates)
-        
+
         # 3. Planner — выбираем действие
         action, action_context = planner.plan(client_state, extraction or {})
-        
+
         # 4. RAG — ищем примеры
         examples = search_examples("QUALIFICATION", message, limit=3)
         examples_text = format_examples_for_prompt(examples) if examples else ""
-        
+
         # 5. Generator — генерируем ответ (упрощённая версия)
         # В полной версии здесь вызов OpenAI
-        response = generate_simple_response(action, action_context, user_name, extraction)
-        
+        response = generate_simple_response(
+            action, action_context, user_name, extraction
+        )
+
         # Сохраняем в историю
         if user_id not in conversations:
             conversations[user_id] = []
         conversations[user_id].append({"role": "user", "content": message})
         conversations[user_id].append({"role": "assistant", "content": response})
-        
+
         return response
-        
+
     except Exception as e:
         print(f"❌ Ошибка обработки: {e}")
         import traceback
+
         traceback.print_exc()
         return "Секунду, связь подвисла. Напишите ещё раз?"
 
 
-def generate_simple_response(action, context: dict, user_name: str, extraction: dict) -> str:
+def generate_simple_response(
+    action, context: dict, user_name: str, extraction: dict
+) -> str:
     """Простой генератор ответов (без OpenAI для теста)"""
-    
-    action_name = action.name if hasattr(action, 'name') else str(action)
-    
+
+    action_name = action.name if hasattr(action, "name") else str(action)
+
     responses = {
         "ASK_GOAL": f"{user_name}, подскажите — рассматриваете для себя или как инвестицию под сдачу?",
         "ASK_LOCATION": "А по локации — море или горы больше интересуют?",
@@ -121,39 +128,42 @@ def generate_simple_response(action, context: dict, user_name: str, extraction: 
         "HELP_BUDGET": "Примерно: до 10 млн — студии, 10-15 млн — апартаменты, от 15 млн — премиум. Куда смотрим?",
         "WAIT": "Хорошо, жду!",
     }
-    
-    return responses.get(action_name, f"Поняла! Расскажите подробнее, что для вас важно?")
+
+    return responses.get(
+        action_name, f"Поняла! Расскажите подробнее, что для вас важно?"
+    )
 
 
 # ============================================
 # ОБРАБОТЧИК ВХОДЯЩИХ СООБЩЕНИЙ
 # ============================================
 
+
 @client.on(events.NewMessage(incoming=True))
 async def handle_incoming(event):
     """Обрабатывает входящие сообщения"""
-    
+
     # Игнорируем групповые чаты и каналы
     if event.is_group or event.is_channel:
         return
-    
+
     sender = await event.get_sender()
     user_id = sender.id
     user_name = sender.first_name or "друг"
     message = event.message.text
-    
+
     if not message:
         return
-    
+
     print(f"📩 {user_name}: {message}")
-    
+
     # Показываем "печатает..."
-    async with client.action(event.chat_id, 'typing'):
+    async with client.action(event.chat_id, "typing"):
         await asyncio.sleep(1.5)  # Имитация набора
-        
+
         # Обрабатываем через Sofia
         response = await process_with_sofia(user_id, user_name, message)
-    
+
     # Отправляем ответ
     await event.respond(response)
     print(f"📤 София: {response}")
@@ -162,6 +172,7 @@ async def handle_incoming(event):
 # ============================================
 # КОМАНДЫ
 # ============================================
+
 
 async def send_first_message(phone_or_username: str, message: str):
     """Отправляет первое сообщение (главная фишка userbot!)"""
@@ -176,22 +187,20 @@ async def send_first_message(phone_or_username: str, message: str):
 
 async def interactive_mode():
     """Интерактивный режим для тестирования"""
-    print("\n" + "="*50)
+    print("\n" + "=" * 50)
     print("🤖 Sofia Userbot запущен!")
-    print("="*50)
+    print("=" * 50)
     print("\nКоманды:")
     print("  /send @username Текст — отправить первое сообщение")
     print("  /send +79123456789 Текст — отправить по номеру")
     print("  /quit — выход")
     print("\nВходящие сообщения обрабатываются автоматически.")
-    print("="*50 + "\n")
-    
+    print("=" * 50 + "\n")
+
     while True:
         try:
-            cmd = await asyncio.get_event_loop().run_in_executor(
-                None, input, "Sofia> "
-            )
-            
+            cmd = await asyncio.get_event_loop().run_in_executor(None, input, "Sofia> ")
+
             if cmd.startswith("/send "):
                 parts = cmd[6:].split(" ", 1)
                 if len(parts) == 2:
@@ -199,14 +208,14 @@ async def interactive_mode():
                     await send_first_message(target, text)
                 else:
                     print("Формат: /send @username Текст")
-                    
+
             elif cmd == "/quit":
                 print("👋 Выход...")
                 break
-                
+
             elif cmd:
                 print("Неизвестная команда. Используй /send или /quit")
-                
+
         except EOFError:
             break
 
@@ -215,15 +224,16 @@ async def interactive_mode():
 # ЗАПУСК
 # ============================================
 
+
 async def main():
     print("🚀 Запуск Sofia Userbot...")
-    
+
     await client.start()
-    
+
     me = await client.get_me()
     print(f"✅ Авторизован как: {me.first_name} (@{me.username or 'без username'})")
     print(f"   Номер: +{me.phone}")
-    
+
     # Запускаем интерактивный режим
     await interactive_mode()
 

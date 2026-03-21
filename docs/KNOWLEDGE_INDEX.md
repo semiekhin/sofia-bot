@@ -11,6 +11,20 @@
 
 ---
 
+## 21.03.2026 — SOFIA_PATH fix + полный деплой dev→prod + core/bitrix.py
+
+- **Что сделано:**
+  1. SOFIA_PATH хардкод исправлен во всех 9 файлах dev (было задокументировано 5, реально 9). grep чистый.
+  2. Полный деплой dev → prod: core/ (pipeline.py, bitrix.py, __init__.py), bot_server.py, web_api.py, sofia_radist_gateway.py
+  3. core/bitrix.py создан и подключён к web_api.py (прод). Лид #261924 — подтверждение работы.
+- **Почему:** Прод работал на старом дублированном пайплайне (~25с ответ). Dev на core/pipeline.py уже 2 недели — стабильно.
+- **Результат:** Все 3 прод-сервиса на core/pipeline.py. Ответ ~7с. voice_api.py НЕ деплоился (осознанно — только dev).
+- **Файлы прод:** core/pipeline.py, core/bitrix.py, core/__init__.py, bot_server.py, web_api.py, sofia_radist_gateway.py
+- **Бэкап:** `/opt/sofia-gpt-backup-20260321_1355` (НЕ УДАЛЯТЬ)
+- **Как откатить:** Восстановить из бэкапа: `cp -r /opt/sofia-gpt-backup-20260321_1355/* /opt/sofia-gpt/ && systemctl restart sofia-gpt sofia-web-api sofia-radist`
+
+---
+
 ## 11.03.2026 — Аудит проекта + исследование собственного голосового сервиса
 
 - **Что сделано:** Полный аудит состояния прод/дев, исследование альтернатив Retell

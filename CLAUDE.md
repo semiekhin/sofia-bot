@@ -68,6 +68,7 @@ LLM-Generator (gpt-5.2, reasoning=high)
 | message_queue.py | Per-user asyncio.Lock, защита от race condition |
 | finance_calculator.py | Сравнение недвижимости vs депозит |
 | message_processor.py | Центральный роутер: extractor → state update |
+| core/bitrix.py | Битрикс CRM: создание/обновление лидов, webhook, manager_active |
 | voice_api.py | WebSocket адаптер для Retell AI Custom LLM |
 
 **Устаревшие (v1, не использовать):** planner.py, llm_planner.py, stage_detector.py, sofia_prompt.py
@@ -90,28 +91,27 @@ GREETING → ACTUALIZATION → QUALIFICATION → PRESENTATION → OBJECTION → 
 ## Dev сервисы
 
 - `sofia-web-api-dev.service` — порт 8081
-- ⚠️ БД: из-за SOFIA_PATH бага dev web_api пишет в прод БД (sofia_gpt.db в /opt/sofia-gpt/). Файл sofia_gpt_dev.db = 0 bytes.
+- БД: `sofia_gpt_dev.db` (SOFIA_PATH починен 21.03.2026, dev пишет в свою БД)
 - Бот: @SofiaDev01_bot
 - Observer: ОТКЛЮЧЁН (OBSERVER_CHAT_ID закомментирован в .env)
 
 ## Prod сервисы (не трогать)
 
-- `sofia-gpt.service` — Telegram бот (@humanAINeural_bot), long polling
-- `sofia-web-api.service` — порт 8080, веб-виджет
-- `sofia-radist.service` — порт 5001, Radist gateway
+- `sofia-gpt.service` — Telegram бот (@humanAINeural_bot), long polling → core/pipeline.py
+- `sofia-web-api.service` — порт 8080, веб-виджет → core/pipeline.py + core/bitrix.py
+- `sofia-radist.service` — порт 5001, Radist gateway → core/pipeline.py
 - БД: sofia_gpt.db
 - Боты: @humanAINeural_bot (прямой Telegram), @SofiaOazis (используется в Radist-каналах + статический редирект atlantis.html)
+- Бэкап до деплоя 21.03: `/opt/sofia-gpt-backup-20260321_1355` (НЕ УДАЛЯТЬ)
 
 ## Bitrix CRM
 
-**Прод web_api.py** — полная двусторонняя интеграция:
+**core/bitrix.py** — модуль Битрикс (создан 21.03.2026):
 - `create_or_update_bitrix_lead()`: создаёт лид при первом сообщении, обновляет COMMENTS на каждом, финализирует при `[END]`
-- `/api/bitrix/webhook`: принимает callback от Bitrix → ставит `manager_active=1` → София замолкает, менеджер ведёт
-- Колонки: `web_sessions.bitrix_lead_id`, `client_state.manager_active`
+- Webhook endpoint, manager_active — полная двусторонняя интеграция
 
-**Dev web_api.py** — упрощённая версия: `send_lead_to_bitrix()` только при `[END]`.
-
-**bot_server.py и radist_gateway.py — НЕ подключены (лиды теряются).**
+**Подключён к:** web_api.py (прод и dev)
+**НЕ подключён к:** bot_server.py, radist_gateway.py — лиды теряются (P1 задача)
 
 ## Правила работы
 

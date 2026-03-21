@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Рассылка отчёта тестировщикам"""
+
 import asyncio
 import sqlite3
 import os
 from telegram import Bot
 from dotenv import load_dotenv
 
-load_dotenv('/opt/sofia-gpt/.env')
+SOFIA_PATH = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(SOFIA_PATH, ".env"))
 
 REPORT = """📊 ОТЧЁТ ПО ТЕСТИРОВАНИЮ
 Sofia GPT (@humanAINeural_bot)
@@ -61,12 +63,13 @@ Sofia GPT (@humanAINeural_bot)
 
 Продолжайте тестировать, чем больше вы общаетесь о недвижимости с Софьей и ставите оценки, тем умнее она становится."""
 
+
 async def main():
-    bot = Bot(token=os.getenv('TELEGRAM_BOT_TOKEN'))
-    conn = sqlite3.connect('/opt/sofia-gpt/sofia_gpt.db')
+    bot = Bot(token=os.getenv("TELEGRAM_BOT_TOKEN"))
+    conn = sqlite3.connect(os.path.join(SOFIA_PATH, "sofia_gpt.db"))
     users = conn.execute("SELECT user_id FROM users").fetchall()
     conn.close()
-    
+
     for (user_id,) in users:
         try:
             await bot.send_message(chat_id=user_id, text=REPORT)
@@ -74,5 +77,6 @@ async def main():
         except Exception as e:
             print(f"❌ {user_id}: {e}")
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     asyncio.run(main())

@@ -1,0 +1,320 @@
+"""
+core/bitrix.py — Битрикс CRM интеграция для Sofia-GPT.
+Единый модуль для всех транспортов.
+
+Функции:
+- create_or_update_lead() — создать или обновить лид
+- build_lead_comments() — собрать COMMENTS для лида
+- extract_phone_from_history() — найти телефон в истории
+- extract_telegram_from_history() — найти @username
+- is_manager_active() / set_manager_active() — перехват менеджером
+- get_lead_id_by_session() / save_lead_id_for_session() — привязка лида к сессии
+"""
+
+import logging
+import os
+import re
+import sqlite3
+
+import aiohttp
+
+log = logging.getLogger("sofia.bitrix")
+
+# === Константы ===
+BITRIX_BASE_URL = os.getenv(
+    "BITRIX_BASE_URL",
+    "https://oazisestate.bitrix24.ru/rest/426/z61dwivdmdy9dk4f/",
+)
+if not BITRIX_BASE_URL.endswith("/"):
+    BITRIX_BASE_URL += "/"
+
+BITRIX_CREATE_URL = BITRIX_BASE_URL + "crm.lead.add"
+BITRIX_UPDATE_URL = BITRIX_BASE_URL + "crm.lead.update"
+BITRIX_SOURCE_ID = os.getenv("BITRIX_SOURCE_ID", "504")
+BITRIX_ASSIGNED_ID = int(os.getenv("BITRIX_ASSIGNED_ID", "426"))
+
+
+# ============================================================
+# Извлечение контактных данных из истории
+# ============================================================
+
+_PHONE_RE = re.compile(
+    r"(?:\+?7|8)[\s\-\(]*(\d{3})[\s\-\)]*(\d{3})[\s\-]*(\d{2})[\s\-]*(\d{2})"
+)
+_DIGITS_RE = re.compile(r"(?<!\d)(\d{10,11})(?!\d)")
+_TG_RE = re.compile(r"@([A-Za-z0-9_]{5,32})")
+
+
+def extract_phone_from_history(history: list) -> str | None:
+    """Ищет номер телефона в сообщениях клиента (с конца)."""
+    for msg in reversed(history):
+        if msg["role"] == "user":
+            match = _PHONE_RE.search(msg["content"])
+            if match:
+                return (
+                    "7"
+                    + match.group(1)
+                    + match.group(2)
+                    + match.group(3)
+                    + match.group(4)
+                )
+    # Fallback: 10-11 цифр подряд
+    for msg in reversed(history):
+        if msg["role"] == "user":
+            clean = msg["content"].replace(" ", "").replace("-", "")
+            match = _DIGITS_RE.search(clean)
+            if match:
+                d = match.group(1)
+                if len(d) == 10:
+                    return "7" + d
+                if len(d) == 11 and d[0] in ("7", "8"):
+                    return "7" + d[1:]
+    return None
+
+
+def extract_telegram_from_history(history: list) -> str | None:
+    """Ищет @username в сообщениях клиента."""
+    for msg in reversed(history):
+        if msg["role"] == "user":
+            match = _TG_RE.search(msg["content"])
+            if match:
+                return "@" + match.group(1)
+    return None
+
+
+# ============================================================
+# Форматирование данных для Битрикс
+# ============================================================
+
+_GOAL_MAP = {
+    "investment": "Инвестиции",
+    "personal": "Для себя",
+    "combined": "Комбинированно",
+}
+_PAYMENT_MAP = {
+    "full": "Полная оплата",
+    "mortgage": "Ипотека",
+    "installment": "Рассрочка",
+}
+
+
+def _format_dialog(history: list) -> str:
+    """Форматирует полный диалог для COMMENTS."""
+    return "\n".join(
+        f"{'София' if m['role'] == 'assistant' else 'Клиент'}: {m['content']}"
+        for m in history
+    )
+
+
+def build_lead_comments(
+    state, history: list, is_final: bool = False, channel: str = "web"
+) -> tuple:
+    """
+    Собирает COMMENTS для Битрикс лида.
+    Возвращает (comments_text, phone, telegram).
+    """
+    phone = extract_phone_from_history(history)
+    telegram = extract_telegram_from_history(history)
+
+    goal = _GOAL_MAP.get(getattr(state, "goal", None) or "", "Не указана")
+    budget = getattr(state, "budget", None)
+    budget_str = f"{budget / 1_000_000:.1f} млн ₽" if budget else "Не указан"
+    payment = _PAYMENT_MAP.get(getattr(state, "payment_type", None) or "", "Не указан")
+    finish_type = getattr(state, "finish_type", None)
+
+    phone_str = phone or "Не указан"
+    tg_str = telegram or "Не указан"
+    status = "ЗАВЕРШЁН" if is_final else "В ПРОЦЕССЕ"
+
+    channel_map = {
+        "web": "виджет на сайте",
+        "telegram": "Telegram бот",
+        "radist": "Radist мессенджер",
+    }
+    channel_label = channel_map.get(channel, channel)
+
+    chat_text = _format_dialog(history)
+
+    comments = f"""Лид от AI-бота София ({channel_label})
+Статус диалога: {status}
+Телефон: {phone_str}
+Telegram: {tg_str}
+Цель: {goal}
+Бюджет: {budget_str}
+Оплата: {payment}"""
+
+    if is_final and finish_type:
+        comments += f"\nТип завершения: {'созвон' if 'meeting' in str(finish_type) else 'подборка/диалог'}"
+
+    comments += f"\n\n--- Полный диалог ({len(history)} сообщений) ---\n{chat_text}"
+
+    return comments, phone, telegram
+
+
+# ============================================================
+# API: создание и обновление лидов
+# ============================================================
+
+
+async def create_lead(
+    name: str,
+    comments: str,
+    phone: str = None,
+    source_id: str = None,
+    assigned_id: int = None,
+) -> int | None:
+    """Создать новый лид. Возвращает lead_id или None."""
+    fields = {
+        "TITLE": f"AI-бот: {name}",
+        "NAME": name,
+        "COMMENTS": comments,
+        "SOURCE_ID": source_id or BITRIX_SOURCE_ID,
+        "ASSIGNED_BY_ID": assigned_id or BITRIX_ASSIGNED_ID,
+    }
+    if phone:
+        fields["PHONE"] = [{"VALUE": phone, "VALUE_TYPE": "MOBILE"}]
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(BITRIX_CREATE_URL, json={"fields": fields}) as resp:
+                result = await resp.json()
+                lead_id = result.get("result")
+                if lead_id:
+                    log.info(f"✅ [BITRIX] Лид создан #{lead_id}")
+                    return int(lead_id)
+                else:
+                    log.warning(f"⚠️ [BITRIX] Ответ без ID: {result}")
+                    return None
+    except Exception as e:
+        log.error(f"❌ [BITRIX] Create error: {e}")
+        return None
+
+
+async def update_lead(
+    lead_id: int,
+    comments: str,
+    phone: str = None,
+    name: str = None,
+    is_final: bool = False,
+) -> bool:
+    """Обновить существующий лид. Возвращает True при успехе."""
+    fields = {"COMMENTS": comments}
+    if is_final:
+        if phone:
+            fields["PHONE"] = [{"VALUE": phone, "VALUE_TYPE": "MOBILE"}]
+        if name:
+            fields["NAME"] = name
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                BITRIX_UPDATE_URL, json={"id": lead_id, "fields": fields}
+            ) as resp:
+                result = await resp.json()
+                if result.get("result"):
+                    log.info(f"✅ [BITRIX] Лид #{lead_id} обновлён, final={is_final}")
+                    return True
+                else:
+                    log.warning(f"⚠️ [BITRIX] Update ошибка: {result}")
+                    return False
+    except Exception as e:
+        log.error(f"❌ [BITRIX] Update error: {e}")
+        return False
+
+
+async def create_or_update_lead(
+    lead_id: int | None,
+    user_name: str,
+    state,
+    history: list,
+    is_final: bool = False,
+    channel: str = "web",
+) -> int | None:
+    """
+    Если lead_id есть → update, иначе → create.
+    Возвращает lead_id (существующий или новый).
+    """
+    comments, phone, telegram = build_lead_comments(state, history, is_final, channel)
+    name = user_name or "Клиент"
+    if name.startswith("web_"):
+        name = "Клиент с сайта"
+
+    if lead_id:
+        await update_lead(lead_id, comments, phone=phone, name=name, is_final=is_final)
+        return lead_id
+    else:
+        return await create_lead(name, comments, phone=phone)
+
+
+# ============================================================
+# DB helpers: привязка lead_id к web-сессии
+# ============================================================
+
+
+def get_lead_id_by_session(db_path: str, session_id: str) -> int | None:
+    """Получить bitrix_lead_id по session_id (web_sessions)."""
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute(
+        "SELECT bitrix_lead_id FROM web_sessions WHERE session_id = ?", (session_id,)
+    )
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row and row[0] else None
+
+
+def save_lead_id_for_session(db_path: str, session_id: str, lead_id: int):
+    """Сохранить bitrix_lead_id в web_sessions."""
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "UPDATE web_sessions SET bitrix_lead_id = ? WHERE session_id = ?",
+        (lead_id, session_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_session_id_by_user_id(db_path: str, user_id: int) -> str | None:
+    """Найти session_id по user_id (web_sessions)."""
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute("SELECT session_id FROM web_sessions WHERE user_id = ?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+def find_user_id_by_lead(db_path: str, lead_id: int) -> int | None:
+    """Найти user_id по bitrix_lead_id (web_sessions)."""
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute("SELECT user_id FROM web_sessions WHERE bitrix_lead_id = ?", (lead_id,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
+
+# ============================================================
+# Manager active: перехват диалога менеджером
+# ============================================================
+
+
+def is_manager_active(db_path: str, user_id: int) -> bool:
+    """Проверить флаг manager_active для клиента."""
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute("SELECT manager_active FROM client_state WHERE user_id = ?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    return bool(row and row[0])
+
+
+def set_manager_active(db_path: str, user_id: int, active: bool = True):
+    """Установить флаг manager_active."""
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        "UPDATE client_state SET manager_active = ? WHERE user_id = ?",
+        (1 if active else 0, user_id),
+    )
+    conn.commit()
+    conn.close()

@@ -1,42 +1,58 @@
 # Текущий статус Sofia-GPT
 
-📅 **Последняя сессия:** 18.03.2026
+📅 **Последняя сессия:** 21.03.2026
 
 ## Архитектурная карта: ПРОД vs DEV
 
 ### ПРОД (`/opt/sofia-gpt/`, порт 8080)
-- `bot_server.py` — Telegram бот (@humanAINeural_bot)
-- `web_api.py` — веб виджет (порт 8080)
-- `sofia_radist_gateway.py` — Radist gateway (порт 5001)
-- **Голосового канала НЕТ** — `voice_api.py` и `core/` не существуют в проде
-- Пайплайн дублирован внутри каждого транспорта (старый код)
+- `bot_server.py` — Telegram бот (@humanAINeural_bot) → `core/pipeline.py`
+- `web_api.py` — веб виджет (порт 8080) → `core/pipeline.py` + `core/bitrix.py`
+- `sofia_radist_gateway.py` — Radist gateway (порт 5001) → `core/pipeline.py`
+- **`core/pipeline.py`** — единый пайплайн, задеплоен 21.03.2026
+- **`core/bitrix.py`** — модуль Битрикс, подключён к web_api.py
+- **Голосового канала НЕТ в проде** — `voice_api.py` только в dev (осознанное решение)
 - Много мусора: 40+ `.backup_*` файлов, legacy файлы (planner.py, llm_planner.py, stage_detector.py, sofia_prompt.py)
 - Файл-мусор: `ystemctl enable sofia-userbot` (опечатка при copy-paste)
+- Бэкап до деплоя: `/opt/sofia-gpt-backup-20260321_1355` (НЕ УДАЛЯТЬ)
 
 ### DEV (`/opt/sofia-gpt-dev/`, порт 8081)
 - Все 4 канала: `bot_server.py`, `web_api.py`, `sofia_radist_gateway.py`, `voice_api.py`
 - **`core/pipeline.py`** — единый пайплайн, все 4 канала подключены через `run_pipeline()` / `stream_voice_response()`
+- **`core/bitrix.py`** — модуль Битрикс
 - Nginx `/llm-websocket/` → порт 8081 (Retell агент смотрит на dev)
 - `stream_voice_response()` — закоммичен, async generator с asyncio.Queue bridge
-- БД: `sofia_gpt_dev.db` (для bot_server, radist) + **ПРОД БД** для web_api/voice (баг!)
+- БД: `sofia_gpt_dev.db` — SOFIA_PATH починен, dev пишет в свою БД
 
-### Критический баг: SOFIA_PATH хардкод → ПРОД (5 файлов, было 9)
+### SOFIA_PATH — ПОЧИНЕН в DEV (21.03.2026)
 
-Хардкод `/opt/sofia-gpt` в dev. Проверено 18.03.2026: 4 файла уже исправлены (send_report.py, finance_calculator.py, add_actualization_examples.py, patch_bot_server.py). Осталось 5:
+Все 9 файлов с хардкодом `/opt/sofia-gpt` исправлены **в dev**. grep по dev чистый. Логи подтверждают: `Sofia path: /opt/sofia-gpt-dev`, `DB: sofia_gpt_dev.db`.
 
-| Файл | Мест | Риск |
-|------|------|------|
-| `web_api.py` (строки 26, 476) | 2 | **КРИТИЧЕСКИЙ** — активный сервис, пишет в прод БД, загружает прод .env |
-| `sofia_userbot.py` (строка 20) | 1 | Средний |
-| `sofia_userbot_pyrogram.py` (строка 21) | 1 | Средний |
-| `test_smart_start.py` (строка 6) | 1 | Средний |
-| `test_userbot.py` (строки 6, 15) | 2 | Средний |
+Исправленные файлы: web_api.py, sofia_userbot.py, sofia_userbot_pyrogram.py, test_smart_start.py, test_userbot.py, send_report.py, finance_calculator.py, add_actualization_examples.py, patch_bot_server.py.
 
-Только **`voice_api.py`** делает правильно: `SOFIA_PATH = os.path.dirname(os.path.abspath(__file__))`
-
-**Подтверждено логами:** `sofia-web-api-dev` сервис пишет `Sofia path: /opt/sofia-gpt`, `DB: /opt/sofia-gpt/sofia_gpt.db`.
+**Прод — утилитные файлы:** sofia_userbot.py, sofia_userbot_pyrogram.py, test_smart_start.py, test_userbot.py, send_report.py, finance_calculator.py, add_actualization_examples.py, patch_bot_server.py — всё ещё содержат хардкод `/opt/sofia-gpt`. Это **корректно** для прода (путь совпадает). В прод деплоились только сервисные файлы (bot_server.py, web_api.py, sofia_radist_gateway.py, core/), утилиты не копировались.
 
 ## ✅ Что сделано
+
+### Сессия 21.03.2026 — SOFIA_PATH fix + полный деплой dev→prod
+
+**SOFIA_PATH — полное исправление:**
+- Все 9 файлов с хардкодом `/opt/sofia-gpt` исправлены (было задокументировано 5, реально нашлось 9)
+- grep чистый, логи подтверждают правильный путь
+
+**Полный деплой dev → prod:**
+- `core/` скопирован в прод (pipeline.py, bitrix.py, __init__.py)
+- bot_server.py, web_api.py, sofia_radist_gateway.py — обновлены из dev
+- Все 3 прод-сервиса перезапущены и работают на `core/pipeline.py`
+- Скорость ответа: ~7с (было ~25с на старом коде)
+- Бэкап: `/opt/sofia-gpt-backup-20260321_1355`
+
+**core/bitrix.py создан и подключён:**
+- Модуль создан в dev и задеплоен в прод
+- Подключён к web_api.py (прод)
+- Лид #261924 создан и обновлён через новый модуль
+- Webhook, manager_active — всё работает
+
+**voice_api.py НЕ деплоился** — остался только в dev (осознанное решение).
 
 ### Сессия 18.03.2026 — Битрикс интеграция + аудит Атлантиса
 
@@ -107,17 +123,17 @@
 - Переключены все 3 канала: bot_server.py, web_api.py, sofia_radist_gateway.py
 - Dev-окружение Radist: порт 5002, DEV_MODE, webhooks
 
-## 🔄 Текущее состояние сервисов (проверено 15.03.2026)
+## 🔄 Текущее состояние сервисов (проверено 21.03.2026)
 
-| Сервис | Порт | Статус | Uptime | Пайплайн |
-|--------|------|--------|--------|----------|
-| sofia-gpt.service (Telegram bot prod) | — | running | ~2 дня | старый |
-| sofia-web-api.service (prod) | 8080 | running | ~2 дня | старый |
-| sofia-radist.service (prod) | 5001 | running | ~2 дня | старый |
-| sofia-web-api-dev.service (dev) | 8081 | running | ~2 дня | core/pipeline.py |
-| sofia-radist-dev.service (dev) | 5002 | running | ~6 дней | core/pipeline.py |
+| Сервис | Порт | Статус | Пайплайн |
+|--------|------|--------|----------|
+| sofia-gpt.service (Telegram bot prod) | — | running | core/pipeline.py |
+| sofia-web-api.service (prod) | 8080 | running | core/pipeline.py + core/bitrix.py |
+| sofia-radist.service (prod) | 5001 | running | core/pipeline.py |
+| sofia-web-api-dev.service (dev) | 8081 | running | core/pipeline.py |
+| sofia-radist-dev.service (dev) | 5002 | running | core/pipeline.py |
 
-**Ключевое:** прод на старом коде (пайплайн дублирован в каждом транспорте), dev на `core/pipeline.py`. Деплой `core/` в прод ещё не выполнялся.
+**Все 5 сервисов на `core/pipeline.py`.** Скорость ответа прод: ~7с (было ~25с).
 
 ## .env: dev vs prod (проверено 15.03.2026)
 
@@ -136,12 +152,11 @@
 Секретов в коде нет — все через `os.getenv()`.
 
 ## 🔜 Следующие шаги
-0. **P0:** Endpoint /go/atlantis-redirect с логикой времени МСК — ждём URL от Битрикс-программиста
-1. **P0:** Починить SOFIA_PATH в оставшихся 5 файлах dev (критический — dev пишет в прод БД)
-2. **P0:** Тест gpt-4.1-mini для voice (потенциал ~200мс vs ~800мс первый токен)
-3. **P0:** Post-stream проверка [END] в stream_voice_response()
-4. **P1:** Прототип собственного голосового сервиса на Pipecat
-5. **P1:** Bitrix в bot_server.py и radist_gateway.py при [END]
-6. **P2:** Деплой core/pipeline.py в прод (все 3 канала)
-7. **P2:** core/channel.py, core/bitrix.py, core/observer.py
+1. **P1:** Подключить core/bitrix.py к bot_server.py (чтобы ?start=ATL лиды попадали в CRM)
+2. **P1:** Подключить core/bitrix.py к radist_gateway.py
+3. **P1:** Endpoint /go/atlantis-redirect с логикой времени МСК — ждём URL от Битрикс-программиста
+4. **P1:** Тест gpt-4.1-mini для voice (потенциал ~200мс vs ~800мс первый токен)
+5. **P1:** Post-stream проверка [END] в stream_voice_response()
+6. **P1:** Прототип собственного голосового сервиса на Pipecat
+7. **P2:** core/channel.py, core/observer.py
 8. **P2:** Очистка мусора в проде (40+ backup файлов, legacy)

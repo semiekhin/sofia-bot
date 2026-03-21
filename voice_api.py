@@ -25,7 +25,9 @@ from web_api import save_message, get_history
 log = logging.getLogger("sofia.voice")
 
 SOFIA_PATH = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(SOFIA_PATH, "sofia_gpt.db")
+DB_PATH = os.environ.get("DB_PATH", os.path.join(SOFIA_PATH, "sofia_gpt.db"))
+if not os.path.isabs(DB_PATH):
+    DB_PATH = os.path.join(SOFIA_PATH, DB_PATH)
 state_manager = StateManager(DB_PATH)
 
 VOICE_USER_ID_OFFSET = 7_000_000

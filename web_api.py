@@ -9,6 +9,7 @@ Sofia-GPT Web API v2.0
 Запуск: uvicorn web_api:app --host 0.0.0.0 --port 8080
 """
 
+import json
 import os
 import sys
 import uuid
@@ -17,13 +18,13 @@ import logging
 from datetime import datetime
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException, WebSocket
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from contextlib import asynccontextmanager
 
 # === Путь к Sofia-GPT ===
-SOFIA_PATH = "/opt/sofia-gpt"
+SOFIA_PATH = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, SOFIA_PATH)
 
 # === Загрузка .env ===
@@ -35,142 +36,28 @@ load_dotenv(os.path.join(SOFIA_PATH, ".env"))
 from state_manager import StateManager
 from message_processor import process_message
 from core.pipeline import run_pipeline
+from core.bitrix import (
+    create_or_update_lead,
+    get_lead_id_by_session,
+    save_lead_id_for_session,
+    get_session_id_by_user_id,
+    find_user_id_by_lead,
+    is_manager_active,
+    set_manager_active,
+)
 import aiohttp
 from openai import OpenAI
 
 # === Константы ===
-DB_PATH = os.path.join(SOFIA_PATH, "sofia_gpt.db")
+DB_PATH = os.environ.get("DB_PATH", os.path.join(SOFIA_PATH, "sofia_gpt.db"))
+if not os.path.isabs(DB_PATH):
+    DB_PATH = os.path.join(SOFIA_PATH, DB_PATH)
 
 # Observer (трансляция в Telegram-группу)
 OBSERVER_CHAT_ID = os.getenv("OBSERVER_CHAT_ID")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
-# Битрикс CRM
-BITRIX_WEBHOOK_URL = (
-    "https://oazisestate.bitrix24.ru/rest/426/z61dwivdmdy9dk4f/crm.lead.add"
-)
-BITRIX_SOURCE_ID = "504"
-BITRIX_ASSIGNED_ID = 426  # тест: 426, прод: 24932
-
-
-def extract_phone_from_history(history):
-    """Ищет номер телефона в сообщениях клиента"""
-    import re
-
-    phone_pattern = re.compile(
-        r"(?:\+?7|8)[\s\-\(]*(\d{3})[\s\-\)]*(\d{3})[\s\-]*(\d{2})[\s\-]*(\d{2})"
-    )
-    for msg in reversed(history):
-        if msg["role"] == "user":
-            match = phone_pattern.search(msg["content"])
-            if match:
-                digits = (
-                    "7"
-                    + match.group(1)
-                    + match.group(2)
-                    + match.group(3)
-                    + match.group(4)
-                )
-                return digits
-    # Fallback: ищем просто 10-11 цифр подряд
-    digit_pattern = re.compile(r"(?<!\d)(\d{10,11})(?!\d)")
-    for msg in reversed(history):
-        if msg["role"] == "user":
-            match = digit_pattern.search(
-                msg["content"].replace(" ", "").replace("-", "")
-            )
-            if match:
-                d = match.group(1)
-                if len(d) == 10:
-                    return "7" + d
-                if len(d) == 11 and d[0] in ("7", "8"):
-                    return "7" + d[1:]
-    return None
-
-
-def extract_telegram_from_history(history):
-    """Ищет @username в сообщениях клиента"""
-    import re
-
-    for msg in reversed(history):
-        if msg["role"] == "user":
-            match = re.search(r"@([A-Za-z0-9_]{5,32})", msg["content"])
-            if match:
-                return "@" + match.group(1)
-    return None
-
-
-async def send_lead_to_bitrix(user_id, user_name, state, history):
-    """Отправляет квалифицированный лид в Битрикс24"""
-    phone = extract_phone_from_history(history)
-    telegram = extract_telegram_from_history(history)
-
-    # Собираем данные из state
-    goal_map = {
-        "investment": "Инвестиции",
-        "personal": "Для себя",
-        "combined": "Комбинированно",
-    }
-    payment_map = {
-        "full": "Полная оплата",
-        "mortgage": "Ипотека",
-        "installment": "Рассрочка",
-    }
-
-    goal = goal_map.get(getattr(state, "goal", None) or "", "Не указана")
-    budget = getattr(state, "budget", None)
-    budget_str = f"{budget / 1_000_000:.1f} млн ₽" if budget else "Не указан"
-    payment = payment_map.get(getattr(state, "payment_type", None) or "", "Не указан")
-    finish_type = getattr(state, "finish_type", "llm_end")
-
-    # Последние сообщения для комментария
-    last_msgs = history[-10:] if len(history) > 10 else history
-    chat_text = "\n".join(
-        [
-            f"{'София' if m['role']=='assistant' else 'Клиент'}: {m['content']}"
-            for m in last_msgs
-        ]
-    )
-
-    tg_str = telegram or "Не указан"
-    phone_str = phone or "Не указан"
-    comments = f"""Лид от AI-бота София (виджет на сайте)
-Телефон: {phone_str}
-Telegram: {tg_str}
-Цель: {goal}
-Бюджет: {budget_str}
-Оплата: {payment}
-Тип завершения: {"созвон" if "meeting" in str(finish_type) else "подборка/диалог"}
-
---- Последние сообщения ---
-{chat_text}"""
-
-    fields = {
-        "TITLE": f"AI-бот: {user_name or 'Клиент с сайта'}",
-        "NAME": user_name or "Клиент",
-        "COMMENTS": comments,
-        "SOURCE_ID": BITRIX_SOURCE_ID,
-        "ASSIGNED_BY_ID": BITRIX_ASSIGNED_ID,
-    }
-
-    if phone:
-        fields["PHONE"] = [{"VALUE": phone, "VALUE_TYPE": "MOBILE"}]
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                BITRIX_WEBHOOK_URL, json={"fields": fields}
-            ) as resp:
-                result = await resp.json()
-                lead_id = result.get("result")
-                if lead_id:
-                    log.info(
-                        f"✅ [BITRIX] Лид создан #{lead_id}, phone={phone or 'нет'}, tg={telegram or 'нет'}"
-                    )
-                else:
-                    log.warning(f"⚠️ [BITRIX] Ответ без ID: {result}")
-    except Exception as e:
-        log.error(f"❌ [BITRIX] Ошибка: {e}")
+# Битрикс CRM — логика в core/bitrix.py
 
 
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
@@ -348,7 +235,7 @@ async def notify_web_observer(
 
 
 async def generate_response(user_id, user_message, user_name, channel="web"):
-    """Генерирует ответ через core/pipeline.py. Bitrix при [END] остаётся здесь."""
+    """Генерирует ответ через core/pipeline.py."""
     history = get_history(user_id, limit=100)
 
     result = await run_pipeline(
@@ -360,14 +247,24 @@ async def generate_response(user_id, user_message, user_name, channel="web"):
         channel=channel,
     )
 
-    # Bitrix при [END] — специфично для web
+    # Финализация при [END]
     if result.dialog_finished:
-        try:
-            state_fresh = state_manager.get_state(user_id)
-            history_fresh = get_history(user_id, limit=100)
-            await send_lead_to_bitrix(user_id, user_name, state_fresh, history_fresh)
-        except Exception as e:
-            log.error(f"❌ [BITRIX] send error: {e}")
+        session_id = get_session_id_by_user_id(DB_PATH, user_id)
+        if session_id:
+            try:
+                state_fresh = state_manager.get_state(user_id)
+                history_fresh = get_history(user_id, limit=100)
+                lead_id = get_lead_id_by_session(DB_PATH, session_id)
+                await create_or_update_lead(
+                    lead_id,
+                    user_name,
+                    state_fresh,
+                    history_fresh,
+                    is_final=True,
+                    channel="web",
+                )
+            except Exception as e:
+                log.error(f"❌ [BITRIX] final update error: {e}")
 
     return (
         result.answer
@@ -380,7 +277,19 @@ async def generate_response(user_id, user_message, user_name, channel="web"):
 # ============================================================
 
 
-async def handle_web_message(user_id, user_name, message):
+async def handle_web_message(user_id, user_name, message, session_id=None):
+    # Проверяем перехват менеджером
+    if is_manager_active(DB_PATH, user_id):
+        log.info(f"🛑 [WEB] manager_active=1 для user_id={user_id}, Sofia молчит")
+        save_message(
+            chat_id=user_id,
+            user_id=user_id,
+            user_name=user_name,
+            role="user",
+            content=message,
+        )
+        return None
+
     save_message(
         chat_id=user_id,
         user_id=user_id,
@@ -413,6 +322,24 @@ async def handle_web_message(user_id, user_name, message):
         content=reply,
     )
 
+    # Создаём/обновляем лид в Битриксе при каждом сообщении
+    if session_id:
+        try:
+            state = state_manager.get_state(user_id)
+            fresh_history = get_history(user_id, limit=100)
+            lead_id = get_lead_id_by_session(DB_PATH, session_id)
+            new_lead_id = await create_or_update_lead(
+                lead_id,
+                user_name,
+                state,
+                fresh_history,
+                channel="web",
+            )
+            if new_lead_id and not lead_id:
+                save_lead_id_for_session(DB_PATH, session_id, new_lead_id)
+        except Exception as e:
+            log.error(f"❌ [BITRIX] handle_web_message error: {e}")
+
     return reply
 
 
@@ -421,11 +348,28 @@ async def handle_web_message(user_id, user_name, message):
 # ============================================================
 
 
+def _migrate_db():
+    """Миграция БД: добавляет новые колонки если их нет."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    for sql in [
+        "ALTER TABLE web_sessions ADD COLUMN bitrix_lead_id INTEGER DEFAULT NULL",
+        "ALTER TABLE client_state ADD COLUMN manager_active INTEGER DEFAULT 0",
+    ]:
+        try:
+            c.execute(sql)
+        except sqlite3.OperationalError:
+            pass  # уже существует
+    conn.commit()
+    conn.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    log.info("🌐 Sofia Web API v2.0 starting...")
+    log.info("🌐 Sofia Web API v2.1 starting...")
     log.info(f"   Sofia path: {SOFIA_PATH}")
     log.info(f"   DB: {DB_PATH}")
+    _migrate_db()
     yield
     log.info("Sofia Web API shutting down...")
 
@@ -473,7 +417,7 @@ class ChatResponse(BaseModel):
 async def docs_file(path: str = ""):
     from pathlib import Path
 
-    BASE_DIR = Path("/opt/sofia-gpt")
+    BASE_DIR = Path(SOFIA_PATH)
     if not path:
         # Без параметра — список файлов
         files = sorted(
@@ -613,8 +557,18 @@ async def chat(req: ChatRequest):
 
     user_id = get_web_user_id(req.session_id)
     reply = await handle_web_message(
-        user_id=user_id, user_name=f"web_{req.session_id[:8]}", message=req.message
+        user_id=user_id,
+        user_name=f"web_{req.session_id[:8]}",
+        message=req.message,
+        session_id=req.session_id,
     )
+    if reply is None:
+        # manager_active — София молчит
+        return ChatResponse(
+            session_id=req.session_id,
+            reply="Менеджер подключился к диалогу. Ожидайте ответа.",
+            timestamp=datetime.now().isoformat(),
+        )
     return ChatResponse(
         session_id=req.session_id, reply=reply, timestamp=datetime.now().isoformat()
     )
@@ -634,6 +588,62 @@ async def get_session_history(session_id: str, limit: int = 50):
             for m in messages
         ],
     }
+
+
+# ============================================================
+# BITRIX WEBHOOK
+# ============================================================
+
+
+@app.post("/api/bitrix/webhook")
+async def bitrix_webhook(request: Request):
+    """Принимает исходящий вебхук от Битрикса.
+    При смене статуса лида ставит manager_active=1.
+    """
+    try:
+        content_type = request.headers.get("content-type", "")
+        if "json" in content_type:
+            data = await request.json()
+        else:
+            form = await request.form()
+            data = dict(form)
+
+        log.info(
+            f"📩 [BITRIX WEBHOOK] Получен: {json.dumps(data, ensure_ascii=False, default=str)[:500]}"
+        )
+
+        # Битрикс шлёт event=ONCRMLEADUPDATE + data[FIELDS][ID]=lead_id
+        lead_id = None
+        if "data[FIELDS][ID]" in data:
+            lead_id = data["data[FIELDS][ID]"]
+        elif isinstance(data.get("data"), dict):
+            fields = data["data"].get("FIELDS", {})
+            lead_id = fields.get("ID")
+
+        if not lead_id:
+            log.warning("⚠️ [BITRIX WEBHOOK] lead_id не найден в данных")
+            return {"status": "ok", "action": "ignored", "reason": "no lead_id"}
+
+        lead_id = int(lead_id)
+        user_id = find_user_id_by_lead(DB_PATH, lead_id)
+        if not user_id:
+            log.warning(f"⚠️ [BITRIX WEBHOOK] lead #{lead_id} не найден в web_sessions")
+            return {"status": "ok", "action": "ignored", "reason": "lead not found"}
+
+        set_manager_active(DB_PATH, user_id, active=True)
+        log.info(
+            f"✅ [BITRIX WEBHOOK] manager_active=1 для user_id={user_id}, lead #{lead_id}"
+        )
+        return {
+            "status": "ok",
+            "action": "manager_activated",
+            "user_id": user_id,
+            "lead_id": lead_id,
+        }
+
+    except Exception as e:
+        log.error(f"❌ [BITRIX WEBHOOK] Error: {e}")
+        return {"status": "error", "message": str(e)}
 
 
 # ============================================================

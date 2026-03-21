@@ -1,6 +1,6 @@
 # Задачи Sofia-GPT
 
-📅 Обновлено: 15.03.2026
+📅 Обновлено: 21.03.2026
 
 ## 🎙️ Шаг 1 — Голосовой агент (в процессе)
 
@@ -13,7 +13,7 @@
 - [x] Оптимизация латенси: voice_mode в pipeline (~2с вместо 6-10с)
 - [x] Стриминг: stream_voice_response + буферизация чанков (закоммичен)
 - [ ] Русский голос (MiniMax или Cartesia в Retell)
-- [ ] Тест gpt-4.1-mini для voice — P0 (первый токен ~200мс vs ~800мс)
+- [ ] Тест gpt-4.1-mini для voice — P1 (первый токен ~200мс vs ~800мс)
 
 ### Собственный голосовой сервис (исследование)
 - [x] Анализ альтернатив: Dasha.ai, Яндекс Realtime, Voicyfy — не подходят
@@ -22,10 +22,9 @@
 - [ ] Интеграция с Задарма (SIP)
 
 ### Voice общее
-- [ ] Вернуть Extractor для voice (async в фоне — P0)
-- [ ] Post-stream проверка [END] и обновление state — P0
+- [ ] Вернуть Extractor для voice (async в фоне)
+- [ ] Post-stream проверка [END] и обновление state — P1
 - [ ] Голос в БД и Observer
-- [ ] Починить SOFIA_PATH в 5 файлах dev (web_api.py, sofia_userbot.py, sofia_userbot_pyrogram.py, test_smart_start.py, test_userbot.py) — P0
 
 ## 🏗️ Шаг 2 — Безопасная среда ✅ ЗАВЕРШЁН
 
@@ -39,19 +38,19 @@
 - [x] KNOWLEDGE_INDEX.md
 - [x] Хуки flake8 + black
 
-## ⚙️ Шаг 3 — Единое ядро (в процессе)
+## ⚙️ Шаг 3 — Единое ядро ✅ ЗАДЕПЛОЕНО В ПРОД (21.03.2026)
 
 - [x] core/pipeline.py — Analyzer → RAG → Generator
 - [x] stream_voice_response() — стриминг для voice (закоммичен)
 - [ ] core/channel.py
-- [ ] core/bitrix.py
+- [x] core/bitrix.py — создан и подключён к web_api.py (прод)
 - [ ] core/observer.py
 - [x] Переключить bot_server.py → run_pipeline()
 - [x] Переключить web_api.py → run_pipeline()
 - [x] Переключить radist_gateway.py → run_pipeline()
 - [x] Удалить мёртвый импорт (radist)
 - [ ] Atlantis context → config/source_objects.py (убрать hardcode из web_api.py)
-- [ ] Деплой core/ в прод — P2
+- [x] **Деплой core/ в прод — ВЫПОЛНЕН 21.03.2026** (pipeline.py, bitrix.py, __init__.py)
 
 ## 🔧 Dev-окружение Radist
 
@@ -62,9 +61,9 @@
 
 ## 🔥 Технический долг
 
-- [ ] **SOFIA_PATH баг (5 файлов, было 9)** — хардкод `/opt/sofia-gpt` в dev: web_api.py (строки 26, 476), sofia_userbot.py, sofia_userbot_pyrogram.py, test_smart_start.py, test_userbot.py — **P0**. Уже исправлены: send_report.py, finance_calculator.py, add_actualization_examples.py, patch_bot_server.py
-- [ ] Bitrix в bot_server.py (в проде web_api.py уже имеет полную интеграцию: create+update+webhook+manager_active)
-- [ ] Bitrix в radist_gateway.py
+- [x] **SOFIA_PATH баг — ПОЧИНЕН 21.03.2026.** Все 9 файлов исправлены. grep чистый, логи подтверждают.
+- [ ] Bitrix в bot_server.py — подключить core/bitrix.py (чтобы ?start=ATL лиды попадали в CRM) — **P1**
+- [ ] Bitrix в radist_gateway.py — подключить core/bitrix.py — **P1**
 - [ ] Bitrix веб-виджет crm.lead.update
 - [ ] Унификация source_object: web виджет определяет atlantis по page_url, а не через config/source_objects.py как бот и radist
 - [ ] Observer в .env
@@ -77,9 +76,9 @@
 ## ⚡ Оптимизация
 
 - [x] Стриминг Generator (voice — stream_voice_response)
+- [x] **Деплой core/pipeline.py в прод** — ответ ~7с (было ~25с)
 - [ ] Стриминг Generator (текстовые каналы)
 - [ ] Облегчить Analyzer
-- [ ] 17-24с → <12с
 - [ ] gpt-4.1-mini для voice (тест)
 
 ## 🤖 Будущее
