@@ -30,8 +30,10 @@ if not BITRIX_BASE_URL.endswith("/"):
 
 BITRIX_CREATE_URL = BITRIX_BASE_URL + "crm.lead.add"
 BITRIX_UPDATE_URL = BITRIX_BASE_URL + "crm.lead.update"
+BITRIX_LIST_URL = BITRIX_BASE_URL + "crm.lead.list"
 BITRIX_SOURCE_ID = os.getenv("BITRIX_SOURCE_ID", "504")
 BITRIX_ASSIGNED_ID = int(os.getenv("BITRIX_ASSIGNED_ID", "426"))
+BITRIX_ATLANTIS_SOURCE_ID = "397"  # Источник Тильда/Атлантис
 
 
 # ============================================================
@@ -162,6 +164,38 @@ Telegram: {tg_str}
     comments += f"\n\n--- Полный диалог ({len(history)} сообщений) ---\n{chat_text}"
 
     return comments, phone, telegram
+
+
+# ============================================================
+# API: поиск существующих лидов
+# ============================================================
+
+
+async def find_recent_atlantis_lead() -> int | None:
+    """Найти последний лид с SOURCE_ID=397 (Тильда/Атлантис)."""
+    params = {
+        "filter[SOURCE_ID]": BITRIX_ATLANTIS_SOURCE_ID,
+        "order[DATE_CREATE]": "DESC",
+        "select[]": ["ID", "TITLE", "DATE_CREATE"],
+        "start": 0,
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(BITRIX_LIST_URL, params=params) as resp:
+                result = await resp.json()
+                leads = result.get("result", [])
+                if leads:
+                    lead_id = int(leads[0]["ID"])
+                    log.info(
+                        f"🔗 [BITRIX] Найден лид Тильды #{lead_id} "
+                        f"({leads[0].get('TITLE', '?')})"
+                    )
+                    return lead_id
+                log.info("🔗 [BITRIX] Лидов Тильды не найдено")
+                return None
+    except Exception as e:
+        log.error(f"❌ [BITRIX] find_recent_atlantis_lead error: {e}")
+        return None
 
 
 # ============================================================

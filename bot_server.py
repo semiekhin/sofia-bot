@@ -39,7 +39,12 @@ from rag_module import init_vector_store, get_collection_stats
 from state_manager import StateManager
 from message_processor import process_message
 from core.pipeline import run_pipeline
-from core.bitrix import create_or_update_lead, is_manager_active
+from core.bitrix import (
+    create_or_update_lead,
+    find_recent_atlantis_lead,
+    is_manager_active,
+    update_lead,
+)
 
 # Детекторы отключены — управление через промпт + RAG
 # from detectors import ...
@@ -953,6 +958,8 @@ async def delayed_response(chat_id, user_id, user_name, context, tg_user=None):
         if new_lead_id and not lead_id:
             save_bitrix_lead_id(user_id, new_lead_id)
             log(f"🏷️ [BITRIX] Лид #{new_lead_id} создан для TG user {user_id}")
+        elif lead_id:
+            log(f"🔄 [BITRIX] Лид #{lead_id} обновлён для TG user {user_id}")
     except Exception as e:
         log(f"❌ [BITRIX] delayed_response error: {e}")
 
@@ -1146,6 +1153,27 @@ async def cmd_start(update, context: ContextTypes.DEFAULT_TYPE):
 
     # Сбрасываем старый lead_id — новый диалог получит новый лид
     clear_bitrix_lead_id(user_id)
+
+    # Привязка к существующему лиду из Тильды (только для Атлантиса)
+    if source_object and source_object.get("key") == "atlantis":
+        try:
+            existing_lead_id = await find_recent_atlantis_lead()
+            if existing_lead_id:
+                save_bitrix_lead_id(user_id, existing_lead_id)
+                # Дописываем Telegram username в существующий лид
+                tg_info = ""
+                if update.effective_user.username:
+                    tg_info = f"@{update.effective_user.username}"
+                await update_lead(
+                    existing_lead_id,
+                    comments=f"Telegram: {tg_info or user_name}\nСофия подключена к диалогу.",
+                )
+                log(
+                    f"🔗 [BITRIX] Привязан к лиду Тильды #{existing_lead_id} "
+                    f"для user {user_id}"
+                )
+        except Exception as e:
+            log(f"❌ [BITRIX] find_recent_atlantis_lead error: {e}")
 
     # Сценарий А: 15 мин таймаут если клиент не ответит
     if chat_id in reminder_tasks:
