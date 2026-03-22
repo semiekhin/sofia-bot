@@ -107,14 +107,18 @@ def _format_dialog(history: list) -> str:
 
 
 def build_lead_comments(
-    state, history: list, is_final: bool = False, channel: str = "web"
+    state,
+    history: list,
+    is_final: bool = False,
+    channel: str = "web",
+    telegram_username: str = None,
 ) -> tuple:
     """
     Собирает COMMENTS для Битрикс лида.
     Возвращает (comments_text, phone, telegram).
     """
     phone = extract_phone_from_history(history)
-    telegram = extract_telegram_from_history(history)
+    telegram = extract_telegram_from_history(history) or telegram_username
 
     goal = _GOAL_MAP.get(getattr(state, "goal", None) or "", "Не указана")
     budget = getattr(state, "budget", None)
@@ -229,12 +233,15 @@ async def create_or_update_lead(
     history: list,
     is_final: bool = False,
     channel: str = "web",
+    telegram_username: str = None,
 ) -> int | None:
     """
     Если lead_id есть → update, иначе → create.
     Возвращает lead_id (существующий или новый).
     """
-    comments, phone, telegram = build_lead_comments(state, history, is_final, channel)
+    comments, phone, telegram = build_lead_comments(
+        state, history, is_final, channel, telegram_username=telegram_username
+    )
     name = user_name or "Клиент"
     if name.startswith("web_"):
         name = "Клиент с сайта"

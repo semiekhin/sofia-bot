@@ -39,6 +39,7 @@ from rag_module import init_vector_store, get_collection_stats
 from state_manager import StateManager
 from message_processor import process_message
 from core.pipeline import run_pipeline
+from core.bitrix import create_or_update_lead, is_manager_active
 
 # Детекторы отключены — управление через промпт + RAG
 # from detectors import ...
@@ -85,10 +86,56 @@ def get_model_config():
     return MODEL_CONFIGS.get(MODEL_MODE, MODEL_CONFIGS["gpt-5.2"])
 
 
-DB_PATH = "sofia_gpt.db"
+SOFIA_PATH = os.getenv("SOFIA_PATH", "/opt/sofia-gpt-dev")
+DB_PATH = os.path.join(SOFIA_PATH, os.getenv("DB_PATH", "sofia_gpt.db"))
 
 # NEW: State Manager для агентной архитектуры
 state_manager = StateManager(DB_PATH)
+
+
+# ============================================
+# BITRIX: хелперы для lead_id (отдельная таблица)
+# ============================================
+# НЕ храним в client_state — state_manager делает INSERT OR REPLACE
+# без bitrix_lead_id, что стирает значение при каждом save_state().
+
+
+def _migrate_bitrix_tables():
+    """Создаёт таблицу telegram_leads если её нет."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS telegram_leads (
+            user_id INTEGER PRIMARY KEY,
+            bitrix_lead_id INTEGER NOT NULL
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def get_bitrix_lead_id(user_id: int) -> int | None:
+    """Получить bitrix_lead_id из telegram_leads."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT bitrix_lead_id FROM telegram_leads WHERE user_id = ?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row and row[0] else None
+
+
+def save_bitrix_lead_id(user_id: int, lead_id: int):
+    """Сохранить bitrix_lead_id в telegram_leads."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        """INSERT INTO telegram_leads (user_id, bitrix_lead_id)
+           VALUES (?, ?)
+           ON CONFLICT(user_id) DO UPDATE SET bitrix_lead_id = ?""",
+        (user_id, lead_id, lead_id),
+    )
+    conn.commit()
+    conn.close()
+
+
 LOG_PATH = "sofia_bot.log"
 ANTIFLOOD_DELAY = 3
 CONTEXT_SIZE = 8  # Последние 8 сообщений
@@ -256,6 +303,8 @@ def init_db():
         rag_ok = init_vector_store()
         if not rag_ok:
             log("⚠️ Векторный RAG не инициализирован!")
+
+    _migrate_bitrix_tables()
 
     log(
         f"📦 База данных инициализирована (GPT: {MODEL_MODE}, RAG: {'ON' if RAG_ENABLED else 'OFF'})"
@@ -663,7 +712,7 @@ async def send_reminder(chat_id, user_name, context):
         del reminder_tasks[chat_id]
 
 
-async def delayed_response(chat_id, user_id, user_name, context):
+async def delayed_response(chat_id, user_id, user_name, context, tg_user=None):
     await asyncio.sleep(ANTIFLOOD_DELAY)
     unprocessed = get_unprocessed_messages(chat_id)
     if not unprocessed:
@@ -733,6 +782,35 @@ async def delayed_response(chat_id, user_id, user_name, context):
 
     await context.bot.send_message(chat_id=chat_id, text=response)
     log(f"📤 София → {user_name}: {response[:100]}...")
+
+    # ── Bitrix CRM: создаём/обновляем лид ──
+    try:
+        state_fresh = state_manager.get_state(user_id)
+        history_fresh = get_conversation_history(chat_id, limit=100)
+        lead_id = get_bitrix_lead_id(user_id)
+        is_final = bool(getattr(state_fresh, "dialog_finished", False))
+
+        # Имя для Битрикса: first_name + @username если есть
+        bitrix_name = user_name
+        tg_username = None
+        if tg_user and tg_user.username:
+            bitrix_name = f"{user_name} (@{tg_user.username})"
+            tg_username = f"@{tg_user.username}"
+
+        new_lead_id = await create_or_update_lead(
+            lead_id,
+            bitrix_name,
+            state_fresh,
+            history_fresh,
+            is_final=is_final,
+            channel="telegram",
+            telegram_username=tg_username,
+        )
+        if new_lead_id and not lead_id:
+            save_bitrix_lead_id(user_id, new_lead_id)
+            log(f"🏷️ [BITRIX] Лид #{new_lead_id} создан для TG user {user_id}")
+    except Exception as e:
+        log(f"❌ [BITRIX] delayed_response error: {e}")
 
     if chat_id in pending_responses:
         del pending_responses[chat_id]
@@ -1058,7 +1136,9 @@ async def handle_voice(update, context: ContextTypes.DEFAULT_TYPE):
             pending_responses[chat_id].cancel()
 
         task = asyncio.create_task(
-            delayed_response(chat_id, user_id, user_name, context)
+            delayed_response(
+                chat_id, user_id, user_name, context, tg_user=update.effective_user
+            )
         )
         pending_responses[chat_id] = task
 
@@ -1102,6 +1182,12 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
 
     log(f"📩 {user_name}: {user_message}")
 
+    # Проверка перехвата менеджером — София молчит
+    if is_manager_active(DB_PATH, user_id):
+        log(f"🛑 [TG] manager_active=1 для user_id={user_id}, София молчит")
+        save_message(chat_id, user_id, user_name, "user", user_message, processed=1)
+        return
+
     # Приветствия
     is_greeting = user_message.lower().strip() in [
         "привет",
@@ -1131,7 +1217,11 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
         reminder_tasks[chat_id].cancel()
         del reminder_tasks[chat_id]
 
-    task = asyncio.create_task(delayed_response(chat_id, user_id, user_name, context))
+    task = asyncio.create_task(
+        delayed_response(
+            chat_id, user_id, user_name, context, tg_user=update.effective_user
+        )
+    )
     pending_responses[chat_id] = task
 
 
