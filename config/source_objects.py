@@ -18,6 +18,7 @@ SOURCE_OBJECTS = {
         "context_file": "objects/atlantis_context.md",
         "presentation_url": "https://api.atlantis-invest.ru/objects/atlantis_presentation.pdf",
         "greeting": "Рада, что заинтересовались Атлантисом! Вот презентация с планировками. Спрашивайте что угодно — а я задам пару вопросов, чтобы подобрать лучший вариант)",
+        "prompt_addon": "Контакт клиента уже получен через форму на сайте. НЕ запрашивай телефон, email или другие контактные данные. После квалификации сразу предлагай удобное время для созвона с экспертом.",
     },
 }
 
@@ -33,9 +34,12 @@ def detect_source(text: str) -> tuple:
             if keyword.lower() in text_lower:
                 # Убираем только хэштег-маркеры, ключевые слова оставляем
                 import re
+
                 clean = text
                 if keyword.startswith("#"):
-                    clean = re.sub(re.escape(keyword), '', text, flags=re.IGNORECASE).strip()
+                    clean = re.sub(
+                        re.escape(keyword), "", text, flags=re.IGNORECASE
+                    ).strip()
                 return config, clean
     return None, text
 
@@ -48,10 +52,11 @@ def get_object_by_key(key: str) -> dict:
 def load_object_context(config: dict) -> str:
     """Загружает текст карточки объекта из файла."""
     import os
+
     base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     filepath = os.path.join(base_path, config["context_file"])
     try:
-        with open(filepath, 'r', encoding='utf-8') as f:
+        with open(filepath, "r", encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
         return f"Объект: {config['name']}, {config['city']}"

@@ -136,6 +136,14 @@ def save_bitrix_lead_id(user_id: int, lead_id: int):
     conn.close()
 
 
+def clear_bitrix_lead_id(user_id: int):
+    """Сбросить lead_id при /start (новый диалог → новый лид)."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute("DELETE FROM telegram_leads WHERE user_id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+
+
 LOG_PATH = "sofia_bot.log"
 ANTIFLOOD_DELAY = 3
 CONTEXT_SIZE = 8  # Последние 8 сообщений
@@ -649,37 +657,139 @@ async def handle_rating(update, context: ContextTypes.DEFAULT_TYPE):
 
 pending_responses = {}
 reminder_tasks = {}  # Таймеры напоминания
+# {chat_id: True} — напоминание уже отправлено, ждём финализации
+reminder_sent = {}
 
 REMINDER_PHRASES = [
     "{name}, продолжим общение?",
     "{name}, не забыли про меня?",
 ]
 
+# Таймауты (секунды)
+TIMEOUT_NO_RESPONSE = 15 * 60  # Сценарий А: 15 мин без ответа
+TIMEOUT_REMINDER = 60 * 60  # Сценарий Б: 60 мин → напоминание
+TIMEOUT_AFTER_REMINDER = 15 * 60  # Сценарий Б: +15 мин после напоминания → финализация
 
-def get_reminder_delay():
-    """Вычисляет задержку: 1 час если до 18:00, иначе до 9:00 следующего дня"""
-    now = datetime.now()
-    if now.hour < 18:
-        return 3600  # 1 час
-    else:
-        tomorrow_9am = now.replace(
-            hour=9, minute=0, second=0, microsecond=0
-        ) + timedelta(days=1)
-        return (tomorrow_9am - now).total_seconds()
+
+def _get_last_message_time(chat_id: int) -> float | None:
+    """Время последнего сообщения в диалоге (unix timestamp)."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "SELECT timestamp FROM messages WHERE chat_id = ? ORDER BY timestamp DESC LIMIT 1",
+        (chat_id,),
+    )
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    ts = row[0]
+    if isinstance(ts, str):
+        try:
+            return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").timestamp()
+        except ValueError:
+            return None
+    return float(ts)
+
+
+def _count_user_messages(chat_id: int) -> int:
+    """Количество сообщений от клиента (role=user) в диалоге."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "SELECT COUNT(*) FROM messages WHERE chat_id = ? AND role = 'user' "
+        "AND content NOT LIKE '/start%'",
+        (chat_id,),
+    )
+    count = c.fetchone()[0]
+    conn.close()
+    return count
+
+
+def _get_user_id_for_chat(chat_id: int) -> int | None:
+    """Получить user_id по chat_id из messages."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "SELECT user_id FROM messages WHERE chat_id = ? AND role = 'user' LIMIT 1",
+        (chat_id,),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else chat_id
+
+
+def _get_user_name_for_chat(chat_id: int) -> str:
+    """Получить user_name по chat_id из messages (любая роль)."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "SELECT user_name FROM messages WHERE chat_id = ? AND user_name != '' "
+        "AND user_name IS NOT NULL LIMIT 1",
+        (chat_id,),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else "Клиент"
+
+
+def _is_dialog_active(chat_id: int) -> bool:
+    """Проверяет что диалог не завершён и менеджер не перехватил."""
+    user_id = _get_user_id_for_chat(chat_id)
+    state = state_manager.get_state(user_id)
+    if state and getattr(state, "dialog_finished", False):
+        return False
+    if is_manager_active(DB_PATH, user_id):
+        return False
+    return True
+
+
+async def _finalize_timeout(chat_id: int, finish_type: str, bot):
+    """Финализирует лид в Битрикс по таймауту."""
+    user_id = _get_user_id_for_chat(chat_id)
+    user_name = _get_user_name_for_chat(chat_id)
+
+    state_manager.update_state(
+        user_id, {"dialog_finished": True, "finish_type": finish_type}
+    )
+    state_fresh = state_manager.get_state(user_id)
+    history = get_conversation_history(chat_id, limit=100)
+    lead_id = get_bitrix_lead_id(user_id)
+
+    new_lead_id = await create_or_update_lead(
+        lead_id,
+        user_name,
+        state_fresh,
+        history,
+        is_final=True,
+        channel="telegram",
+    )
+    if new_lead_id and not lead_id:
+        save_bitrix_lead_id(user_id, new_lead_id)
+
+    log(f"⏱️ [TIMEOUT] {finish_type} для chat {chat_id}, user {user_id}")
+
+    # Убираем из отслеживания
+    reminder_tasks.pop(chat_id, None)
+    reminder_sent.pop(chat_id, None)
 
 
 async def send_reminder(chat_id, user_name, context):
-    """Отправляет напоминание: через 1 час или в 9:00 если после 18:00"""
-    delay = get_reminder_delay()
-    log(f"⏳ Напоминание для {user_name} запланировано через {delay/3600:.1f}ч")
-    await asyncio.sleep(delay)
+    """Отправляет напоминание через 60 мин (сценарий Б)."""
+    log(
+        f"⏳ [TIMEOUT-Б] Запущен для {user_name}, chat {chat_id}, ждём {TIMEOUT_REMINDER}с"
+    )
+    await asyncio.sleep(TIMEOUT_REMINDER)
 
-    # Проверяем meeting_agreed в состоянии клиента
-    state = state_manager.get_state(chat_id)
+    if not _is_dialog_active(chat_id):
+        return
+
+    # Проверяем meeting_agreed
+    user_id = _get_user_id_for_chat(chat_id)
+    state = state_manager.get_state(user_id)
     if state and state.meeting_agreed:
-        return  # Уже договорились о созвоне — не напоминаем
+        return
 
-    # Проверяем что диалог не завершён
     history = get_conversation_history(chat_id)
     if not history:
         return
@@ -688,28 +798,52 @@ async def send_reminder(chat_id, user_name, context):
     if last_msg.get("role") != "assistant":
         return  # Последнее сообщение от клиента — не напоминаем
 
-    last_text = last_msg.get("content", "").lower()
-
-    # Признаки завершения — не напоминаем
-    finish_markers = [
-        "записала",
-        "договорились",
-        "пришлю ссылку",
-        "до связи",
-        "хорошего дня",
-        "будем на связи",
-    ]
-    if any(marker in last_text for marker in finish_markers):
-        return
-
     # Отправляем напоминание
     reminder_text = random.choice(REMINDER_PHRASES).format(name=user_name)
     await context.bot.send_message(chat_id=chat_id, text=reminder_text)
+    save_message(chat_id, 0, BOT_NAME, "assistant", reminder_text, processed=1)
     log(f"⏰ Напоминание → {user_name}")
+    reminder_sent[chat_id] = True
 
-    # Удаляем задачу
-    if chat_id in reminder_tasks:
-        del reminder_tasks[chat_id]
+    # Ждём ещё 15 мин — если нет ответа, финализируем
+    await asyncio.sleep(TIMEOUT_AFTER_REMINDER)
+
+    if not _is_dialog_active(chat_id):
+        return
+
+    # Проверяем что клиент не ответил за 15 мин после напоминания
+    last_time = _get_last_message_time(chat_id)
+    if (
+        last_time
+        and (datetime.now().timestamp() - last_time) >= TIMEOUT_AFTER_REMINDER - 30
+    ):
+        await _finalize_timeout(chat_id, "no_response_after_reminder", context.bot)
+
+
+async def timeout_checker_no_response(chat_id, user_name, context):
+    """Сценарий А: 0 сообщений от клиента → 15 мин → финализация без напоминания."""
+    log(
+        f"⏳ [TIMEOUT-A] Запущен для {user_name}, chat {chat_id}, ждём {TIMEOUT_NO_RESPONSE}с"
+    )
+    try:
+        await asyncio.sleep(TIMEOUT_NO_RESPONSE)
+
+        if not _is_dialog_active(chat_id):
+            log(f"⏳ [TIMEOUT-A] Диалог не активен для chat {chat_id}, пропускаем")
+            return
+
+        # Перепроверяем: клиент так и не ответил?
+        user_count = _count_user_messages(chat_id)
+        if user_count > 0:
+            log(f"⏳ [TIMEOUT-A] Клиент ответил ({user_count} msgs), пропускаем")
+            return
+
+        log(f"⏳ [TIMEOUT-A] Финализируем — 0 ответов для chat {chat_id}")
+        await _finalize_timeout(chat_id, "no_response", context.bot)
+    except asyncio.CancelledError:
+        log(f"⏳ [TIMEOUT-A] Отменён для chat {chat_id}")
+    except Exception as e:
+        log(f"❌ [TIMEOUT-A] Ошибка для chat {chat_id}: {e}")
 
 
 async def delayed_response(chat_id, user_id, user_name, context, tg_user=None):
@@ -788,6 +922,16 @@ async def delayed_response(chat_id, user_id, user_name, context, tg_user=None):
         state_fresh = state_manager.get_state(user_id)
         history_fresh = get_conversation_history(chat_id, limit=100)
         lead_id = get_bitrix_lead_id(user_id)
+
+        # meeting_agreed → финализация (квалифицирован, созвон согласован)
+        meeting_ok = bool(getattr(state_fresh, "meeting_agreed", False))
+        if meeting_ok and not getattr(state_fresh, "dialog_finished", False):
+            state_manager.update_state(
+                user_id, {"dialog_finished": True, "finish_type": "meeting"}
+            )
+            state_fresh = state_manager.get_state(user_id)
+            log(f"✅ [BITRIX] meeting_agreed → финализация для user {user_id}")
+
         is_final = bool(getattr(state_fresh, "dialog_finished", False))
 
         # Имя для Битрикса: first_name + @username если есть
@@ -815,12 +959,14 @@ async def delayed_response(chat_id, user_id, user_name, context, tg_user=None):
     if chat_id in pending_responses:
         del pending_responses[chat_id]
 
-    # Запускаем таймер напоминания (10 мин)
-    if chat_id in reminder_tasks:
-        reminder_tasks[chat_id].cancel()
-    reminder_tasks[chat_id] = asyncio.create_task(
-        send_reminder(chat_id, user_name, context)
-    )
+    # Не запускаем таймер если диалог финализирован
+    if not is_final:
+        if chat_id in reminder_tasks:
+            reminder_tasks[chat_id].cancel()
+        reminder_sent.pop(chat_id, None)
+        reminder_tasks[chat_id] = asyncio.create_task(
+            send_reminder(chat_id, user_name, context)
+        )
 
 
 # ============================================
@@ -996,6 +1142,17 @@ async def cmd_start(update, context: ContextTypes.DEFAULT_TYPE):
 
     await send_greeting(
         chat_id, user_id, user_name, context, source_object=source_object
+    )
+
+    # Сбрасываем старый lead_id — новый диалог получит новый лид
+    clear_bitrix_lead_id(user_id)
+
+    # Сценарий А: 15 мин таймаут если клиент не ответит
+    if chat_id in reminder_tasks:
+        reminder_tasks[chat_id].cancel()
+    reminder_sent.pop(chat_id, None)
+    reminder_tasks[chat_id] = asyncio.create_task(
+        timeout_checker_no_response(chat_id, user_name, context)
     )
 
 
@@ -1212,10 +1369,11 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
     if chat_id in pending_responses:
         pending_responses[chat_id].cancel()
 
-    # Отменяем напоминание если клиент ответил
+    # Отменяем таймер если клиент ответил
     if chat_id in reminder_tasks:
         reminder_tasks[chat_id].cancel()
         del reminder_tasks[chat_id]
+    reminder_sent.pop(chat_id, None)
 
     task = asyncio.create_task(
         delayed_response(

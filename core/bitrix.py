@@ -128,7 +128,16 @@ def build_lead_comments(
 
     phone_str = phone or "Не указан"
     tg_str = telegram or "Не указан"
-    status = "ЗАВЕРШЁН" if is_final else "В ПРОЦЕССЕ"
+    if is_final and finish_type == "meeting":
+        status = "Квалифицирован, созвон согласован"
+    elif is_final and finish_type == "no_response":
+        status = "Нет ответа"
+    elif is_final and finish_type == "no_response_after_reminder":
+        status = "Нет ответа после напоминания"
+    elif is_final:
+        status = "ЗАВЕРШЁН"
+    else:
+        status = "В ПРОЦЕССЕ"
 
     channel_map = {
         "web": "виджет на сайте",

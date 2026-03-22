@@ -203,6 +203,8 @@ async def run_pipeline(
                 f"Ссылка на презентацию: {obj_config['presentation_url']}\n"
                 f"При запросе презентации — отправь эту ссылку клиенту."
             )
+            if obj_config.get("prompt_addon"):
+                system_prompt += f"\n\n{obj_config['prompt_addon']}"
 
     # was_offline: оборачиваем сообщение
     generator_message = user_message
@@ -357,6 +359,8 @@ async def stream_voice_response(
                 f"Ссылка на презентацию: {obj_config['presentation_url']}\n"
                 f"При запросе презентации — отправь эту ссылку клиенту."
             )
+            if obj_config.get("prompt_addon"):
+                system_prompt += f"\n\n{obj_config['prompt_addon']}"
 
     # Messages
     messages = [{"role": m["role"], "content": m["content"]} for m in history]
