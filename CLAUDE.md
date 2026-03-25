@@ -108,10 +108,20 @@ GREETING → ACTUALIZATION → QUALIFICATION → PRESENTATION → OBJECTION → 
 
 **core/bitrix.py** — модуль Битрикс (создан 21.03.2026):
 - `create_or_update_bitrix_lead()`: создаёт лид при первом сообщении, обновляет COMMENTS на каждом, финализирует при `[END]`
+- Привязка к лиду Тильды: ищет последний лид с SOURCE_ID=397
 - Webhook endpoint, manager_active — полная двусторонняя интеграция
+- **Сотрудник Sofia AI:** User ID 428 (ASSIGNED_BY_ID) — при привязке к лиду ставить ответственным, при завершении менять обратно
 
-**Подключён к:** web_api.py (прод и dev)
-**НЕ подключён к:** bot_server.py, radist_gateway.py — лиды теряются (P1 задача)
+**Подключён к:** web_api.py (прод и dev), bot_server.py (dev, коммит 4214a17b — ждёт деплоя)
+**НЕ подключён к:** radist_gateway.py — лиды теряются (P1 задача)
+
+## Голосовой агент
+
+**Текущее:** Retell AI через voice_api.py (dev only). Качество неудовлетворительное.
+
+**Исследование завершено** (25.03.2026): `docs/VOICE_RESEARCH_2026.md`
+- Целевой стек: Pipecat + Yandex SpeechKit (STT+TTS) + Groq/Qwen3-32B (Extractor) + gpt-4.1-mini (Generator) + Задарма (SIP)
+- Три варианта: быстрый (1-2 дня), средний (2-3 нед), максимальный (4-6 нед)
 
 ## Правила работы
 
