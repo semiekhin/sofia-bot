@@ -1,15 +1,15 @@
 # Текущий статус Sofia-GPT
 
-📅 **Последняя сессия:** 21.03.2026
+📅 **Последняя сессия:** 25.03.2026
 
 ## Архитектурная карта: ПРОД vs DEV
 
 ### ПРОД (`/opt/sofia-gpt/`, порт 8080)
-- `bot_server.py` — Telegram бот (@humanAINeural_bot) → `core/pipeline.py`
+- `bot_server.py` — Telegram бот (@humanAINeural_bot) → `core/pipeline.py` (**без Bitrix — деплой ожидается**)
 - `web_api.py` — веб виджет (порт 8080) → `core/pipeline.py` + `core/bitrix.py`
-- `sofia_radist_gateway.py` — Radist gateway (порт 5001) → `core/pipeline.py`
+- `sofia_radist_gateway.py` — Radist gateway (порт 5001) → `core/pipeline.py` (**без Bitrix**)
 - **`core/pipeline.py`** — единый пайплайн, задеплоен 21.03.2026
-- **`core/bitrix.py`** — модуль Битрикс, подключён к web_api.py
+- **`core/bitrix.py`** — модуль Битрикс, подключён только к web_api.py
 - **Голосового канала НЕТ в проде** — `voice_api.py` только в dev (осознанное решение)
 - Много мусора: 40+ `.backup_*` файлов, legacy файлы (planner.py, llm_planner.py, stage_detector.py, sofia_prompt.py)
 - Файл-мусор: `ystemctl enable sofia-userbot` (опечатка при copy-paste)
@@ -18,7 +18,8 @@
 ### DEV (`/opt/sofia-gpt-dev/`, порт 8081)
 - Все 4 канала: `bot_server.py`, `web_api.py`, `sofia_radist_gateway.py`, `voice_api.py`
 - **`core/pipeline.py`** — единый пайплайн, все 4 канала подключены через `run_pipeline()` / `stream_voice_response()`
-- **`core/bitrix.py`** — модуль Битрикс
+- **`core/bitrix.py`** — модуль Битрикс, подключён к web_api.py и bot_server.py
+- **bot_server.py** — Bitrix интеграция ГОТОВА (коммит 4214a17b), ждёт деплоя в прод
 - Nginx `/llm-websocket/` → порт 8081 (Retell агент смотрит на dev)
 - `stream_voice_response()` — закоммичен, async generator с asyncio.Queue bridge
 - БД: `sofia_gpt_dev.db` — SOFIA_PATH починен, dev пишет в свою БД
@@ -32,6 +33,41 @@
 **Прод — утилитные файлы:** sofia_userbot.py, sofia_userbot_pyrogram.py, test_smart_start.py, test_userbot.py, send_report.py, finance_calculator.py, add_actualization_examples.py, patch_bot_server.py — всё ещё содержат хардкод `/opt/sofia-gpt`. Это **корректно** для прода (путь совпадает). В прод деплоились только сервисные файлы (bot_server.py, web_api.py, sofia_radist_gateway.py, core/), утилиты не копировались.
 
 ## ✅ Что сделано
+
+### Сессия 25.03.2026 — Исследование голосового агента
+
+**Полное исследование голосового стека** (`docs/VOICE_RESEARCH_2026.md`):
+- Проанализированы 8 направлений: STT (9 решений), TTS (10 решений), LLM (11 провайдеров), оркестрация (7 фреймворков), телефония (7 провайдеров), end-to-end модели (6), архитектурные паттерны (7), российская специфика
+- **Вывод:** end-to-end модели (OpenAI Realtime, Gemini Live) НЕ подходят для русского sales-агента
+- **Целевой стек:** Pipecat + Yandex SpeechKit (STT+TTS) + Groq/Qwen3-32B (Extractor) + gpt-4.1-mini (Generator) + Задарма (телефония)
+- **Три варианта архитектуры:**
+  - Быстрый (1-2 дня): gpt-4.1-mini в Retell + async Extractor → ~2с, $0.08-0.15/мин
+  - Средний (2-3 нед): Pipecat + Yandex STT/TTS + Groq → ~1-1.5с, $0.035/мин (ЦЕЛЕВОЙ)
+  - Максимальный (4-6 нед): + каскад + pre-fetch + кастом голос → ~0.5-1с
+
+### Сессия 22.03.2026 — Битрикс в bot_server.py + таймауты + Тильда
+
+**Битрикс в bot_server.py (DEV READY):**
+- core/bitrix.py подключён к bot_server.py: лиды создаются, комменты стримятся, перехват менеджером работает
+- Тест с реальными диалогами — лид в Битрикс с полным досье
+- Коммит: 4214a17b (dev), НЕ задеплоен в прод
+
+**Таймауты:**
+- Сценарий А: нет ответа 15 мин → финализация
+- Сценарий Б: 60 мин + напоминание + 15 мин → финализация
+
+**Атлантис — доработки:**
+- Не спрашивает контакт (форма Тильды уже содержит имя/телефон/email)
+- Привязка к лиду Тильды: ищет последний лид с SOURCE_ID=397, привязывается к нему вместо создания нового
+
+**Решения по архитектуре:**
+- Тильда → всегда (24/7) редирект на Telegram бот ?start=ATL, без страницы "спасибо"
+- Endpoint /go/atlantis-redirect — ОТМЕНЁН, не нужен
+
+**Битрикс: сотрудник Sofia AI (User ID 428):**
+- ID получен от программиста Битрикс
+- Нужно: при привязке к лиду ставить ASSIGNED_BY_ID=428 (Sofia AI), при завершении менять обратно на стандартного
+- Предотвращает автораздачу лида менеджерам до окончания квалификации
 
 ### Сессия 21.03.2026 — SOFIA_PATH fix + полный деплой dev→prod
 
@@ -58,7 +94,6 @@
 
 - Аудит трёх точек входа Атлантиса: /go/atlantis.html (статика Nginx → @SofiaOazis), веб-виджет (web_api.py по page_url), ?start=ATL (bot_server.py через source_objects.py)
 - Реализована двусторонняя Битрикс-интеграция в ПРОД web_api.py: лид при первом сообщении, обновление COMMENTS при каждом сообщении, финализация при [END], перехват менеджером через manager_active + endpoint /api/bitrix/webhook
-- Спроектирован ночной редирект через Тильду: поле "URL успеха" → /go/atlantis-redirect → по времени МСК (21:00-08:00 → виджет Софии, 08:00-21:00 → страница спасибо). Ждём URL от программиста Битрикса
 - Замена OpenAI ключа во всех сервисах, исправлен load_dotenv(override=True) в bot_server.py и rag_module.py
 
 ### Сессия 15.03.2026 — Полный аудит проекта
@@ -85,30 +120,12 @@
 - Яндекс AI Studio Realtime: нет Custom LLM, их модель остаётся в цепочке
 - Voicyfy: no-code поверх OpenAI/Google, нет кастомизации
 - **Вывод: можно построить свой сервис через Pipecat (open-source Python)**
-  - Архитектура: SIP (Задарма/Twilio) → Pipecat → Deepgram STT → наш pipeline → ElevenLabs/Yandex TTS
-  - `stream_voice_response()` уже готов — отдаёт чанки
-  - Стоимость: Deepgram ~$0.004/мин + ElevenLabs ~$0.01/мин + LLM = дешевле Retell
-  - Прототип: ~200-300 строк Python
-
-**Ещё не протестировано:** gpt-4.1-mini для voice (первый токен ~200мс vs ~800мс у gpt-5.2)
 
 ### Сессия 10.03.2026 (вечер) — Оптимизация латенси голосового канала
 
-**Проблема:** голосовой ответ ~6-10с — некомфортно для живого разговора.
-
-**Оптимизации в `voice_mode=True` (только голосовой канал):**
-- Reasoning отключён для Analyzer и Generator (без `{"effort": "..."}`)
-- Analyzer пропущен целиком — один LLM-вызов убран
-- Extractor (process_message) пропущен — ещё один LLM-вызов убран
-- RAG: 10→3 примера — меньше токенов в промпте
-- Инструкция Generator: "максимум 2 предложения, без списков"
-
-**Стриминг (закоммичен):**
-- `stream_voice_response()` в `core/pipeline.py` — Generator с `stream=True`, yield чанков через asyncio.Queue
-- `voice_api.py` — буферизация чанков (flush по `.!?,` или 20+ символов + пробел), 2-8 чанков вместо 74 микро-чанков
-- Замечание: нет post-stream проверки `[END]` и обновления state
-
-**Результат:** ответ ~2с вместо 6-10с. Стриминг даёт первый звук ещё раньше.
+- voice_mode: отключены Extractor, Analyzer, reasoning, RAG 10→3
+- Стриминг: stream_voice_response() + буферизация чанков (2-8 вместо 74)
+- Результат: ответ ~2с вместо 6-10с
 
 ### Сессия 10.03.2026 (утро) — Голосовой агент Retell AI
 
@@ -152,11 +169,24 @@
 Секретов в коде нет — все через `os.getenv()`.
 
 ## 🔜 Следующие шаги
-1. **P1:** Подключить core/bitrix.py к bot_server.py (чтобы ?start=ATL лиды попадали в CRM)
-2. **P1:** Подключить core/bitrix.py к radist_gateway.py
-3. **P1:** Endpoint /go/atlantis-redirect с логикой времени МСК — ждём URL от Битрикс-программиста
-4. **P1:** Тест gpt-4.1-mini для voice (потенциал ~200мс vs ~800мс первый токен)
-5. **P1:** Post-stream проверка [END] в stream_voice_response()
-6. **P1:** Прототип собственного голосового сервиса на Pipecat
-7. **P2:** core/channel.py, core/observer.py
-8. **P2:** Очистка мусора в проде (40+ backup файлов, legacy)
+
+### P0 — ближайший деплой
+1. **Битрикс: ASSIGNED_BY_ID=428 (Sofia AI)** — при привязке к лиду ставить Sofia AI ответственным, при завершении менять обратно. Предотвращает автораздачу лида менеджерам до окончания квалификации
+2. **Деплой bot_server.py в прод** — dev готов (коммит 4214a17b), стандартная процедура: бэкап → копия → рестарт → проверка
+3. **Ссылка в Тильде** — после деплоя поставить URL успеха: `https://t.me/humanAINeural_bot?start=ATL`
+
+### P1 — следующая итерация
+4. Подключить core/bitrix.py к radist_gateway.py
+5. Голосовой агент — Вариант 1: gpt-4.1-mini в voice_mode + async Extractor (1-2 дня)
+6. Очистка мусора в проде (40+ backup файлов, legacy)
+7. deploy.sh скрипт
+
+### P2 — голосовой агент (целевая архитектура)
+8. Pipecat + Yandex SpeechKit STT/TTS + Groq/Qwen3 Extractor + gpt-4.1-mini Generator
+9. Задарма SIP телефония
+10. WebRTC кнопка "голосовой звонок" в веб-виджете
+
+### P3 — техдолг
+11. core/channel.py, core/observer.py
+12. Atlantis context → config/source_objects.py
+13. BUG-004 EN-раскладка
