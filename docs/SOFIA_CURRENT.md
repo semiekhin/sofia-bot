@@ -64,9 +64,10 @@
   - Coturn TURN сервер установлен, не помог
 - `voice_pipecat_daily.py` — Daily WebRTC транспорт
   - Pipeline работает: STT распознаёт, LLM генерирует, TTS озвучивает
-  - **Блокер:** ElevenLabs TTS TTFB 5-13с → клиент не слышит ответ вовремя
+  - **Блокер:** ElevenLabs TTS — аудио генерируется (подтверждено логами: "Generating TTS [Здравствуйте...]"), но клиент НЕ слышит ответ. TTFB 5-13с. Последняя попытка (eleven_multilingual_v2 без explicit language) — не помогла. Проблема скорее всего в передаче аудио-фреймов от TTS → Daily transport, а не в генерации.
   - Голос: Victoria (FZGeNF7bE3syeQOynDKC), eleven_multilingual_v2
   - Daily домен: sofia-oazis.daily.co
+  - Последний тест: https://sofia-oazis.daily.co/LAXMPzorgRd4ojchwmTs — подключение OK, Sofia молчит
 
 ### Сессия 25.03.2026 — Исследование голосового агента
 

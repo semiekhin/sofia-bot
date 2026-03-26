@@ -71,7 +71,7 @@ sudo systemctl restart sofia-gpt sofia-web-api sofia-radist
   5. Daily аккаунт: sofia-oazis.daily.co, домен настроен, карта привязана
   6. Pipeline работает: STT распознаёт → LLM генерирует → TTS озвучивает (подтверждено логами)
   7. Nginx: `/voice-v2/`, `/start`, `/sessions/` → порт 8082
-- **Блокер:** ElevenLabs TTS TTFB 5-13с — аудио генерируется но клиент не слышит вовремя
+- **Блокер:** ElevenLabs TTS — аудио генерируется (логи: "Generating TTS [Здравствуйте...]", TTFB 5-13с), но клиент НЕ слышит. Попытки: eleven_flash_v2_5 и eleven_multilingual_v2, с/без language="ru" — не помогло. Вероятная причина: аудио-фреймы не доходят от TTS до Daily transport output
 - **ElevenLabs голоса:** Nastya (YjESejviApN7SHrbfnA2) НЕТ на аккаунте (была в Retell). Используется Victoria (FZGeNF7bE3syeQOynDKC), eleven_multilingual_v2
 - **Файлы:** voice_pipecat.py, voice_pipecat_daily.py
 - **Как откатить:** Просто остановить процесс, прод не затронут
