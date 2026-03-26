@@ -54,6 +54,7 @@ LLM-Generator (gpt-5.2, reasoning=high)
 | Radist Telegram | sofia_radist_gateway.py | 5002 | -(2_000_000 + chat_id) |
 | Radist WhatsApp | sofia_radist_gateway.py | 5002 | -(3_000_000 + chat_id) |
 | Voice (Retell AI) | voice_api.py | 8081 (ws) | 7_000_000 + md5(call_id)[:8] % 1_000_000 |
+| Voice V2 (Pipecat) | voice_pipecat_daily.py | 8083 (Daily) | Daily participant ID |
 
 ⚠️ **User ID формулы критичны** — коллизия = смешанные чаты двух клиентов.
 
@@ -68,8 +69,10 @@ LLM-Generator (gpt-5.2, reasoning=high)
 | message_queue.py | Per-user asyncio.Lock, защита от race condition |
 | finance_calculator.py | Сравнение недвижимости vs депозит |
 | message_processor.py | Центральный роутер: extractor → state update |
-| core/bitrix.py | Битрикс CRM: создание/обновление лидов, webhook, manager_active |
-| voice_api.py | WebSocket адаптер для Retell AI Custom LLM |
+| core/bitrix.py | Битрикс CRM: создание/обновление лидов, ASSIGNED_BY_ID=428, webhook, manager_active |
+| voice_api.py | WebSocket адаптер для Retell AI Custom LLM (Вариант 1) |
+| voice_pipecat_daily.py | Pipecat + Daily WebRTC голосовой бот (Вариант 2, В ПРОЦЕССЕ) |
+| voice_pipecat.py | Pipecat + SmallWebRTC (НЕ РАБОТАЕТ — NAT) |
 
 **Устаревшие (v1, не использовать):** planner.py, llm_planner.py, stage_detector.py, sofia_prompt.py
 
@@ -80,6 +83,7 @@ LLM-Generator (gpt-5.2, reasoning=high)
 | messages | История диалогов (user_id, role, content, timestamp, stage) |
 | client_state | Квалификация клиента (goal, budget, location, lead_type, source_object, manager_active) |
 | web_sessions | UUID session_id → user_id, page_url, bitrix_lead_id, manager_active (только web) |
+| lead_assigned | lead_id → original_assigned_by_id (для restore при завершении) |
 | feedback_v2 | Оценки качества |
 | radist_messages / radist_chats | История и метаданные Radist-каналов |
 | observer_topics | phone → thread_id для Radist Observer (Telegram forum) |
@@ -106,22 +110,30 @@ GREETING → ACTUALIZATION → QUALIFICATION → PRESENTATION → OBJECTION → 
 
 ## Bitrix CRM
 
-**core/bitrix.py** — модуль Битрикс (создан 21.03.2026):
-- `create_or_update_bitrix_lead()`: создаёт лид при первом сообщении, обновляет COMMENTS на каждом, финализирует при `[END]`
-- Привязка к лиду Тильды: ищет последний лид с SOURCE_ID=397
-- Webhook endpoint, manager_active — полная двусторонняя интеграция
-- **Сотрудник Sofia AI:** User ID 428 (ASSIGNED_BY_ID) — при привязке к лиду ставить ответственным, при завершении менять обратно
+**core/bitrix.py** — модуль Битрикс (создан 21.03, обновлён 26.03.2026):
+- `create_or_update_lead()`: создаёт лид (ASSIGNED_BY_ID=428), обновляет COMMENTS, финализирует при `[END]`
+- `restore_assigned()`: возвращает ответственного после завершения (original → fallback 426)
+- `save_original_assigned()` / `get_original_assigned()`: таблица lead_assigned
+- Привязка к лиду Тильды: ищет последний лид с SOURCE_ID=397, сохраняет original_assigned
+- Webhook: проверяет ASSIGNED_BY_ID ≠ 428 → менеджер перехватил
+- **Сотрудник Sofia AI:** User ID 428 — ответственный на время квалификации
+- **bot_server.py:** Битрикс только для source-сессий (`_is_bitrix_session()`)
 
-**Подключён к:** web_api.py (прод и dev), bot_server.py (dev, коммит 4214a17b — ждёт деплоя)
+**Подключён к:** web_api.py (прод и dev), bot_server.py (прод и dev, задеплоен 26.03.2026)
 **НЕ подключён к:** radist_gateway.py — лиды теряются (P1 задача)
 
 ## Голосовой агент
 
-**Текущее:** Retell AI через voice_api.py (dev only). Качество неудовлетворительное.
+**Вариант 1 (Retell):** voice_api.py + stream_voice_response() — gpt-4.1-mini, async Extractor, полный RAG. Dev only.
+
+**Вариант 2 (Pipecat + Daily):** voice_pipecat_daily.py — В ПРОЦЕССЕ.
+- Pipeline: OpenAI STT (Whisper) → gpt-4.1-mini → ElevenLabs TTS (Victoria)
+- Daily WebRTC: sofia-oazis.daily.co
+- **Блокер:** ElevenLabs TTS TTFB 5-13с
+- Pipecat 0.0.107, Daily SDK, Coturn TURN, nginx /voice-v2/ + /start + /sessions/
 
 **Исследование завершено** (25.03.2026): `docs/VOICE_RESEARCH_2026.md`
 - Целевой стек: Pipecat + Yandex SpeechKit (STT+TTS) + Groq/Qwen3-32B (Extractor) + gpt-4.1-mini (Generator) + Задарма (SIP)
-- Три варианта: быстрый (1-2 дня), средний (2-3 нед), максимальный (4-6 нед)
 
 ## Правила работы
 

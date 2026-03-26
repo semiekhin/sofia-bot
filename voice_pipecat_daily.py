@@ -1,23 +1,21 @@
 """
-voice_pipecat.py — Голосовой бот Sofia v2 на Pipecat
-SmallWebRTC + OpenAI STT (Whisper) + gpt-4.1-mini + ElevenLabs TTS
+voice_pipecat_daily.py — Голосовой бот Sofia v2 на Pipecat + Daily
+Daily WebRTC + OpenAI STT (Whisper) + gpt-4.1-mini + ElevenLabs TTS
 
-Запуск: python3 voice_pipecat.py
-Порт: 8082
-Клиент: http://72.56.64.91:8082/client
+Запуск: python3 voice_pipecat_daily.py
+Порт: 8083
 """
 
 import asyncio
 import os
+
+import aiohttp
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from loguru import logger
-from uvicorn import Config, Server
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
+from pipecat.frames.frames import LLMRunFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
@@ -29,13 +27,8 @@ from pipecat.processors.aggregators.llm_response_universal import (
 from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 from pipecat.services.openai.llm import OpenAILLMService
 from pipecat.services.openai.stt import OpenAISTTService
-from pipecat.transports.base_transport import TransportParams
-from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
-from pipecat.transports.smallwebrtc.request_handler import (
-    SmallWebRTCRequest,
-    SmallWebRTCRequestHandler,
-)
-from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
+from pipecat.transports.daily.transport import DailyParams, DailyTransport
+from pipecat.transports.daily.utils import DailyRESTHelper, DailyRoomParams
 
 load_dotenv()
 
@@ -75,65 +68,24 @@ VOICE_SYSTEM_PROMPT = """Ты — София, AI-ассистент компан
 
 Если клиент дважды отказался от созвона — не настаивай, предложи отправить подборку в мессенджер."""
 
-ELEVENLABS_VOICE_ID = "cgSgspJ2msm6clMCkdW9"  # Jessica — playful, bright, warm
-ELEVENLABS_MODEL = "eleven_flash_v2_5"  # мультиязычная, поддерживает ru
-
-PORT = 8082
-
-# ============================================================
-# FastAPI app
-# ============================================================
-
-app = FastAPI(title="Sofia Voice Bot v2 (Pipecat)")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Prebuilt WebRTC frontend
-try:
-    from pipecat_ai_small_webrtc_prebuilt.frontend import SmallWebRTCPrebuiltUI
-
-    app.mount("/client", SmallWebRTCPrebuiltUI, name="client")
-    logger.info("Prebuilt WebRTC UI mounted at /client")
-except (ImportError, RuntimeError) as e:
-    logger.warning(f"Prebuilt WebRTC UI unavailable: {e}")
-
-# SmallWebRTC request handler
-# TURN нужен для NAT traversal — без него WebRTC не пробивает NAT клиента
-from aiortc import RTCIceServer
-
-webrtc_handler = SmallWebRTCRequestHandler(
-    ice_servers=[
-        RTCIceServer(urls="stun:stun.l.google.com:19302"),
-        RTCIceServer(
-            urls=[
-                "turn:72.56.64.91:3478?transport=udp",
-                "turn:72.56.64.91:3478?transport=tcp",
-            ],
-            username="sofia",
-            credential="sofia2026turn",
-        ),
-    ],
-)
+ELEVENLABS_VOICE_ID = "FZGeNF7bE3syeQOynDKC"  # Victoria — Engaging and Expressive, ru
+ELEVENLABS_MODEL = "eleven_multilingual_v2"
 
 
 # ============================================================
-# Pipeline factory — создаёт pipeline для каждого подключения
+# Bot pipeline
 # ============================================================
 
 
-async def run_bot(webrtc_connection: SmallWebRTCConnection):
+async def run_bot(room_url: str, token: str):
     """Создаёт и запускает pipeline для одного клиента."""
-    logger.info(f"New client connected: {webrtc_connection.pc_id}")
+    logger.info(f"Starting bot in room: {room_url}")
 
-    transport = SmallWebRTCTransport(
-        webrtc_connection=webrtc_connection,
-        params=TransportParams(
+    transport = DailyTransport(
+        room_url=room_url,
+        token=token,
+        bot_name="Sofia",
+        params=DailyParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
             audio_in_sample_rate=16000,
@@ -167,16 +119,12 @@ async def run_bot(webrtc_connection: SmallWebRTCConnection):
         ),
     )
 
-    # TTS: ElevenLabs Nastya
+    # TTS: ElevenLabs
     tts = ElevenLabsTTSService(
         api_key=os.getenv("ELEVENLABS_API_KEY"),
         settings=ElevenLabsTTSService.Settings(
             voice=ELEVENLABS_VOICE_ID,
             model=ELEVENLABS_MODEL,
-            language="ru",
-            stability=0.5,
-            similarity_boost=0.75,
-            speed=1.0,
         ),
         sample_rate=24000,
     )
@@ -196,7 +144,7 @@ async def run_bot(webrtc_connection: SmallWebRTCConnection):
         user_params=LLMUserAggregatorParams(),
     )
 
-    # Pipeline: audio in → STT → context → LLM → TTS → audio out
+    # Pipeline
     pipeline = Pipeline(
         [
             transport.input(),
@@ -220,9 +168,7 @@ async def run_bot(webrtc_connection: SmallWebRTCConnection):
     # Когда клиент подключился — София здоровается
     @transport.event_handler("on_client_connected")
     async def on_client_connected(transport, client):
-        logger.info("Client connected, sending greeting")
-        from pipecat.frames.frames import LLMRunFrame
-
+        logger.info(f"Client connected: {client}")
         context.add_message(
             {"role": "user", "content": "[Клиент подключился к голосовому чату]"}
         )
@@ -230,110 +176,11 @@ async def run_bot(webrtc_connection: SmallWebRTCConnection):
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(transport, client):
-        logger.info("Client disconnected")
+        logger.info(f"Client disconnected: {client}")
         await task.cancel()
 
     runner = PipelineRunner(handle_sigint=False)
     await runner.run(task)
-
-
-# ============================================================
-# API endpoints
-# ============================================================
-
-
-@app.post("/start")
-async def start_bot(request: dict):
-    """Prebuilt UI вызывает POST /start → получает session_id.
-    Затем клиент шлёт SDP offer на /sessions/{session_id}/api/offer.
-    """
-    import uuid
-
-    session_id = str(uuid.uuid4())
-    logger.info(f"New session started: {session_id}")
-    return JSONResponse(
-        content={
-            "session_id": session_id,
-            "iceConfig": {
-                "iceServers": [
-                    {"urls": ["stun:stun.l.google.com:19302"]},
-                    {
-                        "urls": [
-                            "turn:72.56.64.91:3478?transport=udp",
-                            "turn:72.56.64.91:3478?transport=tcp",
-                        ],
-                        "username": "sofia",
-                        "credential": "sofia2026turn",
-                    },
-                ]
-            },
-        }
-    )
-
-
-@app.post("/sessions/{session_id}/api/offer")
-async def session_offer(session_id: str, request: dict):
-    """WebRTC SDP offer endpoint (per-session)."""
-    try:
-        webrtc_request = SmallWebRTCRequest.from_dict(request)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request: {e}")
-
-    answer = await webrtc_handler.handle_web_request(
-        webrtc_request,
-        run_bot,
-    )
-
-    if answer is None:
-        raise HTTPException(status_code=500, detail="Failed to create WebRTC answer")
-
-    return JSONResponse(content=answer)
-
-
-@app.patch("/sessions/{session_id}/api/offer")
-@app.post("/sessions/{session_id}/api/offer/patch")
-async def session_offer_patch(session_id: str, request: dict):
-    """ICE candidate patch endpoint (per-session). Supports both PATCH and POST."""
-    from pipecat.transports.smallwebrtc.request_handler import (
-        IceCandidate,
-        SmallWebRTCPatchRequest,
-    )
-
-    try:
-        pc_id = request.get("pc_id", session_id)
-        candidates = request.get("candidates", [])
-        patch = SmallWebRTCPatchRequest(
-            pc_id=pc_id,
-            candidates=[IceCandidate(**c) for c in candidates],
-        )
-        await webrtc_handler.handle_patch_request(patch)
-        return JSONResponse(content={"status": "ok"})
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.post("/api/offer")
-async def offer(request: dict):
-    """Fallback WebRTC SDP offer endpoint."""
-    try:
-        webrtc_request = SmallWebRTCRequest.from_dict(request)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request: {e}")
-
-    answer = await webrtc_handler.handle_web_request(
-        webrtc_request,
-        run_bot,
-    )
-
-    if answer is None:
-        raise HTTPException(status_code=500, detail="Failed to create WebRTC answer")
-
-    return JSONResponse(content=answer)
-
-
-@app.get("/api/health")
-async def health():
-    return {"status": "ok", "service": "sofia-voice-v2-pipecat", "port": PORT}
 
 
 # ============================================================
@@ -342,11 +189,43 @@ async def health():
 
 
 async def main():
-    config = Config(app=app, host="0.0.0.0", port=PORT, log_level="info")
-    server = Server(config)
-    logger.info(f"Sofia Voice Bot v2 starting on port {PORT}")
-    logger.info(f"Open http://72.56.64.91:{PORT}/client to test")
-    await server.serve()
+    daily_api_key = os.getenv("DAILY_API_KEY")
+    if not daily_api_key:
+        raise Exception("DAILY_API_KEY not set in .env")
+
+    async with aiohttp.ClientSession() as session:
+        rest = DailyRESTHelper(
+            daily_api_key=daily_api_key,
+            daily_api_url="https://api.daily.co/v1",
+            aiohttp_session=session,
+        )
+
+        # Создаём комнату
+        import time
+
+        room = await rest.create_room(
+            DailyRoomParams(
+                properties={
+                    "exp": int(time.time()) + 3600,  # 1 час
+                    "enable_chat": False,
+                }
+            )
+        )
+        logger.info(f"Room created: {room.url}")
+
+        # Получаём токен для бота
+        token = await rest.get_token(room.url, expiry_time=3600)
+
+        logger.info(f"Bot token obtained")
+        logger.info(f"")
+        logger.info(f"========================================")
+        logger.info(f"  ТЕСТ: откройте в браузере:")
+        logger.info(f"  {room.url}")
+        logger.info(f"========================================")
+        logger.info(f"")
+
+        # Запускаем бот
+        await run_bot(room.url, token)
 
 
 if __name__ == "__main__":

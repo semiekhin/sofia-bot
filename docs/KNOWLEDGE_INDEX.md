@@ -1,6 +1,6 @@
 # KNOWLEDGE_INDEX.md — база знаний Sofia-GPT
 
-📅 Создан: 08.03.2026 | Обновлён: 25.03.2026
+📅 Создан: 08.03.2026 | Обновлён: 26.03.2026
 
 ## Формат записи
 ### [Дата] Название задачи
@@ -11,153 +11,111 @@
 
 ---
 
+## 26.03.2026 — ASSIGNED_BY_ID=428 + деплой P0 + Voice V1 + Pipecat V2
+
+### ASSIGNED_BY_ID=428 (Sofia AI) — ЗАДЕПЛОЕНО
+
+- **Что сделано:**
+  1. `SOFIA_AI_USER_ID = 428` — константа в core/bitrix.py
+  2. `create_lead()` ставит ASSIGNED_BY_ID=428 (вместо 426) при создании
+  3. `find_recent_atlantis_lead()` → dict с assigned_by_id, сохраняет original
+  4. `restore_assigned(db_path, lead_id)` — возвращает ответственного (original → fallback 426)
+  5. Таблица `lead_assigned`: lead_id → original_assigned_by_id (auto-migrate)
+  6. Webhook: проверяет ASSIGNED_BY_ID ≠ 428 → менеджер перехватил → его ID
+  7. 4 сценария: meeting_agreed, двойной отказ, таймаут, перехват
+- **Почему:** Битрикс робот-распределитель раздаёт лиды менеджерам сразу. Sofia AI (428) — ответственный на время квалификации, робот не трогает.
+- **Файлы:** core/bitrix.py, bot_server.py, web_api.py
+- **Коммиты:** 320cbdd2, 7ae37c0a
+- **Как откатить:** Восстановить из backups/20260326_0724/
+
+### Битрикс только для source-сессий — ЗАДЕПЛОЕНО
+
+- **Что сделано:** `_is_bitrix_session(user_id)` — Битрикс API вызывается только при наличии source_object (ATL и др.)
+- **Почему:** Обычные диалоги /start без параметра не должны создавать лиды в CRM
+- **Файлы:** bot_server.py
+- **Коммит:** 7ae37c0a
+
+### Деплой P0 в прод — 26.03.2026
+
+- **Что задеплоено:** core/bitrix.py, bot_server.py, web_api.py
+- **Бэкап:** `/opt/sofia-gpt/backups/20260326_0724/`
+- **Как откатить:**
+```bash
+cp /opt/sofia-gpt/backups/20260326_0724/bitrix.py.bak /opt/sofia-gpt/core/bitrix.py
+cp /opt/sofia-gpt/backups/20260326_0724/bot_server.py.bak /opt/sofia-gpt/bot_server.py
+cp /opt/sofia-gpt/backups/20260326_0724/web_api.py.bak /opt/sofia-gpt/web_api.py
+sudo systemctl restart sofia-gpt sofia-web-api sofia-radist
+```
+
+### Voice Вариант 1 — оптимизация stream_voice_response()
+
+- **Что сделано:**
+  1. VOICE_MODEL = "gpt-4.1-mini" (вместо gpt-5.2)
+  2. RAG: 3 → 10 примеров
+  3. VOICE_PROMPT_ADDON — 7 правил голосового режима (убрано "всегда заканчивай вопросом")
+  4. max_output_tokens: 4000 → 800
+  5. Async Extractor: extract_sync + merge_extraction_to_state в asyncio.create_task (НЕ через process_message — он сбрасывает dialog_finished)
+  6. [END] проверка post-stream
+- **Почему:** Ускорить voice + вернуть качество (Extractor, RAG)
+- **Файлы:** core/pipeline.py
+- **Коммиты:** 07045919, 48b654be
+- **ВАЖНО:** process_message() сбрасывает dialog_finished=False (строка 52-56). Async Extractor вызывает extract_sync + merge напрямую чтобы не сбрасывать.
+
+### Voice Вариант 2 — Pipecat бот (dev, В ПРОЦЕССЕ)
+
+- **Что сделано:**
+  1. Pipecat 0.0.107 установлен (openai, elevenlabs, silero, webrtc, daily extras)
+  2. voice_pipecat.py — SmallWebRTC транспорт (НЕ РАБОТАЕТ — NAT блокирует ICE)
+  3. Coturn TURN сервер установлен на 72.56.64.91:3478 (user: sofia / sofia2026turn) — не помог
+  4. voice_pipecat_daily.py — Daily WebRTC транспорт
+  5. Daily аккаунт: sofia-oazis.daily.co, домен настроен, карта привязана
+  6. Pipeline работает: STT распознаёт → LLM генерирует → TTS озвучивает (подтверждено логами)
+  7. Nginx: `/voice-v2/`, `/start`, `/sessions/` → порт 8082
+- **Блокер:** ElevenLabs TTS TTFB 5-13с — аудио генерируется но клиент не слышит вовремя
+- **ElevenLabs голоса:** Nastya (YjESejviApN7SHrbfnA2) НЕТ на аккаунте (была в Retell). Используется Victoria (FZGeNF7bE3syeQOynDKC), eleven_multilingual_v2
+- **Файлы:** voice_pipecat.py, voice_pipecat_daily.py
+- **Как откатить:** Просто остановить процесс, прод не затронут
+
+---
+
 ## 25.03.2026 — Исследование голосового агента
 
-- **Что сделано:** Полное исследование голосового стека: 8 направлений, 50+ решений. STT (9), TTS (10), LLM (11), оркестрация (7), телефония (7), end-to-end (6), архитектурные паттерны (7), российская специфика.
-- **Почему:** Текущая интеграция с Retell имеет проблемы: деградация (отключены Extractor/Analyzer), плохой STT русского, неестественные паузы, дорого ($0.07-0.14/мин), нет контроля.
+- **Что сделано:** Полное исследование голосового стека: 8 направлений, 50+ решений.
 - **Ключевые выводы:**
-  - End-to-end модели (OpenAI Realtime, Gemini Live) НЕ подходят для русского sales-агента
-  - Целевой стек: Pipecat + Yandex SpeechKit (STT+TTS) + Groq/Qwen3-32B (Extractor) + gpt-4.1-mini (Generator) + Задарма (SIP)
-  - Три варианта: быстрый (1-2 дня, ~2с), средний (2-3 нед, ~1.0-1.5с, $0.035/мин), максимальный (4-6 нед, ~0.5с)
+  - Целевой стек: Pipecat + Yandex SpeechKit + Groq/Qwen3-32B + gpt-4.1-mini + Задарма
   - gpt-4.1-mini: 0.7с TTFT, без reasoning overhead, 15x дешевле gpt-5.2
-  - Groq + Qwen3-32B: 0.2с TTFT для Extractor
-  - Yandex SpeechKit: лучший русский STT/TTS, серверы в РФ
 - **Файлы:** `docs/VOICE_RESEARCH_2026.md`
-- **Как откатить:** N/A (исследование, нет изменений в коде)
 
 ---
 
 ## 22.03.2026 — Битрикс в bot_server.py + таймауты + Тильда привязка
 
-- **Что сделано:**
-  1. core/bitrix.py подключён к bot_server.py: лиды создаются, комменты стримятся, перехват менеджером работает
-  2. Таймауты: сценарий А (15 мин без ответа → финализация), сценарий Б (60 мин + напоминание + 15 мин)
-  3. Привязка к лиду Тильды: ищет последний лид с SOURCE_ID=397
-  4. Атлантис prompt_addon: не спрашивает контакт (форма Тильды уже содержит)
-  5. Решение: Тильда → 24/7 редирект на Telegram бот ?start=ATL. Endpoint /go/atlantis-redirect ОТМЕНЁН
-- **Почему:** Лиды из ?start=ATL (Тильда → Telegram бот) не попадали в CRM — теряли квалификацию
-- **Файлы dev:** bot_server.py, core/bitrix.py
-- **Коммит:** 4214a17b (dev), НЕ задеплоен в прод
-- **Как откатить:** `git revert 4214a17b` в dev
-- **Ожидает:** Деплой в прод + ASSIGNED_BY_ID=428 (Sofia AI)
+- **Что сделано:** core/bitrix.py подключён к bot_server.py, таймауты, привязка к лиду Тильды
+- **Коммит:** 4214a17b (dev), задеплоен в прод 26.03.2026
+- **Как откатить:** Восстановить из backups/20260326_0724/
 
 ---
 
 ## 21.03.2026 — SOFIA_PATH fix + полный деплой dev→prod + core/bitrix.py
 
-- **Что сделано:**
-  1. SOFIA_PATH хардкод исправлен во всех 9 файлах dev (было задокументировано 5, реально 9). grep чистый.
-  2. Полный деплой dev → prod: core/ (pipeline.py, bitrix.py, __init__.py), bot_server.py, web_api.py, sofia_radist_gateway.py
-  3. core/bitrix.py создан и подключён к web_api.py (прод). Лид #261924 — подтверждение работы.
-- **Почему:** Прод работал на старом дублированном пайплайне (~25с ответ). Dev на core/pipeline.py уже 2 недели — стабильно.
-- **Результат:** Все 3 прод-сервиса на core/pipeline.py. Ответ ~7с. voice_api.py НЕ деплоился (осознанно — только dev).
-- **Файлы прод:** core/pipeline.py, core/bitrix.py, core/__init__.py, bot_server.py, web_api.py, sofia_radist_gateway.py
 - **Бэкап:** `/opt/sofia-gpt-backup-20260321_1355` (НЕ УДАЛЯТЬ)
-- **Как откатить:** Восстановить из бэкапа: `cp -r /opt/sofia-gpt-backup-20260321_1355/* /opt/sofia-gpt/ && systemctl restart sofia-gpt sofia-web-api sofia-radist`
+- **Как откатить:** `cp -r /opt/sofia-gpt-backup-20260321_1355/* /opt/sofia-gpt/ && systemctl restart sofia-gpt sofia-web-api sofia-radist`
 
 ---
 
-## 11.03.2026 — Аудит проекта + исследование собственного голосового сервиса
+## 10.03.2026 — voice_api.py + voice_mode + stream_voice_response
 
-- **Что сделано:** Полный аудит состояния прод/дев, исследование альтернатив Retell
-- **Ключевые находки:**
-  - `core/` не существует в проде — все изменения с 09.03 только в dev
-  - web_api.py:26 `SOFIA_PATH="/opt/sofia-gpt"` — voice пишет в прод БД (баг)
-  - Стриминг в pipeline.py + voice_api.py (stream_voice_response + буферизация) — на момент аудита 11.03 был незакоммичен, позже закоммичен (подтверждено 15.03)
-- **Исследование голосового сервиса:**
-  - Dasha.ai — Custom LLM только через Node.js SDK (старая версия), не подходит
-  - Яндекс AI Studio Realtime — нет Custom LLM endpoint, их модель в цепочке
-  - Voicyfy — no-code поверх OpenAI/Google, нет API для Custom LLM
-  - **Pipecat (open-source, Python)** — лучший кандидат для собственного сервиса
-  - Архитектура: SIP → Pipecat → Deepgram STT → наш pipeline → ElevenLabs/Yandex TTS
-  - stream_voice_response() уже готов, нужен Pipecat LLM Service обёртка (~200-300 строк)
-- **Не протестировано:** gpt-4.1-mini для voice (первый токен ~200мс vs ~800мс)
+- **Retell данные:** Agent `agent_d428a1d13067a563faf30a88bb`, голос Nastya
+- **User ID формула voice:** `7_000_000 + (md5(call_id)[:8] as int % 1_000_000)`
 
-## 10.03.2026 (ночь) — stream_voice_response + буферизация чанков
+---
 
-- **Что сделано:** Стриминг ответа Generator для голоса — чанки идут по мере генерации, а не ждём полный ответ
-- **Почему:** Даже с voice_mode (2с) пауза ощущается. Со стримингом первый звук уходит через ~0.8с
-- **Файлы:**
-  - `core/pipeline.py` — новая функция `stream_voice_response()`: Generator с `stream=True`, yield через asyncio.Queue
-  - `voice_api.py` — буферизация: flush по знакам `.!?,` или при 20+ символов + пробел. Итог: 2-8 чанков вместо 74 микро-чанков
-- **Проблема исправлена:** clean_for_voice() вызывался на каждом микро-чанке, .strip() убивал пробелы → слова склеивались. Фикс: чанки идут в буфер как есть (сырой), clean_for_voice() вызывается только на полном тексте для сохранения в БД
-- **Статус:** Закоммичен (подтверждено аудитом 15.03.2026)
-- **Как откатить:** `git checkout core/pipeline.py voice_api.py` — вернётся к run_pipeline(voice_mode=True) без стриминга
+## 09.03.2026 — core/pipeline.py + dev radist
 
-## 10.03.2026 (ночь) — Dasha.ai исследование
+- **core/pipeline.py** — единый пайплайн для всех каналов
 
-- **Что решено:** Параллельно с Retell AI изучить Dasha.ai (старая версия) для Custom LLM интеграции
-- **Почему:** Retell работает, но Dasha может дать лучшее качество русского голоса / меньший латенси
-- **Детали:** Blackbox-версия Dasha не подходит (нет кастомной LLM). Менеджер Dasha подтвердил возможность через старую платформу (DashaScript/API)
-- **Статус:** Исследование, прототипа пока нет. Приоритет снижен — Pipecat перспективнее
-
-## 10.03.2026 (вечер) — voice_mode: оптимизация латенси голосового канала
-
-- **Что сделано:** Добавлен параметр `voice_mode` в `run_pipeline()` — отключает reasoning, Analyzer, Extractor, уменьшает RAG до 3 примеров, добавляет инструкцию "коротко"
-- **Почему:** Голосовой ответ занимал 6-10с, некомфортно для живого разговора
-- **Результат:** ~2с на ответ
-- **Архитектурная заметка:** voice_mode — намеренное временное упрощение. Отключены: Extractor (state не обновляется), Analyzer, reasoning, RAG 10→3, ответ макс 2 предложения. По мере оптимизации — возвращать компоненты по одному.
-- **Файлы:**
-  - `core/pipeline.py` — `voice_mode: bool = False` в сигнатуре run_pipeline()
-  - `voice_api.py` — `run_pipeline(voice_mode=True)` → заменён на `stream_voice_response()` (см. запись выше)
-- **Как откатить:** В pipeline.py убрать все `voice_mode` условия. Или восстановить из backup_* файлов.
-
-## 10.03.2026 (утро) — voice_api.py: Retell AI голосовой агент
-
-- **Что сделано:** WebSocket адаптер для Retell AI Custom LLM, маршрут в web_api.py, nginx location
-- **Почему:** Шаг 1 — голосовой канал для Sofia
-- **Файлы:**
-  - `voice_api.py` — новый: handle_voice_ws(), call_id_to_user_id(), clean_for_voice()
-  - `web_api.py` — добавлен WebSocket маршрут `/llm-websocket/{call_id}`, порт 8081, channel param
-  - `/etc/nginx/sites-available/sofia-api` — location /llm-websocket/ → 8081
-- **Retell данные:**
-  - API Key: `key_efd60e45e3721404e9239c41a9dd`
-  - Agent ID: `agent_d428a1d13067a563faf30a88bb`
-  - URL: `wss://api.atlantis-invest.ru/llm-websocket/`
-- **User ID формула:** `7_000_000 + (md5(call_id)[:8] as int % 1_000_000)`
-- **Как откатить:** Удалить voice_api.py, убрать WebSocket маршрут из web_api.py, убрать location из nginx, reload nginx
-
-## 09.03.2026 — core/pipeline.py: единый пайплайн
-
-- **Что сделано:** Вынесен дублированный пайплайн (Analyzer → RAG → Generator) из трёх транспортов в `core/pipeline.py`
-- **Почему:** Код пайплайна (~150 строк) копировался в bot_server.py, web_api.py, sofia_radist_gateway.py. Изменение в одном не попадало в другие.
-- **Файлы:**
-  - `core/__init__.py` — пустой
-  - `core/pipeline.py` — `run_pipeline()`, `PipelineResult`, `stream_voice_response()`
-  - `bot_server.py` — `generate_response_with_rag()` → обёртка вокруг `run_pipeline()`
-  - `web_api.py` — `generate_response()` → `run_pipeline()` + Bitrix при dialog_finished
-  - `sofia_radist_gateway.py` — `generate_response()` → `run_pipeline()`
-- **Что унифицировано:** Analyzer prompt, Analyzer call, RAG search, Generator call, [END] check, stop_reason check, source routing, was_offline
-- **Что осталось в транспортах:** save_message, Observer notify, Bitrix (web_api), set_user_stage/save_rag_log (bot_server), send_message (radist)
-- **ВАЖНО:** core/ НЕ существует в проде. Деплой core/ ещё не выполнялся.
-- **Как откатить:** `git revert` коммита, или восстановить из .bak файлов
-
-## 09.03.2026 — Dev-окружение Radist
-
-- **Что сделано:** Полное dev-окружение для radist_gateway: сервис, webhook, DEV_MODE
-- **Почему:** Radist gateway не имел dev-среды, правки тестировались только в проде
-- **Файлы:**
-  - `config/radist_config.py` — `DEV_MODE` из env, порт 5002 при DEV
-  - `sofia_radist_gateway.py` — `send_message()` пропускает отправку при DEV_MODE
-  - `.env` — `RADIST_DEV_MODE=true`
-  - `/etc/systemd/system/sofia-radist-dev.service`
-- **Как откатить:** `systemctl stop sofia-radist-dev && systemctl disable sofia-radist-dev`
+---
 
 ## 08.03.2026 — Создание dev-окружения
 
-- **Что сделано:** Поднята безопасная среда разработки
-- **Почему:** Всё было только в проде, правки шли напрямую с риском сломать клиентов
-- **Что создано:**
-  - `/opt/sofia-gpt-dev/` — копия прода
-  - `sofia_gpt_dev.db` — отдельная БД (чистая схема)
-  - `sofia-web-api-dev.service` — dev сервис на порту 8081
-  - `deploy.sh` — планировался деплой dev→prod с подтверждением (файл не существует по состоянию на 18.03.2026)
-  - `CLAUDE.md` — инструкция для Claude Code
-- **Как откатить:** Dev полностью изолирован, прод не менялся
-
-## 08.03.2026 — Настройка SQLite MCP сервера
-
-- **Что сделано:** Добавлен и настроен SQLite MCP сервер для доступа к dev БД из Claude Code
-- **Почему:** Для удобной работы с БД прямо из чата (просмотр таблиц, запросы)
-- **Файлы:** `.mcp.json`
-- **Как откатить:** Удалить `.mcp.json` или вернуть npx-вариант
+- `/opt/sofia-gpt-dev/`, отдельная БД, systemd сервис
