@@ -43,7 +43,11 @@ from core.bitrix import (
     get_session_id_by_user_id,
     find_user_id_by_lead,
     is_manager_active,
+    restore_assigned,
+    set_lead_assigned,
     set_manager_active,
+    BITRIX_BASE_URL,
+    SOFIA_AI_USER_ID,
 )
 import aiohttp
 from openai import OpenAI
@@ -263,6 +267,9 @@ async def generate_response(user_id, user_message, user_name, channel="web"):
                     is_final=True,
                     channel="web",
                 )
+                # Вернуть ответственного после завершения
+                if lead_id:
+                    await restore_assigned(DB_PATH, lead_id)
             except Exception as e:
                 log.error(f"❌ [BITRIX] final update error: {e}")
 
@@ -630,15 +637,42 @@ async def bitrix_webhook(request: Request):
             log.warning(f"⚠️ [BITRIX WEBHOOK] lead #{lead_id} не найден в web_sessions")
             return {"status": "ok", "action": "ignored", "reason": "lead not found"}
 
+        # Проверяем кто сейчас ответственный за лид
+        # Если ASSIGNED_BY_ID != Sofia AI (428) → менеджер перехватил
+        manager_id = None
+        try:
+            async with aiohttp.ClientSession() as sess:
+                get_url = BITRIX_BASE_URL + "crm.lead.get"
+                async with sess.get(get_url, params={"id": lead_id}) as resp:
+                    result = await resp.json()
+                    lead_data = result.get("result", {})
+                    current_assigned = int(lead_data.get("ASSIGNED_BY_ID", 0))
+                    if current_assigned and current_assigned != SOFIA_AI_USER_ID:
+                        manager_id = current_assigned
+        except Exception as e:
+            log.warning(f"⚠️ [BITRIX WEBHOOK] не удалось получить лид: {e}")
+
+        if not manager_id:
+            # ASSIGNED_BY_ID == Sofia AI → это наше собственное обновление, игнорируем
+            log.info(
+                f"ℹ️ [BITRIX WEBHOOK] lead #{lead_id} — assigned=Sofia AI, "
+                f"игнорируем (наше обновление)"
+            )
+            return {"status": "ok", "action": "ignored", "reason": "self_update"}
+
+        # Менеджер перехватил лид → ставим его ответственным и manager_active
         set_manager_active(DB_PATH, user_id, active=True)
+        await set_lead_assigned(lead_id, manager_id)
         log.info(
-            f"✅ [BITRIX WEBHOOK] manager_active=1 для user_id={user_id}, lead #{lead_id}"
+            f"✅ [BITRIX WEBHOOK] manager_active=1, ASSIGNED_BY_ID={manager_id} "
+            f"для user_id={user_id}, lead #{lead_id}"
         )
         return {
             "status": "ok",
             "action": "manager_activated",
             "user_id": user_id,
             "lead_id": lead_id,
+            "manager_id": manager_id,
         }
 
     except Exception as e:

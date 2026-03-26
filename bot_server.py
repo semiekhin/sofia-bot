@@ -43,7 +43,11 @@ from core.bitrix import (
     create_or_update_lead,
     find_recent_atlantis_lead,
     is_manager_active,
+    restore_assigned,
+    save_original_assigned,
+    set_lead_assigned,
     update_lead,
+    SOFIA_AI_USER_ID,
 )
 
 # Детекторы отключены — управление через промпт + RAG
@@ -772,6 +776,11 @@ async def _finalize_timeout(chat_id: int, finish_type: str, bot):
     if new_lead_id and not lead_id:
         save_bitrix_lead_id(user_id, new_lead_id)
 
+    # Вернуть ответственного после завершения
+    final_lead_id = new_lead_id or lead_id
+    if final_lead_id:
+        await restore_assigned(DB_PATH, final_lead_id)
+
     log(f"⏱️ [TIMEOUT] {finish_type} для chat {chat_id}, user {user_id}")
 
     # Убираем из отслеживания
@@ -960,6 +969,12 @@ async def delayed_response(chat_id, user_id, user_name, context, tg_user=None):
             log(f"🏷️ [BITRIX] Лид #{new_lead_id} создан для TG user {user_id}")
         elif lead_id:
             log(f"🔄 [BITRIX] Лид #{lead_id} обновлён для TG user {user_id}")
+
+        # Вернуть ответственного при финализации
+        if is_final:
+            final_lead_id = new_lead_id or lead_id
+            if final_lead_id:
+                await restore_assigned(DB_PATH, final_lead_id)
     except Exception as e:
         log(f"❌ [BITRIX] delayed_response error: {e}")
 
@@ -1157,20 +1172,33 @@ async def cmd_start(update, context: ContextTypes.DEFAULT_TYPE):
     # Привязка к существующему лиду из Тильды (только для Атлантиса)
     if source_object and source_object.get("key") == "atlantis":
         try:
-            existing_lead_id = await find_recent_atlantis_lead()
-            if existing_lead_id:
+            lead_data = await find_recent_atlantis_lead()
+            if lead_data:
+                existing_lead_id = lead_data["id"]
                 save_bitrix_lead_id(user_id, existing_lead_id)
+
+                # Сохраняем оригинального ответственного (Тильда/робот)
+                orig_assigned = lead_data.get("assigned_by_id")
+                if orig_assigned:
+                    save_original_assigned(DB_PATH, existing_lead_id, orig_assigned)
+
+                # Ставим Sofia AI ответственной на время квалификации
+                await set_lead_assigned(existing_lead_id, SOFIA_AI_USER_ID)
+
                 # Дописываем Telegram username в существующий лид
                 tg_info = ""
                 if update.effective_user.username:
                     tg_info = f"@{update.effective_user.username}"
                 await update_lead(
                     existing_lead_id,
-                    comments=f"Telegram: {tg_info or user_name}\nСофия подключена к диалогу.",
+                    comments=(
+                        f"Telegram: {tg_info or user_name}\n"
+                        f"София подключена к диалогу."
+                    ),
                 )
                 log(
                     f"🔗 [BITRIX] Привязан к лиду Тильды #{existing_lead_id} "
-                    f"для user {user_id}"
+                    f"для user {user_id}, original_assigned={orig_assigned}"
                 )
         except Exception as e:
             log(f"❌ [BITRIX] find_recent_atlantis_lead error: {e}")

@@ -34,6 +34,7 @@ BITRIX_LIST_URL = BITRIX_BASE_URL + "crm.lead.list"
 BITRIX_SOURCE_ID = os.getenv("BITRIX_SOURCE_ID", "504")
 BITRIX_ASSIGNED_ID = int(os.getenv("BITRIX_ASSIGNED_ID", "426"))
 BITRIX_ATLANTIS_SOURCE_ID = "397"  # Источник Тильда/Атлантис
+SOFIA_AI_USER_ID = 428  # Сотрудник "Sofia AI" — ответственный на время квалификации
 
 
 # ============================================================
@@ -171,12 +172,14 @@ Telegram: {tg_str}
 # ============================================================
 
 
-async def find_recent_atlantis_lead() -> int | None:
-    """Найти последний лид с SOURCE_ID=397 (Тильда/Атлантис)."""
+async def find_recent_atlantis_lead() -> dict | None:
+    """Найти последний лид с SOURCE_ID=397 (Тильда/Атлантис).
+    Возвращает dict с ID и ASSIGNED_BY_ID или None.
+    """
     params = {
         "filter[SOURCE_ID]": BITRIX_ATLANTIS_SOURCE_ID,
         "order[DATE_CREATE]": "DESC",
-        "select[]": ["ID", "TITLE", "DATE_CREATE"],
+        "select[]": ["ID", "TITLE", "DATE_CREATE", "ASSIGNED_BY_ID"],
         "start": 0,
     }
     try:
@@ -185,17 +188,71 @@ async def find_recent_atlantis_lead() -> int | None:
                 result = await resp.json()
                 leads = result.get("result", [])
                 if leads:
-                    lead_id = int(leads[0]["ID"])
+                    lead = leads[0]
+                    lead_id = int(lead["ID"])
+                    assigned = lead.get("ASSIGNED_BY_ID")
                     log.info(
                         f"🔗 [BITRIX] Найден лид Тильды #{lead_id} "
-                        f"({leads[0].get('TITLE', '?')})"
+                        f"({lead.get('TITLE', '?')}), "
+                        f"assigned={assigned}"
                     )
-                    return lead_id
+                    return {
+                        "id": lead_id,
+                        "assigned_by_id": int(assigned) if assigned else None,
+                    }
                 log.info("🔗 [BITRIX] Лидов Тильды не найдено")
                 return None
     except Exception as e:
         log.error(f"❌ [BITRIX] find_recent_atlantis_lead error: {e}")
         return None
+
+
+async def restore_assigned(db_path: str, lead_id: int) -> bool:
+    """Вернуть ответственного за лид после завершения диалога.
+    Порядок: original из lead_assigned → fallback BITRIX_ASSIGNED_ID (426).
+    """
+    original = get_original_assigned(db_path, lead_id)
+    restore_to = original or BITRIX_ASSIGNED_ID
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                BITRIX_UPDATE_URL,
+                json={"id": lead_id, "fields": {"ASSIGNED_BY_ID": restore_to}},
+            ) as resp:
+                result = await resp.json()
+                if result.get("result"):
+                    log.info(
+                        f"🔄 [BITRIX] Лид #{lead_id}: ASSIGNED_BY_ID "
+                        f"восстановлен → {restore_to} "
+                        f"({'original' if original else 'fallback'})"
+                    )
+                    return True
+                log.warning(f"⚠️ [BITRIX] restore_assigned ошибка: {result}")
+                return False
+    except Exception as e:
+        log.error(f"❌ [BITRIX] restore_assigned error: {e}")
+        return False
+
+
+async def set_lead_assigned(lead_id: int, assigned_id: int) -> bool:
+    """Поставить конкретного ответственного на лид."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                BITRIX_UPDATE_URL,
+                json={"id": lead_id, "fields": {"ASSIGNED_BY_ID": assigned_id}},
+            ) as resp:
+                result = await resp.json()
+                if result.get("result"):
+                    log.info(
+                        f"✅ [BITRIX] Лид #{lead_id}: ASSIGNED_BY_ID → {assigned_id}"
+                    )
+                    return True
+                log.warning(f"⚠️ [BITRIX] set_lead_assigned ошибка: {result}")
+                return False
+    except Exception as e:
+        log.error(f"❌ [BITRIX] set_lead_assigned error: {e}")
+        return False
 
 
 # ============================================================
@@ -210,13 +267,15 @@ async def create_lead(
     source_id: str = None,
     assigned_id: int = None,
 ) -> int | None:
-    """Создать новый лид. Возвращает lead_id или None."""
+    """Создать новый лид. Возвращает lead_id или None.
+    По умолчанию ответственный = Sofia AI (428) на время квалификации.
+    """
     fields = {
         "TITLE": f"AI-бот: {name}",
         "NAME": name,
         "COMMENTS": comments,
         "SOURCE_ID": source_id or BITRIX_SOURCE_ID,
-        "ASSIGNED_BY_ID": assigned_id or BITRIX_ASSIGNED_ID,
+        "ASSIGNED_BY_ID": assigned_id or SOFIA_AI_USER_ID,
     }
     if phone:
         fields["PHONE"] = [{"VALUE": phone, "VALUE_TYPE": "MOBILE"}]
@@ -243,9 +302,12 @@ async def update_lead(
     phone: str = None,
     name: str = None,
     is_final: bool = False,
+    assigned_id: int = None,
 ) -> bool:
     """Обновить существующий лид. Возвращает True при успехе."""
     fields = {"COMMENTS": comments}
+    if assigned_id:
+        fields["ASSIGNED_BY_ID"] = assigned_id
     if is_final:
         if phone:
             fields["PHONE"] = [{"VALUE": phone, "VALUE_TYPE": "MOBILE"}]
@@ -368,3 +430,53 @@ def set_manager_active(db_path: str, user_id: int, active: bool = True):
     )
     conn.commit()
     conn.close()
+
+
+# ============================================================
+# Lead assigned: сохранение оригинального ответственного
+# ============================================================
+
+
+def _migrate_lead_assigned(db_path: str):
+    """Создаёт таблицу lead_assigned если её нет."""
+    conn = sqlite3.connect(db_path)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS lead_assigned (
+            lead_id INTEGER PRIMARY KEY,
+            original_assigned_by_id INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+
+def save_original_assigned(db_path: str, lead_id: int, assigned_id: int):
+    """Сохранить оригинального ответственного для лида."""
+    _migrate_lead_assigned(db_path)
+    conn = sqlite3.connect(db_path)
+    conn.execute(
+        """INSERT INTO lead_assigned (lead_id, original_assigned_by_id)
+           VALUES (?, ?)
+           ON CONFLICT(lead_id) DO UPDATE SET original_assigned_by_id = ?""",
+        (lead_id, assigned_id, assigned_id),
+    )
+    conn.commit()
+    conn.close()
+    log.info(
+        f"💾 [BITRIX] Сохранён original_assigned={assigned_id} для лида #{lead_id}"
+    )
+
+
+def get_original_assigned(db_path: str, lead_id: int) -> int | None:
+    """Получить оригинального ответственного для лида."""
+    _migrate_lead_assigned(db_path)
+    conn = sqlite3.connect(db_path)
+    c = conn.cursor()
+    c.execute(
+        "SELECT original_assigned_by_id FROM lead_assigned WHERE lead_id = ?",
+        (lead_id,),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row and row[0] else None
