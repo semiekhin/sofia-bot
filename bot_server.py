@@ -153,6 +153,12 @@ def clear_bitrix_lead_id(user_id: int):
     conn.close()
 
 
+def _is_bitrix_session(user_id: int) -> bool:
+    """Битрикс-интеграция только для сессий с source_object (ATL и др.)."""
+    state = state_manager.get_state(user_id)
+    return bool(getattr(state, "source_object", None))
+
+
 LOG_PATH = "sofia_bot.log"
 ANTIFLOOD_DELAY = 3
 CONTEXT_SIZE = 8  # Последние 8 сообщений
@@ -754,32 +760,34 @@ def _is_dialog_active(chat_id: int) -> bool:
 
 
 async def _finalize_timeout(chat_id: int, finish_type: str, bot):
-    """Финализирует лид в Битрикс по таймауту."""
+    """Финализирует диалог по таймауту. Битрикс — только для source-сессий."""
     user_id = _get_user_id_for_chat(chat_id)
     user_name = _get_user_name_for_chat(chat_id)
 
     state_manager.update_state(
         user_id, {"dialog_finished": True, "finish_type": finish_type}
     )
-    state_fresh = state_manager.get_state(user_id)
-    history = get_conversation_history(chat_id, limit=100)
-    lead_id = get_bitrix_lead_id(user_id)
 
-    new_lead_id = await create_or_update_lead(
-        lead_id,
-        user_name,
-        state_fresh,
-        history,
-        is_final=True,
-        channel="telegram",
-    )
-    if new_lead_id and not lead_id:
-        save_bitrix_lead_id(user_id, new_lead_id)
+    if _is_bitrix_session(user_id):
+        state_fresh = state_manager.get_state(user_id)
+        history = get_conversation_history(chat_id, limit=100)
+        lead_id = get_bitrix_lead_id(user_id)
 
-    # Вернуть ответственного после завершения
-    final_lead_id = new_lead_id or lead_id
-    if final_lead_id:
-        await restore_assigned(DB_PATH, final_lead_id)
+        new_lead_id = await create_or_update_lead(
+            lead_id,
+            user_name,
+            state_fresh,
+            history,
+            is_final=True,
+            channel="telegram",
+        )
+        if new_lead_id and not lead_id:
+            save_bitrix_lead_id(user_id, new_lead_id)
+
+        # Вернуть ответственного после завершения
+        final_lead_id = new_lead_id or lead_id
+        if final_lead_id:
+            await restore_assigned(DB_PATH, final_lead_id)
 
     log(f"⏱️ [TIMEOUT] {finish_type} для chat {chat_id}, user {user_id}")
 
@@ -931,52 +939,53 @@ async def delayed_response(chat_id, user_id, user_name, context, tg_user=None):
     await context.bot.send_message(chat_id=chat_id, text=response)
     log(f"📤 София → {user_name}: {response[:100]}...")
 
-    # ── Bitrix CRM: создаём/обновляем лид ──
-    try:
-        state_fresh = state_manager.get_state(user_id)
-        history_fresh = get_conversation_history(chat_id, limit=100)
-        lead_id = get_bitrix_lead_id(user_id)
-
-        # meeting_agreed → финализация (квалифицирован, созвон согласован)
-        meeting_ok = bool(getattr(state_fresh, "meeting_agreed", False))
-        if meeting_ok and not getattr(state_fresh, "dialog_finished", False):
-            state_manager.update_state(
-                user_id, {"dialog_finished": True, "finish_type": "meeting"}
-            )
-            state_fresh = state_manager.get_state(user_id)
-            log(f"✅ [BITRIX] meeting_agreed → финализация для user {user_id}")
-
-        is_final = bool(getattr(state_fresh, "dialog_finished", False))
-
-        # Имя для Битрикса: first_name + @username если есть
-        bitrix_name = user_name
-        tg_username = None
-        if tg_user and tg_user.username:
-            bitrix_name = f"{user_name} (@{tg_user.username})"
-            tg_username = f"@{tg_user.username}"
-
-        new_lead_id = await create_or_update_lead(
-            lead_id,
-            bitrix_name,
-            state_fresh,
-            history_fresh,
-            is_final=is_final,
-            channel="telegram",
-            telegram_username=tg_username,
+    # meeting_agreed → финализация (логика состояния, не Битрикс)
+    state_fresh = state_manager.get_state(user_id)
+    meeting_ok = bool(getattr(state_fresh, "meeting_agreed", False))
+    if meeting_ok and not getattr(state_fresh, "dialog_finished", False):
+        state_manager.update_state(
+            user_id, {"dialog_finished": True, "finish_type": "meeting"}
         )
-        if new_lead_id and not lead_id:
-            save_bitrix_lead_id(user_id, new_lead_id)
-            log(f"🏷️ [BITRIX] Лид #{new_lead_id} создан для TG user {user_id}")
-        elif lead_id:
-            log(f"🔄 [BITRIX] Лид #{lead_id} обновлён для TG user {user_id}")
+        state_fresh = state_manager.get_state(user_id)
+        log(f"✅ meeting_agreed → финализация для user {user_id}")
 
-        # Вернуть ответственного при финализации
-        if is_final:
-            final_lead_id = new_lead_id or lead_id
-            if final_lead_id:
-                await restore_assigned(DB_PATH, final_lead_id)
-    except Exception as e:
-        log(f"❌ [BITRIX] delayed_response error: {e}")
+    is_final = bool(getattr(state_fresh, "dialog_finished", False))
+
+    # ── Bitrix CRM: только для source-сессий (ATL и др.) ──
+    if _is_bitrix_session(user_id):
+        try:
+            history_fresh = get_conversation_history(chat_id, limit=100)
+            lead_id = get_bitrix_lead_id(user_id)
+
+            # Имя для Битрикса: first_name + @username если есть
+            bitrix_name = user_name
+            tg_username = None
+            if tg_user and tg_user.username:
+                bitrix_name = f"{user_name} (@{tg_user.username})"
+                tg_username = f"@{tg_user.username}"
+
+            new_lead_id = await create_or_update_lead(
+                lead_id,
+                bitrix_name,
+                state_fresh,
+                history_fresh,
+                is_final=is_final,
+                channel="telegram",
+                telegram_username=tg_username,
+            )
+            if new_lead_id and not lead_id:
+                save_bitrix_lead_id(user_id, new_lead_id)
+                log(f"🏷️ [BITRIX] Лид #{new_lead_id} создан для TG user {user_id}")
+            elif lead_id:
+                log(f"🔄 [BITRIX] Лид #{lead_id} обновлён для TG user {user_id}")
+
+            # Вернуть ответственного при финализации
+            if is_final:
+                final_lead_id = new_lead_id or lead_id
+                if final_lead_id:
+                    await restore_assigned(DB_PATH, final_lead_id)
+        except Exception as e:
+            log(f"❌ [BITRIX] delayed_response error: {e}")
 
     if chat_id in pending_responses:
         del pending_responses[chat_id]
@@ -1166,8 +1175,10 @@ async def cmd_start(update, context: ContextTypes.DEFAULT_TYPE):
         chat_id, user_id, user_name, context, source_object=source_object
     )
 
-    # Сбрасываем старый lead_id — новый диалог получит новый лид
-    clear_bitrix_lead_id(user_id)
+    # Битрикс — только для source-сессий (ATL и др.)
+    if source_object:
+        # Сбрасываем старый lead_id — новый диалог получит новый лид
+        clear_bitrix_lead_id(user_id)
 
     # Привязка к существующему лиду из Тильды (только для Атлантиса)
     if source_object and source_object.get("key") == "atlantis":
