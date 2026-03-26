@@ -18,10 +18,23 @@ from openai import OpenAI
 from rag_module import search_examples, format_examples_for_prompt
 from sofia_prompt_v2 import get_system_prompt_v2, format_state_summary
 from config.source_objects import load_object_context, get_object_by_key
+from extractor import extract_sync, merge_extraction_to_state
 
 log = logging.getLogger("sofia.pipeline")
 
 RAG_EXAMPLES_COUNT = 10
+VOICE_MODEL = "gpt-4.1-mini"
+
+VOICE_PROMPT_ADDON = """
+Ты сейчас разговариваешь ГОЛОСОМ по телефону. Строгие правила:
+- Отвечай 1-2 предложениями максимум
+- Всегда заканчивай вопросом
+- Никаких списков, буллетов, markdown
+- Никаких ссылок и URL
+- Не перечисляй больше 2 вариантов за раз
+- Используй разговорный русский
+- Подтверждай что услышал: "Понял, значит вас интересует..."
+"""
 
 ANALYZER_PROMPT = """Ты — аналитик диалогов продаж недвижимости.
 
@@ -174,7 +187,7 @@ async def run_pipeline(
     # ШАГ 2: RAG
     # ═══════════════════════════════════════════════════════════════
     examples_prompt = ""
-    rag_limit = 3 if voice_mode else RAG_EXAMPLES_COUNT
+    rag_limit = RAG_EXAMPLES_COUNT
     examples = search_examples(rag_stage, rag_query, limit=rag_limit)
     if examples:
         examples_prompt = format_examples_for_prompt(examples)
@@ -186,10 +199,7 @@ async def run_pipeline(
     system_prompt = get_system_prompt_v2(state_summary, examples_prompt)
 
     if voice_mode:
-        system_prompt += (
-            "\n\nВАЖНО: Это голосовой звонок. Отвечай ОЧЕНЬ коротко — "
-            "максимум 2 предложения. Без списков, без форматирования."
-        )
+        system_prompt += VOICE_PROMPT_ADDON
 
     # Source routing: инъекция контекста объекта
     state = state_manager.get_state(user_id)
@@ -310,9 +320,11 @@ async def stream_voice_response(
     """
     Стриминг ответа Generator для голосового канала.
 
-    Analyzer и Extractor пропущены (как voice_mode=True в run_pipeline).
-    Yield'ит текстовые чанки по мере получения от OpenAI.
-    После завершения стрима — проверяет [END] и обновляет state.
+    Модель: gpt-4.1-mini (быстрее gpt-5.2, без reasoning overhead).
+    RAG: полный объём (10 примеров, ChromaDB ~50ms).
+    Analyzer: пропущен (скорость важнее).
+    Extractor: запускается ПОСЛЕ стрима в фоне (async).
+    [END]: проверяется после стрима.
     """
     client = _get_client()
     tag = channel.upper()
@@ -333,19 +345,16 @@ async def stream_voice_response(
             f"(user_msgs={user_msg_count}, object={state.source_object})"
         )
 
-    # RAG (3 примера для voice)
+    # RAG (полный объём — ChromaDB ~50ms, не влияет на латенси)
     examples_prompt = ""
-    examples = search_examples(rag_stage, rag_query, limit=3)
+    examples = search_examples(rag_stage, rag_query, limit=RAG_EXAMPLES_COUNT)
     if examples:
         examples_prompt = format_examples_for_prompt(examples)
         log.info(f"📚 [{tag}] RAG [{rag_stage}]: {len(examples)} примеров")
 
-    # System prompt
+    # System prompt + voice addon
     system_prompt = get_system_prompt_v2(state_summary, examples_prompt)
-    system_prompt += (
-        "\n\nВАЖНО: Это голосовой звонок. Отвечай ОЧЕНЬ коротко — "
-        "максимум 2 предложения. Без списков, без форматирования."
-    )
+    system_prompt += VOICE_PROMPT_ADDON
 
     # Source routing: контекст объекта
     state = state_manager.get_state(user_id)
@@ -366,8 +375,13 @@ async def stream_voice_response(
     messages = [{"role": m["role"], "content": m["content"]} for m in history]
     messages.append({"role": "user", "content": user_message})
 
+    full_response = []
+
     try:
-        log.info(f"🔄 [{tag}] Generator STREAM запрос для {user_name}...")
+        log.info(
+            f"🔄 [{tag}] Generator STREAM запрос для {user_name} "
+            f"(model={VOICE_MODEL})..."
+        )
 
         # stream=True возвращает синхронный итератор —
         # создаём его в thread, затем итерируем через queue
@@ -376,10 +390,10 @@ async def stream_voice_response(
         async def _run_stream():
             def _sync_stream():
                 stream = client.responses.create(
-                    model="gpt-5.2",
+                    model=VOICE_MODEL,
                     instructions=system_prompt,
                     input=messages,
-                    max_output_tokens=4000,
+                    max_output_tokens=800,
                     stream=True,
                 )
                 for event in stream:
@@ -397,6 +411,7 @@ async def stream_voice_response(
             chunk = await queue.get()
             if chunk is None:
                 break
+            full_response.append(chunk)
             yield chunk
 
         await stream_task  # убедимся что завершился без ошибок
@@ -406,3 +421,39 @@ async def stream_voice_response(
     except Exception as e:
         log.error(f"❌ [{tag}] Generator stream error: {e}")
         yield "Простите, связь подвисла. Повторите?"
+        return
+
+    # ═══════════════════════════════════════════════════════════════
+    # Post-stream: [END] проверка + async Extractor
+    # ═══════════════════════════════════════════════════════════════
+    full_text = "".join(full_response)
+
+    # [END] check
+    if "[END]" in full_text or "[end]" in full_text:
+        state_manager.update_state(
+            user_id, {"dialog_finished": True, "finish_type": "llm_end"}
+        )
+        log.info(f"🏁 [{tag}] Voice: диалог завершён [END]")
+
+    # Async Extractor — парсит сообщение клиента в фоне, обновляет state.
+    # Вызываем extract_sync + merge напрямую, НЕ через process_message,
+    # чтобы не сбросить dialog_finished (process_message сбрасывает его).
+    async def _async_extractor():
+        try:
+            history_for_extractor = [
+                {"role": m["role"], "content": m["content"]} for m in history
+            ]
+            extraction = await asyncio.to_thread(
+                extract_sync, user_message, history_for_extractor
+            )
+            if extraction:
+                current_state = state_manager.get_state(user_id)
+                state_updates = merge_extraction_to_state(
+                    current_state.to_dict(), extraction
+                )
+                state_manager.update_state(user_id, state_updates)
+                log.info(f"🔍 [{tag}] Voice Extractor: state обновлён для {user_name}")
+        except Exception as e:
+            log.warning(f"⚠️ [{tag}] Voice Extractor error (non-fatal): {e}")
+
+    asyncio.create_task(_async_extractor())
