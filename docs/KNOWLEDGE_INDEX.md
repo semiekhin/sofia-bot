@@ -11,6 +11,44 @@
 
 ---
 
+## 26.03.2026 (вечер) — Voice V2 deep dive: TTS/STT/Pipeline
+
+### ElevenLabs блокер решён
+
+- **Что сделано:** Нашли и починили причину молчания ElevenLabs TTS в Pipecat
+- **Корень:** Бесплатный план ElevenLabs → HTTP 402, WebSocket молча глотал. Два таймаута в pipecat: `stop_frame_timeout_s=2.0` и `AUDIO_CONTEXT_TIMEOUT=3.0` убивали контекст до прихода аудио
+- **Фикс:** Оплачен Starter план. Пропатчен `AUDIO_CONTEXT_TIMEOUT=15.0` в `/usr/local/lib/python3.12/dist-packages/pipecat/services/tts_service.py:1364`
+- **ВАЖНО:** Патч в системном пакете — при обновлении pipecat нужно повторить
+
+### Кастомные Yandex модули
+
+- **yandex_tts.py** — REST v1, PCM 48kHz, chunking по 250 символов, alena/marina голоса
+- **yandex_stt.py** — gRPC v3 streaming, proto скомпилированы в yandex_proto/
+- **Проблема STT:** Yandex STT работает идеально но ломает turn detection (push_frame напрямую, user_aggregator не видит)
+- **Проблема TTS:** REST v1 + латиница → плохие ударения. Нужен gRPC v3 + unsafe_mode
+
+### core/pipeline.py подключён к Pipecat
+
+- **SofiaPipelineProcessor** заменяет OpenAILLMService в Pipecat pipeline
+- **ВАЖНО:** user_aggregator пушит `LLMContextFrame`, НЕ `LLMRunFrame`
+- Читает последнее user сообщение из LLMContext, вызывает stream_voice_response()
+- sanitize_for_tts(): Oazis Estate → Оазис Эстэйт, убирает URL/email/@username
+- Файлы: voice_pipecat_daily.py
+
+### Баг Retell — двойной ответ
+
+- **Что:** Retell слал два response_required подряд → Reply #4 прерывал Reply #3
+- **Фикс:** `is_responding` флаг в voice_api.py — пропускает запросы пока стримит
+- **Файлы:** voice_api.py
+
+### VOICE_PROMPT_ADDON обновлён
+
+- Добавлены 2 правила: запрет латиницы/URL/email для голоса
+- **Файлы:** core/pipeline.py
+- **Как откатить:** Убрать последние 2 строки из VOICE_PROMPT_ADDON
+
+---
+
 ## 26.03.2026 — ASSIGNED_BY_ID=428 + деплой P0 + Voice V1 + Pipecat V2
 
 ### ASSIGNED_BY_ID=428 (Sofia AI) — ЗАДЕПЛОЕНО

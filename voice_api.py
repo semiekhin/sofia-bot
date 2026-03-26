@@ -89,6 +89,7 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
         log.info(f"[VOICE] Greeting sent: {greeting_text[:60]}...")
 
         # === Цикл обработки сообщений от Retell ===
+        is_responding = False  # флаг: pipeline стримит ответ
         while True:
             raw = await websocket.receive_text()
             try:
@@ -130,6 +131,11 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
                 continue
 
             if not user_text:
+                continue
+
+            # Если pipeline ещё стримит предыдущий ответ — пропускаем
+            if is_responding:
+                log.info(f"[VOICE] Skipping response_required — still responding (text: {user_text[:50]})")
                 continue
 
             response_id += 1
@@ -183,6 +189,7 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
                 )
                 buf = ""
 
+            is_responding = True
             async for chunk in stream_voice_response(
                 user_id=user_id,
                 user_message=user_text,
@@ -229,6 +236,8 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
                     }
                 )
             )
+
+            is_responding = False
 
             # Сохраняем полный очищенный ответ
             reply_text = full_text or "Повторите, пожалуйста?"

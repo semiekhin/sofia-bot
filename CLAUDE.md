@@ -54,7 +54,7 @@ LLM-Generator (gpt-5.2, reasoning=high)
 | Radist Telegram | sofia_radist_gateway.py | 5002 | -(2_000_000 + chat_id) |
 | Radist WhatsApp | sofia_radist_gateway.py | 5002 | -(3_000_000 + chat_id) |
 | Voice (Retell AI) | voice_api.py | 8081 (ws) | 7_000_000 + md5(call_id)[:8] % 1_000_000 |
-| Voice V2 (Pipecat) | voice_pipecat_daily.py | 8083 (Daily) | Daily participant ID |
+| Voice V2 (Pipecat) | voice_pipecat_daily.py | 8083 (Daily) | 8_000_000 + md5(room_url)[:8] % 1_000_000 |
 
 ⚠️ **User ID формулы критичны** — коллизия = смешанные чаты двух клиентов.
 
@@ -70,8 +70,11 @@ LLM-Generator (gpt-5.2, reasoning=high)
 | finance_calculator.py | Сравнение недвижимости vs депозит |
 | message_processor.py | Центральный роутер: extractor → state update |
 | core/bitrix.py | Битрикс CRM: создание/обновление лидов, ASSIGNED_BY_ID=428, webhook, manager_active |
-| voice_api.py | WebSocket адаптер для Retell AI Custom LLM (Вариант 1) |
-| voice_pipecat_daily.py | Pipecat + Daily WebRTC голосовой бот (Вариант 2, В ПРОЦЕССЕ) |
+| voice_api.py | WebSocket адаптер для Retell AI Custom LLM (Вариант 1, РАБОТАЕТ) |
+| voice_pipecat_daily.py | Pipecat + Daily WebRTC + core/pipeline.py (Вариант 2, РАБОТАЕТ) |
+| yandex_tts.py | Кастомный Yandex SpeechKit TTS процессор для Pipecat (REST v1) |
+| yandex_stt.py | Кастомный Yandex SpeechKit STT процессор для Pipecat (gRPC v3) |
+| yandex_proto/ | Скомпилированные proto файлы Yandex Cloud STT v3 |
 | voice_pipecat.py | Pipecat + SmallWebRTC (НЕ РАБОТАЕТ — NAT) |
 
 **Устаревшие (v1, не использовать):** planner.py, llm_planner.py, stage_detector.py, sofia_prompt.py
