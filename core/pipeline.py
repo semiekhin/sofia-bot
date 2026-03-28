@@ -25,7 +25,7 @@ vd = logging.getLogger("VOICE_DIAG")
 vd.setLevel(logging.DEBUG)
 
 RAG_EXAMPLES_COUNT = 10
-VOICE_MODEL = "gpt-4.1-mini"
+VOICE_MODEL = "gpt-5.4-mini"
 
 VOICE_PROMPT_ADDON = """
 Ты сейчас разговариваешь ГОЛОСОМ по телефону. Строгие правила:
@@ -392,17 +392,124 @@ def _get_object_context(state) -> str:
     return "\nОБЪЕКТ КЛИЕНТА:\n" + full_context[:500]
 
 
-def _parse_voice_state(full_text: str) -> tuple:
-    """Разделяет ответ на текст клиенту и state-обновления."""
-    if "###STATE###" in full_text:
-        parts = full_text.split("###STATE###", 1)
-        answer_text = parts[0].strip()
-        try:
-            state_json = json.loads(parts[1].strip())
-            return answer_text, state_json
-        except json.JSONDecodeError:
-            return answer_text, {}
-    return full_text.strip(), {}
+def _extract_state_from_context(user_message, history, current_state):
+    """Rule-based извлечение state из сообщения клиента."""
+    updates = {}
+    text = user_message.lower()
+
+    # Контекст из последнего сообщения бота
+    last_bot_msg = ""
+    for m in reversed(history):
+        if m["role"] == "assistant":
+            last_bot_msg = m["content"].lower()
+            break
+    budget_context = any(
+        w in last_bot_msg for w in ["бюджет", "сумм", "рассматриваете"]
+    )
+
+    # Goal
+    if not getattr(current_state, "goal", None):
+        if any(w in text for w in ["инвестиц", "сдавать", "доход", "аренд", "вложен"]):
+            updates["goal"] = "investment"
+            updates["goal_confidence"] = "confirmed"
+        elif any(w in text for w in ["для себя", "жить", "отдых", "семь"]):
+            updates["goal"] = "personal"
+            updates["goal_confidence"] = "confirmed"
+
+    # Budget
+    if not getattr(current_state, "budget", None):
+        # Паттерн 1: число + млн/миллион
+        patterns = [r"(\d+)\s*(?:млн|миллион)", r"(?:миллион\w*)\s*(\d+)"]
+        for pat in patterns:
+            m = re.search(pat, text)
+            if m:
+                val = int(m.group(1))
+                if val < 100:
+                    updates["budget"] = val * 1_000_000
+                    updates["budget_confidence"] = "confirmed"
+                break
+
+        # Паттерн 2: числительные + млн/миллион
+        if "budget" not in updates:
+            number_words = {
+                "двадцать пять": 25,
+                "пять": 5,
+                "шесть": 6,
+                "семь": 7,
+                "восемь": 8,
+                "девять": 9,
+                "десять": 10,
+                "одиннадцать": 11,
+                "двенадцать": 12,
+                "тринадцать": 13,
+                "четырнадцать": 14,
+                "пятнадцать": 15,
+                "двадцать": 20,
+                "тридцать": 30,
+                "сорок": 40,
+                "пятьдесят": 50,
+            }
+            for word, val in number_words.items():
+                if word in text and ("млн" in text or "миллион" in text):
+                    updates["budget"] = val * 1_000_000
+                    updates["budget_confidence"] = "confirmed"
+                    break
+
+        # Паттерн 3: числительные БЕЗ "миллион" в контексте бюджета
+        if "budget" not in updates and budget_context:
+            # Сначала двухсловные
+            context_number_words = {
+                "двадцать пять": 25,
+                "пять": 5,
+                "шесть": 6,
+                "семь": 7,
+                "восемь": 8,
+                "девять": 9,
+                "десять": 10,
+                "одиннадцать": 11,
+                "двенадцать": 12,
+                "тринадцать": 13,
+                "четырнадцать": 14,
+                "пятнадцать": 15,
+                "двадцать": 20,
+                "тридцать": 30,
+                "сорок": 40,
+                "пятьдесят": 50,
+            }
+            for word, val in sorted(
+                context_number_words.items(), key=lambda x: -len(x[0])
+            ):
+                if word in text:
+                    updates["budget"] = val * 1_000_000
+                    updates["budget_confidence"] = "confirmed"
+                    break
+
+            # Цифры в контексте бюджета: "10", "15", "10-15"
+            if "budget" not in updates:
+                nums = re.findall(r"\b(\d{1,3})\b", text)
+                if nums:
+                    max_num = max(int(n) for n in nums)
+                    if 3 <= max_num <= 200:
+                        updates["budget"] = max_num * 1_000_000
+                        updates["budget_confidence"] = "confirmed"
+
+    # Payment type
+    if not getattr(current_state, "payment_type", None):
+        if any(w in text for w in ["ипотек", "ипотеку"]):
+            updates["payment_type"] = "mortgage"
+            updates["payment_type_confidence"] = "confirmed"
+        elif "рассрочк" in text:
+            updates["payment_type"] = "installment"
+            updates["payment_type_confidence"] = "confirmed"
+        elif any(w in text for w in ["полн", "наличн", "сразу", "целиком"]):
+            updates["payment_type"] = "full"
+            updates["payment_type_confidence"] = "confirmed"
+
+    # Meeting
+    if any(w in text for w in ["давайте созвон", "да, давайте", "созвонимся"]):
+        updates["meeting_agreed"] = True
+
+    return updates
 
 
 VOICE_SYSTEM_PROMPT = """Ты — София, менеджер компании Оазис Эстэйт, курортная недвижимость. Голосовой звонок. Женский род.
@@ -416,7 +523,7 @@ VOICE_SYSTEM_PROMPT = """Ты — София, менеджер компании 
 СКРИПТ (иди по этапам, но подстраивайся если клиент перескакивает):
 
 1. GREETING → Представься коротко, спроси цель.
-2. GOAL → Для себя или инвестиция? Если "не знаю" — объясни зачем: "Просто под инвестиции и для жизни подбираем разные объекты — локация, планировки отличаются. Что ближе: доход с аренды или для отдыха?"
+2. GOAL → Для себя или инвестиция? Если "не знаю" — объясни зачем: "Просто под инвестиции и для жизни подбираем разные объекты — локация, планировки отличаются. Что ближе: доход с аренды или для отдыха?" После ответа — сразу к бюджету, без уточнений про стратегию.
 3. BUDGET → Примерный бюджет? Если "не знаю" — дай ориентир: "До десяти — это студии под аренду, десять-пятнадцать — полноценные апартаменты, выше пятнадцати — премиум. Что комфортнее?"
 4. PAYMENT → Полная оплата, ипотека или рассрочка? Если "не знаю" — объясни: "От способа оплаты зависит выбор — есть варианты только за наличные, а в рассрочку можно без банка на шесть-двенадцать месяцев."
 5. MEETING_1 → Предложи созвон: "Давайте наш эксперт за пятнадцать минут покажет два-три варианта под ваш запрос. Когда удобно?"
@@ -425,8 +532,10 @@ VOICE_SYSTEM_PROMPT = """Ты — София, менеджер компании 
 
 ПРАВИЛА:
 - Одно-два предложения. Это телефон.
+- СТРОГО один вопрос за ответ. Уточнение тоже считается вопросом. Два вопроса в одном ответе — грубая ошибка.
 - НЕ оценивай слова клиента. Никаких "хороший выбор", "отличный бюджет", "правильное решение". Просто прими и двигайся дальше.
-- НЕ начинай каждый ответ одинаково. Чередуй: ответ на вопрос, уточнение, переход к делу. Слово "Поняла" — максимум один раз за весь разговор.
+- НЕ начинай каждый ответ одинаково. Чередуй: ответ на вопрос, уточнение, переход к делу. Слово "Поняла" ЗАПРЕЩЕНО. Не используй. Сразу переходи к сути.
+- НЕ пугай ограничениями. Вместо "ипотека ограничивает выбор" — "с ипотекой тоже есть варианты".
 - Если клиент задал вопрос — СНАЧАЛА ответь коротко (одно предложение), потом задай свой.
 - Если клиент дважды уклонился — прими и иди дальше, не переспрашивай.
 - Говори "скажите", "расскажите", не "напишите".
@@ -435,15 +544,10 @@ VOICE_SYSTEM_PROMPT = """Ты — София, менеджер компании 
 ЦЕНЫ (когда спросят, не раньше):
 Море: Туапсе от 5, Сочи от 8, Анапа от 9, Крым от 9.5 миллионов.
 Горы: Алтай от 9, Архыз от 15, Красная Поляна от 19 миллионов.
-Доходность аренды: 8-15% годовых. Рост на стройке: 15-30%.
-Рассрочка от застройщика: 6-12 месяцев, без процентов.
+Говори "от", никогда не говори "до" — верхней границы нет, цены начинаются от указанных сумм.
 {object_context}
 
-ФОРМАТ:
-Текст ответа (1-2 предложения).
-Затем:
-###STATE###
-{{"stage": "текущий_этап", "goal": "investment/personal/null", "budget": число_или_null, "payment_type": "full/mortgage/installment/null", "meeting_agreed": true/false}}"""
+ФОРМАТ: Только текст ответа клиенту (1-2 предложения). Ничего больше."""
 
 
 async def stream_voice_response(
@@ -457,12 +561,12 @@ async def stream_voice_response(
     call_id: str = "",
 ) -> AsyncGenerator[str, None]:
     """
-    Голосовой пайплайн v2 — компактный промпт, без RAG, без Extractor.
+    Голосовой пайплайн v3 — sync LLM, rule-based state, один yield.
 
     Модель: gpt-4.1-mini (быстрая, без reasoning).
-    Промпт: ~1100 токенов (VOICE_SYSTEM_PROMPT).
-    State: извлекается из ответа LLM (JSON-блок ###STATE###).
-    Ответ: целиком (один yield), не стримингом — для правильных ударений TTS.
+    Промпт: компактный (~700 токенов).
+    State: rule-based извлечение из сообщения клиента.
+    Ответ: целиком одним yield — Retell TTS получает полную фразу.
     """
     client = _get_client()
     tag = channel.upper()
@@ -492,7 +596,18 @@ async def stream_voice_response(
     # History loaded
     vd.info(f"[{cid}] HISTORY_LOADED | messages={len(history)}")
 
-    # 2. Собрать промпт (компактный, без RAG)
+    # 2. Rule-based state extraction (ДО LLM — обновляем stage)
+    state_updates = _extract_state_from_context(user_message, history, state)
+    if state_updates:
+        state_manager.update_state(user_id, state_updates)
+        vd.info(f"[{cid}] STATE_EXTRACTED | updates={state_updates}")
+        # Пересчитать stage после обновления
+        state = state_manager.get_state(user_id)
+        stage = _determine_voice_stage(state)
+        state_summary = _format_voice_state(state)
+        vd.info(f"[{cid}] STAGE_UPDATED | new_stage={stage}")
+
+    # 3. Собрать промпт (компактный, без RAG)
     t_prompt_start = time.monotonic()
     object_context = _get_object_context(state)
     system_prompt = VOICE_SYSTEM_PROMPT.format(
@@ -507,13 +622,14 @@ async def stream_voice_response(
 
     t_prompt_done = time.monotonic()
     timings["prompt"] = (t_prompt_done - t_prompt_start) * 1000
+    est_tokens = len(system_prompt) // 4
     vd.info(
         f"[{cid}] PROMPT_BUILT | elapsed={timings['prompt']:.0f}ms "
         f"| prompt_len={len(system_prompt)} chars "
-        f"| no_rag=yes | messages={len(messages)}"
+        f"| est_tokens={est_tokens} | messages={len(messages)}"
     )
 
-    # 3. Один вызов LLM — БЕЗ стриминга (ждём полный ответ)
+    # 4. Один sync вызов LLM (без стриминга)
     try:
         t_llm_start = time.monotonic()
         vd.info(
@@ -549,38 +665,8 @@ async def stream_voice_response(
         yield "Простите, связь подвисла. Повторите?"
         return
 
-    # 4. Парсить ###STATE### из ответа
-    answer_text, state_updates = _parse_voice_state(full_text)
-
-    if state_updates:
-        vd.info(f"[{cid}] STATE_PARSED | raw={state_updates}")
-
-    # 5. Обновить state из JSON
-    update_dict = {}
-    if state_updates:
-        goal = state_updates.get("goal")
-        if goal and goal != "null":
-            update_dict["goal"] = goal
-            update_dict["goal_confidence"] = "confirmed"
-        budget = state_updates.get("budget")
-        if budget and budget != "null":
-            try:
-                update_dict["budget"] = int(budget)
-                update_dict["budget_confidence"] = "confirmed"
-            except (ValueError, TypeError):
-                pass
-        payment = state_updates.get("payment_type")
-        if payment and payment != "null":
-            update_dict["payment_type"] = payment
-            update_dict["payment_type_confidence"] = "confirmed"
-        if state_updates.get("meeting_agreed") is True:
-            update_dict["meeting_agreed"] = True
-
-    if update_dict:
-        state_manager.update_state(user_id, update_dict)
-        vd.info(f"[{cid}] STATE_UPDATED | updates={update_dict}")
-
-    # 6. [END] check
+    # 5. [END] check
+    answer_text = full_text.strip()
     if "[END]" in answer_text or "[end]" in answer_text:
         answer_text = answer_text.replace("[END]", "").replace("[end]", "").strip()
         state_manager.update_state(
@@ -588,25 +674,20 @@ async def stream_voice_response(
         )
         log.info(f"🏁 [{tag}] Voice: диалог завершён [END]")
 
-    # 7. Sanitize for TTS
-    t_san_start = time.monotonic()
+    # 6. Sanitize for TTS
     answer_text = sanitize_for_tts(answer_text)
-    t_san_done = time.monotonic()
-    timings["sanitize"] = (t_san_done - t_san_start) * 1000
-
     if not answer_text:
         answer_text = "Повторите, пожалуйста?"
 
-    # 8. Отдать ВЕСЬ ответ одним куском
+    # 7. Отдать ВЕСЬ ответ одним куском
     yield answer_text
 
-    # 9. Pipeline summary
+    # 8. Pipeline summary
     t_end = time.monotonic()
     total_pipeline = (t_end - t0) * 1000
     vd.info(
         f"[{cid}] PIPELINE_SUMMARY | total={total_pipeline:.0f}ms "
         f"| prompt={timings.get('prompt', 0):.0f}ms "
         f"| llm={timings.get('llm_full', 0):.0f}ms "
-        f"| sanitize={timings.get('sanitize', 0):.0f}ms "
-        f"| stage={stage} | answer_len={len(answer_text)}"
+        f"| stage={stage}"
     )

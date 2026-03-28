@@ -1,6 +1,6 @@
 # Текущий статус Sofia-GPT
 
-📅 **Последняя сессия:** 26.03.2026 (вечерняя — Voice V2 deep dive)
+📅 **Последняя сессия:** 28.03.2026 (Voice Pipeline v2 — новая архитектура)
 
 ## Архитектурная карта: ПРОД vs DEV
 
@@ -15,9 +15,9 @@
 
 ### DEV (`/opt/sofia-gpt-dev/`, порт 8081)
 - Все каналы: `bot_server.py`, `web_api.py`, `sofia_radist_gateway.py`, `voice_api.py`
-- **`core/pipeline.py`** — единый пайплайн + voice (gpt-4.1-mini, async Extractor, VOICE_PROMPT_ADDON)
+- **`core/pipeline.py`** — единый пайплайн + voice pipeline v2 (gpt-5.4-mini, без RAG, без Extractor, rule-based state, sync LLM)
 - **`core/bitrix.py`** — модуль Битрикс с ASSIGNED_BY_ID=428
-- **voice_api.py** — Retell AI WebSocket адаптер (Voice V1, **РАБОТАЕТ**)
+- **voice_api.py** — Retell AI WebSocket адаптер (Voice V1, **РАБОТАЕТ**, дедупликация транскриптов)
 - **voice_pipecat_daily.py** — Pipecat + Daily WebRTC (Voice V2, **РАБОТАЕТ** с core/pipeline.py)
 - **yandex_tts.py** — кастомный Yandex SpeechKit TTS процессор для Pipecat (REST v1, alena neutral)
 - **yandex_stt.py** — кастомный Yandex SpeechKit STT процессор для Pipecat (gRPC v3 streaming)
@@ -91,11 +91,14 @@
 | sofia-radist-dev.service (dev) | 5002 | running | core/pipeline.py |
 | voice_pipecat_daily.py (dev) | 8083 | manual | Pipecat + Daily + core/pipeline.py |
 
-## Тайминги Voice V2 (лучшая конфигурация)
+## Тайминги Voice (Retell, 28.03.2026)
 
-| Этап | Whisper STT | LLM (gpt-4.1-mini) | ElevenLabs TTS | Итого |
-|------|-------------|---------------------|----------------|-------|
-| TTFB | 0.8-1.3с | 0.4-1.7с | 0.1-1.1с | **1.3-3.4с** |
+| Этап | Retell STT | LLM (gpt-5.4-mini) | Retell TTS | Итого |
+|------|------------|---------------------|------------|-------|
+| TTFB | ~300-500ms | 325-900ms | ~200-400ms | **~0.9-1.8с** |
+
+Voice pipeline v2: без RAG (0ms), без Extractor (0ms), промпт 668 токенов, sync LLM.
+Было (v1): RAG 150-800ms + Extractor 3000ms async + промпт 5000 токенов.
 
 ## .env: dev
 
@@ -112,20 +115,23 @@
 
 ### P0 — срочно
 1. **Ссылка в Тильде** — URL успеха: `https://t.me/humanAINeural_bot?start=ATL`
-2. **Баг молчания (#23)** — проверить логи, возможно уже починено флагом is_responding
+2. **Фикс дедупликации транскриптов** — точные совпадения не ловятся
+3. **Budget парсинг** — "десять-пятнадцать" без "миллион" не парсится
+4. **Retell Boosted Keywords** — инвестиция, рассрочка, ипотека, Сочи, Туапсе, Анапа, Крым, Архыз, Алтай, миллион, бюджет, стройка, аренда
 
 ### P1 — следующая итерация
-3. **Vapi (#13)** — managed платформа, быстрый production-результат
-4. **Yandex TTS gRPC v3 + unsafe_mode (#1, #2)** — ключ к хорошему русскому голосу
-5. Подключить core/bitrix.py к radist_gateway.py
-6. deploy.sh скрипт
+5. **Retell begin_message** — убрать или настроить тот же голос
+6. **Retell Transcription Mode** — accuracy vs speed тест
+7. **Post-Call Data Extraction** — goal, budget, payment_type, meeting_agreed
+8. **Битрикс в radist_gateway.py** — подключить core/bitrix.py к Radist каналу
+9. deploy.sh скрипт
 
 ### P2 — улучшения Voice
-7. **Yandex STT + turn detection (#7)** — минус 0.5-1с к паузе
-8. **Задарма SIP (#17)** — реальные звонки
-9. WebRTC кнопка в веб-виджете
+10. **Yandex TTS gRPC v3 + unsafe_mode (#1, #2)** — ключ к хорошему русскому голосу
+11. **Задарма SIP (#17)** — реальные звонки
+12. WebRTC кнопка в веб-виджете
 
 ### P3 — техдолг
-10. Очистка мусора в проде
-11. core/channel.py, core/observer.py
-12. BUG-004 EN-раскладка
+13. Очистка мусора в проде
+14. core/channel.py, core/observer.py
+15. BUG-004 EN-раскладка

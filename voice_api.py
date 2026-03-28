@@ -69,7 +69,7 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
     try:
         # === Приветствие — фиксированное, нейтральное (без LLM) ===
         greeting_text = (
-            "Добрый день! Это София из Oazis Estate. "
+            "Добрый день! Это София из Оазис Эстэйт. "
             "Вы оставляли заявку на сайте по недвижимости. "
             "Вам удобно сейчас пообщаться?"
         )
@@ -95,6 +95,8 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
 
         # === Цикл обработки сообщений от Retell ===
         is_responding = False  # флаг: pipeline стримит ответ
+        last_transcript = ""
+        last_transcript_time = 0.0
         while True:
             raw = await websocket.receive_text()
             try:
@@ -145,6 +147,24 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
                 )
                 continue
 
+            # Дедупликация: Retell шлёт partial→updated→final транскрипт
+            now = time.monotonic()
+            if (
+                now - last_transcript_time < 2.0
+                and last_transcript
+                and user_text.startswith(last_transcript[:20])
+                and len(user_text) > len(last_transcript)
+            ):
+                vd.info(
+                    f"[{cid}] TRANSCRIPT_DEDUP | skipped, "
+                    f'prev="{last_transcript[:30]}" new="{user_text[:30]}"'
+                )
+                last_transcript = user_text
+                last_transcript_time = now
+                continue
+            last_transcript = user_text
+            last_transcript_time = now
+
             response_id += 1
             t_turn_start = time.monotonic()
 
@@ -162,8 +182,8 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
                 content=user_text,
             )
 
-            # Обрабатываем через единый пайплайн
-            history = get_history(user_id, limit=20)
+            # Обрабатываем через единый пайплайн (16 сообщений = 8 ходов)
+            history = get_history(user_id, limit=16)
 
             # Extractor пропускаем для голоса — экономим ~1-2с
             # TODO: вернуть когда латенси будет приемлемым
@@ -176,42 +196,8 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
             #     channel="voice",
             # )
 
-            # Стриминг ответа Generator → Retell (с буферизацией)
-            FLUSH_CHARS = ".!?,"
-            MIN_BUF_LEN = 20
-
+            # Собираем полный ответ от pipeline (один yield)
             full_text = ""
-            buf = ""
-            chunk_count = 0
-            first_token_sent = False
-            t_first_ws_token = None
-
-            async def _flush_buf():
-                nonlocal buf, chunk_count, first_token_sent, t_first_ws_token
-                if not buf:
-                    return
-                chunk_count += 1
-                await websocket.send_text(
-                    json.dumps(
-                        {
-                            "response_type": "response",
-                            "response_id": response_id,
-                            "content": buf,
-                            "content_complete": False,
-                            "end_call": False,
-                        }
-                    )
-                )
-                if not first_token_sent:
-                    first_token_sent = True
-                    t_first_ws_token = time.monotonic()
-                    vd.info(
-                        f"[{cid}] WS_FIRST_TOKEN_SENT "
-                        f"| elapsed={(t_first_ws_token - t_turn_start)*1000:.0f}ms "
-                        f'| chunk="{buf[:40]}"'
-                    )
-                buf = ""
-
             is_responding = True
             async for chunk in stream_voice_response(
                 user_id=user_id,
@@ -222,28 +208,10 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
                 channel="voice",
                 call_id=cid,
             ):
-                if not chunk:
-                    continue
-                full_text += chunk
-                buf += chunk
+                if chunk:
+                    full_text += chunk
 
-                # Flush по знаку препинания или по длине + пробел
-                if buf[-1] in FLUSH_CHARS:
-                    await _flush_buf()
-                elif len(buf) >= MIN_BUF_LEN and buf[-1] == " ":
-                    await _flush_buf()
-
-            # Остаток буфера
-            await _flush_buf()
-            t_last_ws_token = time.monotonic()
-
-            vd.info(
-                f"[{cid}] WS_LAST_TOKEN_SENT "
-                f"| elapsed={(t_last_ws_token - t_turn_start)*1000:.0f}ms "
-                f"| chunks={chunk_count}"
-            )
-
-            # Очистка полного текста от markdown для сохранения
+            # Очистка от markdown
             full_text = clean_for_voice(full_text)
 
             # [END] check
@@ -255,24 +223,32 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
                     {"dialog_finished": True, "finish_type": "llm_end"},
                 )
 
-            # Финальное сообщение — content_complete: true
+            reply_text = full_text or "Повторите, пожалуйста?"
+
+            # Одно сообщение с content_complete: true
+            # Retell получает полную фразу → TTS с правильной интонацией
             await websocket.send_text(
                 json.dumps(
                     {
                         "response_type": "response",
                         "response_id": response_id,
-                        "content": "",
+                        "content": reply_text,
                         "content_complete": True,
                         "end_call": end_call,
                     }
                 )
             )
 
+            t_ws_sent = time.monotonic()
+            vd.info(
+                f"[{cid}] WS_RESPONSE_SENT "
+                f"| elapsed={(t_ws_sent - t_turn_start)*1000:.0f}ms "
+                f"| len={len(reply_text)} | end_call={end_call}"
+            )
+
             is_responding = False
-            t_response_complete = time.monotonic()
 
             # Сохраняем полный очищенный ответ
-            reply_text = full_text or "Повторите, пожалуйста?"
             save_message(
                 chat_id=user_id,
                 user_id=user_id,
@@ -283,16 +259,11 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
 
             log.info(
                 f"[VOICE] Reply #{response_id}: "
-                f"chunks={chunk_count}, end_call={end_call}, "
-                f"len={len(reply_text)}"
+                f"end_call={end_call}, len={len(reply_text)}"
             )
 
             # ══════ TURN SUMMARY ══════
-            total_ms = (t_response_complete - t_turn_start) * 1000
-            ws_first_ms = (
-                (t_first_ws_token - t_turn_start) * 1000 if t_first_ws_token else 0
-            )
-            ws_overhead_ms = (t_response_complete - t_last_ws_token) * 1000
+            total_ms = (t_ws_sent - t_turn_start) * 1000
 
             cur_state = state_manager.get_state(user_id)
             fields = []
@@ -307,8 +278,6 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
                 f'  Transcript: "{user_text[:80]}"\n'
                 f'  Response: "{reply_text[:80]}"\n'
                 f"  Total: {total_ms:.0f}ms\n"
-                f"  ├─ WS first token: {ws_first_ms:.0f}ms\n"
-                f"  ├─ WS overhead:    {ws_overhead_ms:.0f}ms\n"
                 f"  State: fields=[{fields_str}]\n"
                 f"  ══════════════════════════════"
             )
