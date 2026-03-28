@@ -1,5 +1,49 @@
 # SESSION_LOG — Последние сессии
 
+## 28.03.2026 (ночь) — Groq интеграция, P0 баги, промпт V4
+
+**Сделано:**
+- A/B тест round 1: gpt-5.4-mini vs qwen3-32b (Groq). Qwen 2.9x быстрее (141 vs 403ms), но 5x "Поняла" и галлюцинации времени
+- A/B тест round 2: промпт V2 + llama-4-scout-17b. Три модели, 12 кейсов, 2 прогона:
+  - OpenAI gpt-5.4-mini: TTFT 377ms, quality 96%
+  - Groq qwen3-32b (V2): TTFT 151ms, quality 88% (2+ вопроса)
+  - **Groq llama-4-scout (V2): TTFT 108ms, quality 92%** — лучший баланс
+- Multi-turn тест: 4 сценария × 7 ходов. llama-4-scout = gpt-5.4-mini по качеству (96%), TTFT 99ms vs 381ms
+- **Voice pipeline v4**: Groq llama-4-scout primary, OpenAI fallback
+  - Groq клиент через OpenAI-compatible SDK
+  - VOICE_PROVIDER env var ("groq"/"openai"), автоматический fallback
+  - Промпт V3: строгие запреты "Поняла", галлюцинации времени, anti-looping
+- **P0 баги:**
+  - Дедупликация транскриптов: 3-уровневая (exact + prefix + word overlap 85%)
+  - Budget парсинг: _parse_budget_from_text() — "десять-пятнадцать", "от 8 до 12", дефис, без "миллион"
+  - Retell Boosted Keywords: нет RETELL_API_KEY — нужна ручная настройка в dashboard
+- **Промпт V4** (по итогам живого звонка 21:48):
+  - Блок ФАКТЫ: доходность 8-15% аренда, 20-30% стройка
+  - [END] правила: "пришлите варианты" = интерес, не отказ
+  - Anti-looping: не повторять "эксперт покажет" подряд
+  - max_tokens 300→400 (фикс обрезки mid-word)
+  - finish_reason логирование
+  - Stage MEETING override из assistant history
+
+**Тайминги (Groq, живой звонок):**
+- Медиана TTFT: ~185ms (было 600ms gpt-4.1-mini, 325ms gpt-5.4-mini)
+- Худший ход: 851ms (rate limit?)
+- Лучший ход: 107ms
+
+**Коммиты:** 636c08ac → cd05b8a9 (6 коммитов)
+
+**Файлы:** core/pipeline.py, voice_api.py, .env, tests/ab_test_voice_llm.py, tests/multiturn_test.py, docs/VOICE_LATENCY_RESEARCH.md
+
+**Открытые вопросы:**
+- Retell Boosted Keywords — нужен API ключ или ручная настройка в dashboard
+- Groq rate limits на бесплатном плане (28 из 40 запросов в A/B тесте throttled)
+- llama-4-scout looping "эксперт покажет" — промпт V4 должен помочь, нужен повторный живой тест
+- Retell begin_message — возможно другой голос на приветствии
+
+**Следующий шаг:** живой тест промпта V4, Retell Boosted Keywords, Groq платный план
+
+---
+
 ## 28.03.2026 (вечер) — Исследование альтернативных LLM для голоса
 
 **Сделано:**
