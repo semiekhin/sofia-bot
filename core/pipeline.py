@@ -14,6 +14,8 @@ import time
 from dataclasses import dataclass, field
 from typing import AsyncGenerator, Optional
 
+import os
+
 from openai import OpenAI
 
 from rag_module import search_examples, format_examples_for_prompt
@@ -25,7 +27,29 @@ vd = logging.getLogger("VOICE_DIAG")
 vd.setLevel(logging.DEBUG)
 
 RAG_EXAMPLES_COUNT = 10
-VOICE_MODEL = "gpt-5.4-mini"
+
+# Voice LLM config — Groq primary, OpenAI fallback
+VOICE_PROVIDER = os.getenv("VOICE_PROVIDER", "groq")
+VOICE_MODEL_GROQ = os.getenv(
+    "VOICE_MODEL_GROQ", "meta-llama/llama-4-scout-17b-16e-instruct"
+)
+VOICE_MODEL_OPENAI = os.getenv("VOICE_MODEL_OPENAI", "gpt-5.4-mini")
+
+# Groq client (OpenAI-compatible)
+_groq_client: Optional[OpenAI] = None
+
+
+def _get_groq_client() -> Optional[OpenAI]:
+    global _groq_client
+    if _groq_client is None:
+        api_key = os.getenv("GROQ_API_KEY")
+        if api_key:
+            _groq_client = OpenAI(
+                api_key=api_key,
+                base_url="https://api.groq.com/openai/v1",
+            )
+    return _groq_client
+
 
 VOICE_PROMPT_ADDON = """
 Ты сейчас разговариваешь ГОЛОСОМ по телефону. Строгие правила:
@@ -512,7 +536,9 @@ def _extract_state_from_context(user_message, history, current_state):
     return updates
 
 
-VOICE_SYSTEM_PROMPT = """Ты — София, менеджер компании Оазис Эстэйт, курортная недвижимость. Голосовой звонок. Женский род.
+VOICE_SYSTEM_PROMPT = """\
+Ты — София, менеджер компании Оазис Эстэйт, курортная недвижимость. \
+Голосовой звонок. Женский род.
 
 ЦЕЛЬ: квалифицировать клиента → договориться о созвоне с экспертом (15 минут).
 Созвон = успех. Подборка без созвона = запасной вариант после двух отказов.
@@ -520,23 +546,45 @@ VOICE_SYSTEM_PROMPT = """Ты — София, менеджер компании 
 ЭТАП: {stage}
 КЛИЕНТ: {state_summary}
 
-СКРИПТ (иди по этапам, но подстраивайся если клиент перескакивает):
+СТРОГИЕ ЗАПРЕТЫ (нарушение = критическая ошибка):
+- НИКОГДА не начинай ответ словами: "Поняла", "Понял", "Понятно", "Ясно".
+- НИКОГДА не предлагай конкретное время, дату, адрес — только уточняй у клиента. \
+Ты НЕ ЗНАЕШЬ расписание эксперта. Можешь только спросить удобное время.
+- НИКОГДА не выдумывай факты: проценты доходности, конкретные объекты, условия. \
+Если не знаешь — предложи уточнить у эксперта.
+- НИКОГДА не повторяй формулировку из предыдущего ответа дословно. \
+Если уже предлагал созвон — скажи по-другому.
+- Вместо "Поняла" начни с парафраза или сразу переходи к вопросу.
+
+СКРИПТ (иди по этапам, подстраивайся если клиент перескакивает):
 
 1. GREETING → Представься коротко, спроси цель.
-2. GOAL → Для себя или инвестиция? Если "не знаю" — объясни зачем: "Просто под инвестиции и для жизни подбираем разные объекты — локация, планировки отличаются. Что ближе: доход с аренды или для отдыха?" После ответа — сразу к бюджету, без уточнений про стратегию.
-3. BUDGET → Примерный бюджет? Если "не знаю" — дай ориентир: "До десяти — это студии под аренду, десять-пятнадцать — полноценные апартаменты, выше пятнадцати — премиум. Что комфортнее?"
-4. PAYMENT → Полная оплата, ипотека или рассрочка? Если "не знаю" — объясни: "От способа оплаты зависит выбор — есть варианты только за наличные, а в рассрочку можно без банка на шесть-двенадцать месяцев."
-5. MEETING_1 → Предложи созвон: "Давайте наш эксперт за пятнадцать минут покажет два-три варианта под ваш запрос. Когда удобно?"
-6. MEETING_2 (после отказа) → Задай доп. вопросы (локация — море или горы? стадия — готовое или стройка?), потом повторно: "За пятнадцать минут покажем варианты, которых нет в открытом доступе. Когда удобнее?"
-7. CLOSING → Согласился — уточни время. Второй отказ — "Хорошо, эксперт подготовит подборку и пришлёт вам. Если появятся вопросы — звоните." Добавь [END].
+2. GOAL → Для себя или инвестиция? Если "не знаю" — объясни зачем: \
+"Просто под инвестиции и для жизни подбираем разные объекты — \
+локация, планировки отличаются. Что ближе: доход с аренды или для отдыха?" \
+После ответа — сразу к бюджету, без уточнений про стратегию.
+3. BUDGET → Примерный бюджет? Если "не знаю" — дай ориентир: \
+"До десяти — это студии под аренду, десять-пятнадцать — полноценные апартаменты, \
+выше пятнадцати — премиум. Что комфортнее?"
+4. PAYMENT → Полная оплата, ипотека или рассрочка? Если "не знаю" — объясни: \
+"От способа оплаты зависит выбор — есть варианты только за наличные, \
+а в рассрочку можно без банка на шесть-двенадцать месяцев."
+5. MEETING_1 → Предложи созвон: \
+"Давайте наш эксперт за пятнадцать минут покажет два-три варианта. Когда удобно?"
+6. MEETING_2 (после отказа) → Задай доп. вопросы \
+(локация — море или горы? стадия — готовое или стройка?), потом повторно: \
+"За пятнадцать минут покажем варианты, которых нет в открытом доступе. \
+Когда удобнее?"
+7. CLOSING → Согласился — уточни время. Второй отказ — \
+"Хорошо, эксперт подготовит подборку и пришлёт вам. \
+Если появятся вопросы — звоните." Добавь [END].
 
 ПРАВИЛА:
 - Одно-два предложения. Это телефон.
-- СТРОГО один вопрос за ответ. Уточнение тоже считается вопросом. Два вопроса в одном ответе — грубая ошибка.
-- НЕ оценивай слова клиента. Никаких "хороший выбор", "отличный бюджет", "правильное решение". Просто прими и двигайся дальше.
-- НЕ начинай каждый ответ одинаково. Чередуй: ответ на вопрос, уточнение, переход к делу. Слово "Поняла" ЗАПРЕЩЕНО. Не используй. Сразу переходи к сути.
-- НЕ пугай ограничениями. Вместо "ипотека ограничивает выбор" — "с ипотекой тоже есть варианты".
-- Если клиент задал вопрос — СНАЧАЛА ответь коротко (одно предложение), потом задай свой.
+- СТРОГО один вопрос за ответ. Уточнение тоже считается вопросом.
+- НЕ оценивай слова клиента. Никаких "хороший выбор", "отличный бюджет".
+- НЕ пугай ограничениями.
+- Если клиент задал вопрос — СНАЧАЛА ответь коротко, потом задай свой.
 - Если клиент дважды уклонился — прими и иди дальше, не переспрашивай.
 - Говори "скажите", "расскажите", не "напишите".
 - Без латиницы, без ссылок, без email.
@@ -544,7 +592,7 @@ VOICE_SYSTEM_PROMPT = """Ты — София, менеджер компании 
 ЦЕНЫ (когда спросят, не раньше):
 Море: Туапсе от 5, Сочи от 8, Анапа от 9, Крым от 9.5 миллионов.
 Горы: Алтай от 9, Архыз от 15, Красная Поляна от 19 миллионов.
-Говори "от", никогда не говори "до" — верхней границы нет, цены начинаются от указанных сумм.
+Говори "от", никогда не говори "до" — верхней границы нет.
 {object_context}
 
 ФОРМАТ: Только текст ответа клиенту (1-2 предложения). Ничего больше."""
@@ -561,14 +609,17 @@ async def stream_voice_response(
     call_id: str = "",
 ) -> AsyncGenerator[str, None]:
     """
-    Голосовой пайплайн v3 — sync LLM, rule-based state, один yield.
+    Голосовой пайплайн v4 — Groq llama-4-scout primary, OpenAI fallback.
 
-    Модель: gpt-4.1-mini (быстрая, без reasoning).
-    Промпт: компактный (~700 токенов).
+    Промпт V3: строгие запреты + анти-looping.
     State: rule-based извлечение из сообщения клиента.
     Ответ: целиком одним yield — Retell TTS получает полную фразу.
     """
-    client = _get_client()
+    # Выбор провайдера: Groq primary, OpenAI fallback
+    groq = _get_groq_client()
+    use_groq = VOICE_PROVIDER == "groq" and groq is not None
+    voice_model = VOICE_MODEL_GROQ if use_groq else VOICE_MODEL_OPENAI
+    openai_client = _get_client()
     tag = channel.upper()
     cid = call_id or "no_id"
     t0 = time.monotonic()
@@ -629,41 +680,86 @@ async def stream_voice_response(
         f"| est_tokens={est_tokens} | messages={len(messages)}"
     )
 
-    # 4. Один sync вызов LLM (без стриминга)
+    # 4. Вызов LLM — Groq primary, OpenAI fallback
+    provider_used = "groq" if use_groq else "openai"
+    t_llm_start = time.monotonic()
+    vd.info(
+        f"[{cid}] LLM_REQUEST_START | provider={provider_used} "
+        f"| model={voice_model} | messages={len(messages)}"
+    )
+    log.info(
+        f"🔄 [{tag}] Generator запрос для {user_name} "
+        f"(provider={provider_used}, model={voice_model}, stage={stage})..."
+    )
+
+    full_text = None
     try:
-        t_llm_start = time.monotonic()
-        vd.info(
-            f"[{cid}] LLM_REQUEST_START | model={VOICE_MODEL} "
-            f"| max_tokens=300 | messages={len(messages)} | stream=false"
-        )
-        log.info(
-            f"🔄 [{tag}] Generator запрос для {user_name} "
-            f"(model={VOICE_MODEL}, stage={stage})..."
-        )
-
-        response = await asyncio.to_thread(
-            client.responses.create,
-            model=VOICE_MODEL,
-            instructions=system_prompt,
-            input=messages,
-            max_output_tokens=300,
-        )
-        full_text = response.output_text or ""
-
-        t_llm_done = time.monotonic()
-        timings["llm_full"] = (t_llm_done - t_llm_start) * 1000
-        vd.info(
-            f"[{cid}] LLM_COMPLETE | elapsed={timings['llm_full']:.0f}ms "
-            f"| len={len(full_text)} chars "
-            f'| text="{full_text[:120]}"'
-        )
-        log.info(f"✅ [{tag}] Generator ответ получен")
+        if use_groq:
+            # Groq — Chat Completions API (OpenAI-compatible)
+            groq_messages = [{"role": "system", "content": system_prompt}] + messages
+            resp = await asyncio.to_thread(
+                groq.chat.completions.create,
+                model=voice_model,
+                messages=groq_messages,
+                max_tokens=300,
+                temperature=0.7,
+            )
+            full_text = resp.choices[0].message.content or ""
+        else:
+            # OpenAI — Responses API
+            resp = await asyncio.to_thread(
+                openai_client.responses.create,
+                model=voice_model,
+                instructions=system_prompt,
+                input=messages,
+                max_output_tokens=300,
+            )
+            full_text = resp.output_text or ""
 
     except Exception as e:
-        log.error(f"❌ [{tag}] Generator error: {e}")
-        vd.error(f"[{cid}] LLM_ERROR | error={e}")
+        log.error(f"❌ [{tag}] {provider_used} error: {e}")
+        vd.error(f"[{cid}] LLM_ERROR | provider={provider_used} | error={e}")
+
+        # Fallback на OpenAI если Groq сломался
+        if use_groq:
+            provider_used = "openai_fallback"
+            log.info(f"🔄 [{tag}] Fallback → OpenAI {VOICE_MODEL_OPENAI}")
+            vd.info(f"[{cid}] LLM_FALLBACK | to=openai")
+            try:
+                resp = await asyncio.to_thread(
+                    openai_client.responses.create,
+                    model=VOICE_MODEL_OPENAI,
+                    instructions=system_prompt,
+                    input=messages,
+                    max_output_tokens=300,
+                )
+                full_text = resp.output_text or ""
+            except Exception as e2:
+                log.error(f"❌ [{tag}] Fallback also failed: {e2}")
+                vd.error(f"[{cid}] LLM_FALLBACK_ERROR | error={e2}")
+
+    if not full_text:
         yield "Простите, связь подвисла. Повторите?"
         return
+
+    t_llm_done = time.monotonic()
+    timings["llm_full"] = (t_llm_done - t_llm_start) * 1000
+    vd.info(
+        f"[{cid}] LLM_COMPLETE | provider={provider_used} "
+        f"| elapsed={timings['llm_full']:.0f}ms "
+        f"| len={len(full_text)} chars "
+        f'| text="{full_text[:120]}"'
+    )
+    log.info(
+        f"✅ [{tag}] Generator ответ получен "
+        f"({provider_used}, {timings['llm_full']:.0f}ms)"
+    )
+
+    # Strip <think> тегов (safety net)
+    if "<think>" in full_text:
+        full_text = re.sub(
+            r"<think>.*?</think>", "", full_text, flags=re.DOTALL
+        ).strip()
 
     # 5. [END] check
     answer_text = full_text.strip()
