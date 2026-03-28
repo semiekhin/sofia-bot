@@ -149,15 +149,37 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
 
             # Дедупликация: Retell шлёт partial→updated→final транскрипт
             now = time.monotonic()
-            if (
-                now - last_transcript_time < 2.0
-                and last_transcript
-                and user_text.startswith(last_transcript[:20])
-                and len(user_text) > len(last_transcript)
-            ):
+            is_dup = False
+            if now - last_transcript_time < 3.0 and last_transcript:
+                new_clean = user_text.strip().lower()
+                prev_clean = last_transcript.strip().lower()
+
+                # 1. Точное совпадение
+                if new_clean == prev_clean:
+                    is_dup = True
+
+                # 2. Prefix match (один — начало другого)
+                if not is_dup and (
+                    new_clean.startswith(prev_clean[:20])
+                    or prev_clean.startswith(new_clean[:20])
+                ):
+                    is_dup = True
+
+                # 3. Word overlap >= 85%
+                if not is_dup:
+                    w_new = set(new_clean.split())
+                    w_prev = set(prev_clean.split())
+                    if w_new and w_prev:
+                        overlap = len(w_new & w_prev)
+                        max_len = max(len(w_new), len(w_prev))
+                        if max_len > 0 and overlap / max_len >= 0.85:
+                            is_dup = True
+
+            if is_dup:
                 vd.info(
                     f"[{cid}] TRANSCRIPT_DEDUP | skipped, "
-                    f'prev="{last_transcript[:30]}" new="{user_text[:30]}"'
+                    f'prev="{last_transcript[:40]}" '
+                    f'new="{user_text[:40]}"'
                 )
                 last_transcript = user_text
                 last_transcript_time = now

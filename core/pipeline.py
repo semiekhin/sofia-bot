@@ -416,6 +416,86 @@ def _get_object_context(state) -> str:
     return "\nОБЪЕКТ КЛИЕНТА:\n" + full_context[:500]
 
 
+# Текстовые числа → цифры (longest match first)
+_NUMBER_WORDS = [
+    ("двадцать пять", 25),
+    ("пятьдесят", 50),
+    ("сорок", 40),
+    ("тридцать", 30),
+    ("двадцать", 20),
+    ("девятнадцать", 19),
+    ("восемнадцать", 18),
+    ("семнадцать", 17),
+    ("шестнадцать", 16),
+    ("пятнадцать", 15),
+    ("четырнадцать", 14),
+    ("тринадцать", 13),
+    ("двенадцать", 12),
+    ("одиннадцать", 11),
+    ("десять", 10),
+    ("девять", 9),
+    ("восемь", 8),
+    ("семь", 7),
+    ("шесть", 6),
+    ("пять", 5),
+    ("четыре", 4),
+    ("три", 3),
+    ("два", 2),
+]
+
+
+def _parse_budget_from_text(text, budget_context=False):
+    """
+    Parse budget from text. Returns value in millions or None.
+
+    Handles: "десять-пятнадцать миллионов", "10-15", "от 8 до 12",
+    "десять пятнадцать", "около 10 миллионов", text numbers without
+    "миллион" in budget context.
+    """
+    has_million = bool(re.search(r"миллион|млн", text))
+
+    # Replace text numbers with digits (operates on a copy for number extraction)
+    normalized = text
+    for word, val in _NUMBER_WORDS:
+        normalized = normalized.replace(word, str(val))
+
+    # Extract all numbers (including hyphenated ranges like "10-15")
+    # Pattern: digit-digit range or standalone digit
+    range_match = re.search(r"(\d+)\s*[-–—]\s*(\d+)", normalized)
+    if range_match:
+        a, b = int(range_match.group(1)), int(range_match.group(2))
+        if 1 <= max(a, b) <= 200:
+            return max(a, b)
+
+    # "от X до Y"
+    from_to = re.search(r"от\s+(\d+)\s+до\s+(\d+)", normalized)
+    if from_to:
+        a, b = int(from_to.group(1)), int(from_to.group(2))
+        if 1 <= max(a, b) <= 200:
+            return max(a, b)
+
+    # Standalone numbers
+    nums = re.findall(r"\b(\d+)\b", normalized)
+    nums = [int(n) for n in nums if 1 <= int(n) <= 200]
+
+    if not nums:
+        return None
+
+    # With "миллион" — confident
+    if has_million:
+        return max(nums)
+
+    # Without "миллион" — only in budget context
+    if budget_context:
+        return max(nums)
+
+    # Two numbers close together (e.g. "десять пятнадцать") — likely a range
+    if len(nums) >= 2 and all(3 <= n <= 100 for n in nums):
+        return max(nums)
+
+    return None
+
+
 def _extract_state_from_context(user_message, history, current_state):
     """Rule-based извлечение state из сообщения клиента."""
     updates = {}
@@ -442,80 +522,10 @@ def _extract_state_from_context(user_message, history, current_state):
 
     # Budget
     if not getattr(current_state, "budget", None):
-        # Паттерн 1: число + млн/миллион
-        patterns = [r"(\d+)\s*(?:млн|миллион)", r"(?:миллион\w*)\s*(\d+)"]
-        for pat in patterns:
-            m = re.search(pat, text)
-            if m:
-                val = int(m.group(1))
-                if val < 100:
-                    updates["budget"] = val * 1_000_000
-                    updates["budget_confidence"] = "confirmed"
-                break
-
-        # Паттерн 2: числительные + млн/миллион
-        if "budget" not in updates:
-            number_words = {
-                "двадцать пять": 25,
-                "пять": 5,
-                "шесть": 6,
-                "семь": 7,
-                "восемь": 8,
-                "девять": 9,
-                "десять": 10,
-                "одиннадцать": 11,
-                "двенадцать": 12,
-                "тринадцать": 13,
-                "четырнадцать": 14,
-                "пятнадцать": 15,
-                "двадцать": 20,
-                "тридцать": 30,
-                "сорок": 40,
-                "пятьдесят": 50,
-            }
-            for word, val in number_words.items():
-                if word in text and ("млн" in text or "миллион" in text):
-                    updates["budget"] = val * 1_000_000
-                    updates["budget_confidence"] = "confirmed"
-                    break
-
-        # Паттерн 3: числительные БЕЗ "миллион" в контексте бюджета
-        if "budget" not in updates and budget_context:
-            # Сначала двухсловные
-            context_number_words = {
-                "двадцать пять": 25,
-                "пять": 5,
-                "шесть": 6,
-                "семь": 7,
-                "восемь": 8,
-                "девять": 9,
-                "десять": 10,
-                "одиннадцать": 11,
-                "двенадцать": 12,
-                "тринадцать": 13,
-                "четырнадцать": 14,
-                "пятнадцать": 15,
-                "двадцать": 20,
-                "тридцать": 30,
-                "сорок": 40,
-                "пятьдесят": 50,
-            }
-            for word, val in sorted(
-                context_number_words.items(), key=lambda x: -len(x[0])
-            ):
-                if word in text:
-                    updates["budget"] = val * 1_000_000
-                    updates["budget_confidence"] = "confirmed"
-                    break
-
-            # Цифры в контексте бюджета: "10", "15", "10-15"
-            if "budget" not in updates:
-                nums = re.findall(r"\b(\d{1,3})\b", text)
-                if nums:
-                    max_num = max(int(n) for n in nums)
-                    if 3 <= max_num <= 200:
-                        updates["budget"] = max_num * 1_000_000
-                        updates["budget_confidence"] = "confirmed"
+        budget_val = _parse_budget_from_text(text, budget_context)
+        if budget_val:
+            updates["budget"] = budget_val * 1_000_000
+            updates["budget_confidence"] = "confirmed"
 
     # Payment type
     if not getattr(current_state, "payment_type", None):
