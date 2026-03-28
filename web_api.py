@@ -78,7 +78,7 @@ state_manager = StateManager(DB_PATH)
 # === Логирование ===
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [WEB-API] %(message)s",
+    format="%(asctime)s [%(name)s] %(message)s",
     handlers=[
         logging.FileHandler(os.path.join(SOFIA_PATH, "web_api.log")),
         logging.StreamHandler(),

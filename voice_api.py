@@ -12,6 +12,7 @@ import json
 import logging
 import os
 import re
+import time
 
 from fastapi import WebSocket, WebSocketDisconnect
 
@@ -23,6 +24,8 @@ from web_api import save_message, get_history
 # from message_processor import process_message
 
 log = logging.getLogger("sofia.voice")
+vd = logging.getLogger("VOICE_DIAG")
+vd.setLevel(logging.DEBUG)
 
 SOFIA_PATH = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.environ.get("DB_PATH", os.path.join(SOFIA_PATH, "sofia_gpt.db"))
@@ -58,7 +61,9 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
     user_id = call_id_to_user_id(call_id)
     user_name = f"voice_{call_id[:8]}"
     response_id = 0
+    cid = call_id[:8]  # short call_id for diag logs
 
+    vd.info(f"[{cid}] WS_CONNECT | user_id={user_id}, call_id={call_id}")
     log.info(f"[VOICE] WS connected: call_id={call_id}, user_id={user_id}")
 
     try:
@@ -135,10 +140,18 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
 
             # Если pipeline ещё стримит предыдущий ответ — пропускаем
             if is_responding:
-                log.info(f"[VOICE] Skipping response_required — still responding (text: {user_text[:50]})")
+                log.info(
+                    f"[VOICE] Skipping response_required — still responding (text: {user_text[:50]})"
+                )
                 continue
 
             response_id += 1
+            t_turn_start = time.monotonic()
+
+            vd.info(
+                f"[{cid}] WS_TRANSCRIPT_RECEIVED | resp_id={response_id} "
+                f'| text="{user_text[:80]}"'
+            )
 
             # Сохраняем сообщение пользователя
             save_message(
@@ -170,9 +183,11 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
             full_text = ""
             buf = ""
             chunk_count = 0
+            first_token_sent = False
+            t_first_ws_token = None
 
             async def _flush_buf():
-                nonlocal buf, chunk_count
+                nonlocal buf, chunk_count, first_token_sent, t_first_ws_token
                 if not buf:
                     return
                 chunk_count += 1
@@ -187,6 +202,14 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
                         }
                     )
                 )
+                if not first_token_sent:
+                    first_token_sent = True
+                    t_first_ws_token = time.monotonic()
+                    vd.info(
+                        f"[{cid}] WS_FIRST_TOKEN_SENT "
+                        f"| elapsed={(t_first_ws_token - t_turn_start)*1000:.0f}ms "
+                        f'| chunk="{buf[:40]}"'
+                    )
                 buf = ""
 
             is_responding = True
@@ -197,6 +220,7 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
                 history=history,
                 state_manager=state_manager,
                 channel="voice",
+                call_id=cid,
             ):
                 if not chunk:
                     continue
@@ -211,6 +235,13 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
 
             # Остаток буфера
             await _flush_buf()
+            t_last_ws_token = time.monotonic()
+
+            vd.info(
+                f"[{cid}] WS_LAST_TOKEN_SENT "
+                f"| elapsed={(t_last_ws_token - t_turn_start)*1000:.0f}ms "
+                f"| chunks={chunk_count}"
+            )
 
             # Очистка полного текста от markdown для сохранения
             full_text = clean_for_voice(full_text)
@@ -238,6 +269,7 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
             )
 
             is_responding = False
+            t_response_complete = time.monotonic()
 
             # Сохраняем полный очищенный ответ
             reply_text = full_text or "Повторите, пожалуйста?"
@@ -253,6 +285,32 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
                 f"[VOICE] Reply #{response_id}: "
                 f"chunks={chunk_count}, end_call={end_call}, "
                 f"len={len(reply_text)}"
+            )
+
+            # ══════ TURN SUMMARY ══════
+            total_ms = (t_response_complete - t_turn_start) * 1000
+            ws_first_ms = (
+                (t_first_ws_token - t_turn_start) * 1000 if t_first_ws_token else 0
+            )
+            ws_overhead_ms = (t_response_complete - t_last_ws_token) * 1000
+
+            cur_state = state_manager.get_state(user_id)
+            fields = []
+            for fld in ("goal", "location", "budget", "payment_type"):
+                val = getattr(cur_state, fld, None) if cur_state else None
+                if val:
+                    fields.append(f"{fld}={str(val)[:20]}")
+            fields_str = ", ".join(fields) if fields else "none"
+
+            vd.info(
+                f"[{cid}] ══════ TURN SUMMARY ══════\n"
+                f'  Transcript: "{user_text[:80]}"\n'
+                f'  Response: "{reply_text[:80]}"\n'
+                f"  Total: {total_ms:.0f}ms\n"
+                f"  ├─ WS first token: {ws_first_ms:.0f}ms\n"
+                f"  ├─ WS overhead:    {ws_overhead_ms:.0f}ms\n"
+                f"  State: fields=[{fields_str}]\n"
+                f"  ══════════════════════════════"
             )
 
     except WebSocketDisconnect:
