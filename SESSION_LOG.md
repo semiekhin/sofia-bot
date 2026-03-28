@@ -1,5 +1,41 @@
 # SESSION_LOG — Последние сессии
 
+## 28.03.2026 (вечер) — Исследование альтернативных LLM для голоса
+
+**Сделано:**
+- Практические замеры TTFT на 8 моделях Groq (streaming, 3 прогона каждая)
+- YandexGPT протестирован — наш YANDEX_SPEECHKIT_API_KEY работает для LLM API (folder_id=b1giu7d61rvmondibc51)
+- Сетевая задержка замерена до 5 провайдеров (Yandex, Groq, Fireworks, Together, DeepSeek)
+- Веб-исследование: Yandex AI Studio (Alice AI, Qwen3-235B), Together AI, Fireworks AI, DeepSeek API
+- Полный отчёт → docs/VOICE_LATENCY_RESEARCH.md секция 8
+
+**Ключевые результаты (streaming TTFT с нашего сервера):**
+
+| Модель | Провайдер | TTFT медиана | Русский |
+|--------|-----------|-------------|---------|
+| gpt-5.4-mini (текущая) | OpenAI | 325ms | Отличный |
+| qwen3-32b + /no_think | Groq | 79ms | Очень хороший |
+| llama-4-scout-17b | Groq | 108ms | Хороший |
+| llama-3.3-70b | Groq | 118ms | Хороший |
+| gpt-oss-20b | Groq | 148ms | Хороший |
+| YandexGPT Lite (sync!) | Yandex | 724ms* | Отличный |
+| YandexGPT Pro (sync!) | Yandex | 988ms* | Отличный |
+
+*YandexGPT замерен sync (полное время), streaming TTFT будет ниже.
+
+**Находки:**
+- Groq qwen3-32b — 4x быстрее gpt-5.4-mini (79 vs 325ms), очень хороший русский
+- Qwen3 требует `/no_think` в промпте и strip `<think>` тегов из ответа
+- Yandex AI Studio предлагает Alice AI LLM (лидер SLAVA бенчмарка) и Qwen3-235B на серверах в РФ
+- DeepSeek напрямую — слишком медленный (330ms только сеть, 2-3с TTFT)
+- Fireworks Qwen3-30B — перспективен (~300ms est.), нужен практический тест
+
+**Файлы:** docs/VOICE_LATENCY_RESEARCH.md
+
+**Следующий шаг:** A/B тест Groq qwen3-32b vs gpt-5.4-mini на 20 диалогах
+
+---
+
 ## 28.03.2026 — Voice Pipeline v2: новая архитектура
 
 **Сделано:**

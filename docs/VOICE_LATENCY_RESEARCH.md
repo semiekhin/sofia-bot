@@ -387,3 +387,159 @@ max_tokens=800: TTFT=1338ms
 curl https://api.openai.com/:
   dns=0.020s connect=0.021s tls=0.066s ttfb=0.086s total=0.086s
 ```
+
+---
+
+## 8. Альтернативные LLM для голосового пайплайна
+
+**Дата:** 2026-03-28
+**Цель:** найти модель быстрее gpt-5.4-mini (325ms TTFT) с хорошим русским
+**Метод:** практические замеры с сервера 72.56.64.91 + веб-исследование
+
+### 8.1 Сетевая задержка до провайдеров (curl TTFB)
+
+| Провайдер | connect | TLS | TTFB | Примечание |
+|-----------|---------|-----|------|-----------|
+| api.openai.com | 21ms | 66ms | 86ms | CDN (Cloudflare) |
+| llm.api.cloud.yandex.net | 48ms | 100ms | 147ms | Серверы в РФ |
+| api.groq.com | 4ms | 44ms | 206ms | CDN |
+| api.fireworks.ai | 30ms | 75ms | 84ms | CDN |
+| api.together.xyz | 4ms | 46ms | 222ms | CDN |
+| api.deepseek.com | 15ms | 54ms | 330ms | Китай |
+
+### 8.2 Groq — практические замеры (streaming TTFT, 3 прогона)
+
+Промпт: VOICE_SYSTEM_PROMPT (~670 токенов) + "Здравствуйте, хочу инвестировать в недвижимость"
+Все модели — OpenAI-compatible API, ключ уже в .env (`GROQ_API_KEY`).
+
+| Модель | TTFT медиана | Прогоны (ms) | Русский | Качество ответа |
+|--------|-------------|--------------|---------|-----------------|
+| **llama-3.3-70b-versatile** | **118ms** | 142, 118, 72 | Хороший | Корректный, но общий ("жилую или коммерческую?") |
+| **llama-4-scout-17b-16e** | **108ms** | 108, 40, 117 | Хороший | Хороший, но сразу спрашивает бюджет (не по скрипту) |
+| llama-3.1-8b-instant | 74ms | 50, 74, 78 | Средний | Слабый для продаж, "Приятно вам звонить" — неестественно |
+| **openai/gpt-oss-20b** | **148ms** | 136, -, 148 | Хороший | Хороший, но 2 вопроса в одном ответе |
+| **qwen/qwen3-32b** | **112ms** | 112, 72, 113 | Очень хороший | ПРОБЛЕМА: выдаёт `<think>` теги (CoT), нужна пост-обработка |
+| qwen3-32b + /no_think | **79ms** | 162, 79, 74 | Очень хороший | Работает! Но `<think></think>` всё равно в выводе — надо стрипать |
+
+**Важное про qwen3-32b:** модель thinking-by-default. Добавление `/no_think` в промпт убирает размышления, но теги `<think></think>` остаются в выводе — нужен regex-фильтр. Параметр `thinking=False` через API не поддерживается Groq.
+
+**Снятые модели (decommissioned на Groq):** qwen-qwq-32b, gemma2-9b-it, deepseek-r1-distill-llama-70b.
+
+### 8.3 YandexGPT — практические замеры (sync API, 3 прогона)
+
+API: `llm.api.cloud.yandex.net/foundationModels/v1/completion`
+Auth: наш `YANDEX_SPEECHKIT_API_KEY` работает! folder_id=`b1giu7d61rvmondibc51` (получен из ошибки API).
+**Внимание:** замер sync — это полное время генерации, НЕ TTFT стриминга.
+
+| Модель | Время медиана (sync) | Прогоны (ms) | Русский | Качество ответа |
+|--------|---------------------|--------------|---------|-----------------|
+| **YandexGPT Lite** | **724ms** | 906, 724, 642 | Отличный | Чистый русский, корректный вопрос |
+| **YandexGPT Pro** | **988ms** | 988, 736, 1575 | Отличный | Отличный русский, высокая вариативность времени |
+| YandexGPT 5 Pro | — | HTTP 500 | — | Внутренняя ошибка сервера |
+
+**Важно:** YandexGPT имеет и streaming API (`/completionStream`), TTFT стриминга будет заметно ниже чем sync. Требуется отдельный тест.
+
+**Дополнительные модели на Yandex AI Studio (по документации):**
+- Alice AI LLM — лидер SLAVA бенчмарка (русский язык)
+- Qwen3-235B-A22B-Instruct, DeepSeek R1, Llama 3.3 — доступны как сторонние
+- OpenAI-compatible endpoint (`sdk.chat`) — упрощает интеграцию
+
+### 8.4 Другие провайдеры (по документации, без практических тестов)
+
+#### Together AI
+- **Модели:** Qwen3.5-397B ($0.60/$3.60), DeepSeek-V3.1 ($0.60/$1.70), Qwen2.5-7B Turbo ($0.30)
+- **TTFT:** ~400-800ms (оценка, не замерено)
+- **Сеть:** connect 4ms (CDN), TTFB 222ms
+- **Русский:** Qwen3.5 — очень хороший, DeepSeek-V3.1 — хороший
+- **API:** OpenAI-compatible
+
+#### Fireworks AI
+- **Модели:** Qwen3-30B ($0.15-0.60), DeepSeek-V3.1/V3.2 ($0.56/$1.68), GLM-5, Kimi K2.5
+- **TTFT:** Qwen3-VL 30B: 0.24s — лучший на платформе. FireAttention ускорение
+- **Сеть:** connect 30ms, TTFB 84ms
+- **Русский:** Qwen3/DeepSeek — хороший
+- **API:** OpenAI-compatible
+
+#### DeepSeek API (напрямую)
+- **Модели:** deepseek-chat (V3.2), deepseek-reasoner
+- **Цена:** $0.28 input / $0.42 output (cache hit: $0.028!) — самый дешёвый
+- **Сеть:** connect 15ms, TTFB 330ms — серверы в Китае
+- **TTFT:** 2-3с по отзывам, плюс 503 ошибки в пик
+- **Русский:** Очень хороший
+- **Вердикт:** НЕ подходит как primary для голоса из-за латенси и нестабильности
+
+### 8.5 Сводная таблица
+
+| Модель | Провайдер | TTFT streaming | Русский | Цена (out/1M) | Интеграция | Риски |
+|--------|-----------|---------------|---------|---------------|-----------|-------|
+| **gpt-5.4-mini** (текущая) | OpenAI | **325ms** | Отличный | $1.60 | Уже работает | — |
+| **qwen3-32b + /no_think** | Groq | **79ms** ⚡ | Очень хороший | $0.59 | Простая (OpenAI-compat) | Preview статус, нужен strip `<think>`, rate limits |
+| **llama-4-scout-17b-16e** | Groq | **108ms** ⚡ | Хороший | $0.34 | Простая | Preview, не всегда следует скрипту |
+| **llama-3.3-70b** | Groq | **118ms** ⚡ | Хороший | $0.79 | Простая | Не идеальный скрипт-следование |
+| **gpt-oss-20b** | Groq | **148ms** ⚡ | Хороший | $0.30 | Простая | Может дать 2 вопроса |
+| **YandexGPT Lite** | Yandex | ~400-500ms (est.) | Отличный | ~$2.40 eq | Средняя (свой API) | Sync=724ms, streaming быстрее |
+| **YandexGPT Pro** | Yandex | ~500-700ms (est.) | Отличный | ~$9.60 eq | Средняя | Медленнее текущей модели |
+| **Qwen3-30B** | Fireworks | ~240-400ms (est.) | Хороший | $0.60 | Простая (OpenAI-compat) | Не замерено |
+| **DeepSeek-V3.2** | DeepSeek | >1000ms | Очень хороший | $0.42 | Простая | Китай, нестабильность |
+
+### 8.6 Рекомендации
+
+#### Tier 1 — Лучшие кандидаты (TTFT < 150ms)
+
+1. **Groq + qwen3-32b** — 79ms TTFT, очень хороший русский. Требует:
+   - Strip `<think>.*?</think>` из ответа (regex)
+   - Добавить `/no_think` в промпт
+   - Тест: 20-30 диалогов на соблюдение скрипта продаж
+   - Риск: preview модель, может быть снята
+
+2. **Groq + llama-4-scout-17b** — 108ms TTFT, хороший русский. Быстрый, дешёвый. Но менее точно следует скрипту.
+
+3. **Groq + llama-3.3-70b** — 118ms TTFT, проверенная модель. Уже была в предыдущих тестах. Русский хороший, но не нативный.
+
+#### Tier 2 — Средний приоритет
+
+4. **Fireworks + Qwen3-30B** — оценочный TTFT ~300ms. Нужен практический тест. Хороший русский. Стабильнее Groq.
+
+5. **Yandex AI Studio + Alice AI LLM** — лучший русский в индустрии. Серверы в РФ. TTFT неизвестен. Нужен тест streaming API + проверка доступности Alice AI через наш аккаунт.
+
+#### Tier 3 — Не рекомендуется для primary
+
+6. **YandexGPT Pro** — слишком медленно (988ms sync)
+7. **DeepSeek напрямую** — слишком медленно, нестабильно
+8. **Together AI** — нет преимуществ перед Fireworks
+
+#### Следующие шаги (если решим переходить)
+
+1. **Быстрый тест:** Groq qwen3-32b — 20 диалогов с полным скриптом, оценка скрипт-следования
+2. **Streaming тест YandexGPT:** замерить TTFT через `/completionStream`
+3. **Fireworks тест:** зарегистрироваться, замерить Qwen3-30B с нашего сервера
+4. **Гибридная схема:** Groq для скорости + fallback на gpt-5.4-mini при деградации
+
+### 8.7 Raw Data — Groq streaming TTFT
+
+```
+llama-3.3-70b-versatile:        142, 118, 72 ms  (median 118)
+llama-4-scout-17b-16e-instruct: 108, 40, 117 ms  (median 108)
+llama-3.1-8b-instant:           50, 74, 78 ms    (median 74)
+openai/gpt-oss-20b:             136, -, 148 ms   (median 148)
+qwen/qwen3-32b:                 112, 72, 113 ms  (median 112)
+qwen/qwen3-32b + /no_think:    162, 79, 74 ms   (median 79)
+```
+
+### 8.8 Raw Data — YandexGPT sync
+
+```
+YandexGPT Lite (sync): 906, 724, 642 ms  (median 724)
+YandexGPT Pro  (sync): 988, 736, 1575 ms (median 988)
+YandexGPT 5 Pro: HTTP 500 (не работает)
+```
+
+### 8.9 Raw Data — Network latency (curl)
+
+```
+llm.api.cloud.yandex.net: connect=48ms  tls=100ms ttfb=147ms
+api.groq.com:             connect=4ms   tls=44ms  ttfb=206ms
+api.fireworks.ai:         connect=30ms  tls=75ms  ttfb=84ms
+api.together.xyz:         connect=4ms   tls=46ms  ttfb=222ms
+api.deepseek.com:         connect=15ms  tls=54ms  ttfb=330ms
+```

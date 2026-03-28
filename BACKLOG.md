@@ -21,7 +21,9 @@
 - [ ] **Yandex STT + turn detection** (#7) — модуль работает, нужна интеграция с pipecat (минус 0.5-1с на паузу)
 - [ ] **Задарма SIP** (#17) — реальные звонки через Vapi/LiveKit/Pipecat
 - [ ] **WebRTC кнопка в веб-виджете** — голосовой звонок в браузере
-- [ ] **Groq + Llama/Qwen для Generator** — TTFT 54-146ms, качество русского под вопросом
+- [ ] **Groq qwen3-32b для Voice** — TTFT 79ms (4x быстрее gpt-5.4-mini), нужен A/B тест 20 диалогов. Требует /no_think + strip `<think>`. Preview модель
+- [ ] **Yandex AI Studio (Alice AI / Qwen3-235B)** — серверы в РФ, лучший русский. Нужен тест streaming TTFT
+- [ ] **Fireworks Qwen3-30B** — est. TTFT ~300ms, нужен практический тест
 - [ ] **OpenAI Realtime API** — Voice V3, нативный voice-to-voice
 - [ ] **Cartesia Sonic 3** — TTFB 40ms, русский заявлен но не тестирован
 - [ ] **Retell high_priority_pool** — включить в dashboard (-50-150ms)
