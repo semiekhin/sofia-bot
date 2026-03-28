@@ -1,0 +1,802 @@
+[
+  {
+    "ttft_ms": 1051.3,
+    "total_ms": 1278.3,
+    "response": "Здравствуйте, я София, компания Оазис Эстэйт. Скажите, вы подбираете недвижимость для себя или под инвестицию?",
+    "error": null,
+    "case": "1_greeting_cold",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 0
+  },
+  {
+    "ttft_ms": 186.7,
+    "total_ms": 287.6,
+    "response": "Здравствуйте, это София из \"Оазис Эстэйт\". Для чего ищете недвижимость на курорте — для себя или как инвестицию?",
+    "error": null,
+    "case": "1_greeting_cold",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 0
+  },
+  {
+    "ttft_ms": 363.5,
+    "total_ms": 667.0,
+    "response": "Здравствуйте, меня зовут София, компания Оазис Эстэйт. Подскажите, вы подбираете недвижимость для себя или под инвестицию?",
+    "error": null,
+    "case": "1_greeting_cold",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 1
+  },
+  {
+    "ttft_ms": 135.0,
+    "total_ms": 219.9,
+    "response": "Здравствуйте, это София из «Оазис Эстэйт». На связи с подбором курортной недвижимости. Чем могу помочь?",
+    "error": null,
+    "case": "1_greeting_cold",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 1
+  },
+  {
+    "ttft_ms": 328.4,
+    "total_ms": 658.9,
+    "response": "Для инвестиций и для жизни подбираются разные объекты, поэтому скажите, что для вас ближе: доход с аренды или отдых?",
+    "error": null,
+    "case": "2_goal_investment",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 0
+  },
+  {
+    "ttft_ms": 147.4,
+    "total_ms": 192.8,
+    "response": "Отлично. Для себя или сдачу в аренду планируете?",
+    "error": null,
+    "case": "2_goal_investment",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 0
+  },
+  {
+    "ttft_ms": 508.6,
+    "total_ms": 986.3,
+    "response": "Для себя или именно под инвестицию?",
+    "error": null,
+    "case": "2_goal_investment",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 1
+  },
+  {
+    "ttft_ms": 133.3,
+    "total_ms": 214.7,
+    "response": "Отлично, тогда подберём варианты с хорошим потенциалом дохода. Уточните, пожалуйста, примерный бюджет.",
+    "error": null,
+    "case": "2_goal_investment",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 1
+  },
+  {
+    "ttft_ms": 517.9,
+    "total_ms": 974.6,
+    "response": "Для жизни и под инвестицию подбираются разные объекты — локация и планировки отличаются. Что вам ближе: доход с аренды или для отдыха?",
+    "error": null,
+    "case": "3_goal_unsure",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 0
+  },
+  {
+    "ttft_ms": 131.4,
+    "total_ms": 190.2,
+    "response": "Просто под инвестиции и для жизни подбираем разные объекты — локация, планировки отличаются. Что ближе: доход с аренды или для отдыха?",
+    "error": null,
+    "case": "3_goal_unsure",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 0
+  },
+  {
+    "ttft_ms": 358.7,
+    "total_ms": 507.0,
+    "response": "Для себя или под инвестицию?",
+    "error": null,
+    "case": "3_goal_unsure",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 1
+  },
+  {
+    "ttft_ms": 140.4,
+    "total_ms": 173.4,
+    "response": "Поняла. Для себя или как инвестицию?",
+    "error": null,
+    "case": "3_goal_unsure",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 1
+  },
+  {
+    "ttft_ms": 443.7,
+    "total_ms": 760.6,
+    "response": "Тогда с этим бюджетом можно смотреть полноценные апартаменты. Как вам удобнее оплачивать — полностью, в ипотеку или в рассрочку?",
+    "error": null,
+    "case": "4_budget_range",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 0
+  },
+  {
+    "ttft_ms": 142.8,
+    "total_ms": 189.0,
+    "response": "Хорошо, расскажите, полная оплата, ипотека или рассрочка вас интересует?",
+    "error": null,
+    "case": "4_budget_range",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 0
+  },
+  {
+    "ttft_ms": 370.6,
+    "total_ms": 691.4,
+    "response": "В этом диапазоне уже можно смотреть полноценные апартаменты. Как вам удобнее планировать покупку — сразу вся сумма или с рассрочкой?",
+    "error": null,
+    "case": "4_budget_range",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 1
+  },
+  {
+    "ttft_ms": 133.2,
+    "total_ms": 167.1,
+    "response": "Хорошо. Полная оплата, ипотека или рассрочка?",
+    "error": null,
+    "case": "4_budget_range",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 1
+  },
+  {
+    "ttft_ms": 427.7,
+    "total_ms": 882.3,
+    "response": "Если говорить ориентиром, то у моря Туапсе от пяти миллионов, Сочи от восьми, Анапа от девяти, Крым от девяти с половиной; в горах Алтай от девяти, Архыз от пятнадцати, Красная Поляна от девятнадцати. Что вам ближе по бюджету?",
+    "error": null,
+    "case": "5_budget_dont_know",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 0
+  },
+  {
+    "ttft_ms": 140.0,
+    "total_ms": 183.9,
+    "response": "Скажите, в каком направлении интересуетесь — море или горы?",
+    "error": null,
+    "case": "5_budget_dont_know",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 0
+  },
+  {
+    "ttft_ms": 448.0,
+    "total_ms": 880.3,
+    "response": "Если для отдыха у моря, то в Туапсе варианты начинаются от пяти миллионов, в Сочи — от восьми, в Анапе — от девяти, в Крыму — от девяти с половиной. Что вам ближе по уровню бюджета?",
+    "error": null,
+    "case": "5_budget_dont_know",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 1
+  },
+  {
+    "ttft_ms": 3299.1,
+    "total_ms": 3372.6,
+    "response": "До десяти — это студии под аренду, десять-пятнадцать — полноценные апартаменты, выше пятнадцати — премиум. Что комфортнее?",
+    "error": null,
+    "case": "5_budget_dont_know",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 1
+  },
+  {
+    "ttft_ms": 379.1,
+    "total_ms": 801.4,
+    "response": "Есть варианты без банка на шесть или двенадцать месяцев, условия зависят от объекта. Давайте эксперт за пятнадцать минут подберёт два-три варианта под ваш бюджет и способ оплаты, когда вам удобно?",
+    "error": null,
+    "case": "6_payment_question",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 0
+  },
+  {
+    "ttft_ms": 6205.5,
+    "total_ms": 6305.3,
+    "response": "Рассрочка — на шесть или двенадцать месяцев, без участия банка. Когда удобно созвониться, чтобы подробнее обсудить?",
+    "error": null,
+    "case": "6_payment_question",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 0
+  },
+  {
+    "ttft_ms": 376.9,
+    "total_ms": 698.5,
+    "response": "Есть варианты рассрочки без банка на шесть или двенадцать месяцев. Для себя смотрите или под инвестицию?",
+    "error": null,
+    "case": "6_payment_question",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 1
+  },
+  {
+    "ttft_ms": 6172.5,
+    "total_ms": 6247.1,
+    "response": "Рассрочка без участия банка — на шесть или двенадцать месяцев. Когда удобно будет посмотреть варианты?",
+    "error": null,
+    "case": "6_payment_question",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 1
+  },
+  {
+    "ttft_ms": 1086.3,
+    "total_ms": 1385.2,
+    "response": "С ипотекой тоже есть варианты, а по бюджету можно подобрать разные объекты. Для вас цель — инвестиция или для отдыха?",
+    "error": null,
+    "case": "7_objection_expensive",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 0
+  },
+  {
+    "ttft_ms": 6175.4,
+    "total_ms": 6305.0,
+    "response": "Поняла. На ваш бюджет от 10 миллионов есть варианты в разных локациях — море или горы, готовые или строящиеся. Что ближе?",
+    "error": null,
+    "case": "7_objection_expensive",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 0
+  },
+  {
+    "ttft_ms": 334.9,
+    "total_ms": 643.9,
+    "response": "Есть варианты и с меньшим бюджетом, зависит от локации и формата. Для чего вам объект — для инвестиции или для себя?",
+    "error": null,
+    "case": "7_objection_expensive",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 1
+  },
+  {
+    "ttft_ms": 6187.6,
+    "total_ms": 6247.3,
+    "response": "Поняла. Скажите, для чего планируете приобретение — для дохода или отдыха?",
+    "error": null,
+    "case": "7_objection_expensive",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 1
+  },
+  {
+    "ttft_ms": 356.5,
+    "total_ms": 604.3,
+    "response": "Для подбора без звонка скажите, пожалуйста, вам нужен готовый объект или стройка?",
+    "error": null,
+    "case": "8_meeting_decline",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 0
+  },
+  {
+    "ttft_ms": 6176.0,
+    "total_ms": 6266.2,
+    "response": "Хорошо, прислать подборку — расскажите, в каком регионе вы рассматриваете: Туапсе, Сочи, Анапа или Крым?",
+    "error": null,
+    "case": "8_meeting_decline",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 0
+  },
+  {
+    "ttft_ms": 481.0,
+    "total_ms": 1036.2,
+    "response": "Тогда под море могу сориентировать точнее: вам интереснее готовое или стройка? За пятнадцать минут покажем варианты, которых нет в открытом доступе, когда вам удобнее созвониться?",
+    "error": null,
+    "case": "8_meeting_decline",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 1
+  },
+  {
+    "ttft_ms": 6180.4,
+    "total_ms": 6280.1,
+    "response": "Хорошо, пришлём подборку. А для подбора уточните: вы ищете для дохода или отдыха?",
+    "error": null,
+    "case": "8_meeting_decline",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 1
+  },
+  {
+    "ttft_ms": 438.1,
+    "total_ms": 936.9,
+    "response": "Отлично, скажите, пожалуйста, во сколько завтра после обеда вам удобно созвониться?",
+    "error": null,
+    "case": "9_meeting_agree",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 0
+  },
+  {
+    "ttft_ms": 6217.6,
+    "total_ms": 6267.3,
+    "response": "Хорошо, завтра после обеда. В 15:00 или позже?",
+    "error": null,
+    "case": "9_meeting_agree",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 0
+  },
+  {
+    "ttft_ms": 327.3,
+    "total_ms": 573.4,
+    "response": "Хорошо, скажите, после какого часа завтра вам удобнее?",
+    "error": null,
+    "case": "9_meeting_agree",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 1
+  },
+  {
+    "ttft_ms": 6239.8,
+    "total_ms": 6284.1,
+    "response": "Хорошо, завтра после обеда. Вас устроит 14:00?",
+    "error": null,
+    "case": "9_meeting_agree",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 1
+  },
+  {
+    "ttft_ms": 344.8,
+    "total_ms": 649.3,
+    "response": "В Сочи варианты начинаются от восьми миллионов. Для вас это скорее инвестиция под аренду или для себя?",
+    "error": null,
+    "case": "10_price_question",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 0
+  },
+  {
+    "ttft_ms": 6245.2,
+    "total_ms": 6356.9,
+    "response": "В Сочи цены начинаются от 8 миллионов — это полноценные апартаменты под аренду. Вы рассматриваете оплату за счёт инвестиций?",
+    "error": null,
+    "case": "10_price_question",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 0
+  },
+  {
+    "ttft_ms": 505.7,
+    "total_ms": 900.0,
+    "response": "В Сочи объекты у моря начинаются от восьми миллионов. Что для вас ближе — доход с аренды или для отдыха?",
+    "error": null,
+    "case": "10_price_question",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 1
+  },
+  {
+    "ttft_ms": 5202.3,
+    "total_ms": 5266.8,
+    "response": "В Сочи цены начинаются от 8 миллионов. Что ближе: аренда или для себя?",
+    "error": null,
+    "case": "10_price_question",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 1
+  },
+  {
+    "ttft_ms": 367.5,
+    "total_ms": 668.6,
+    "response": "Да, в Крыму есть варианты от 9,5 миллионов. А вам интереснее готовое или в стройке?",
+    "error": null,
+    "case": "11_location_crimea",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 0
+  },
+  {
+    "ttft_ms": 181.7,
+    "total_ms": 271.4,
+    "response": "Хорошо, вы в Крыму — студии и апартаменты с морем. В стадии стройки или уже готовые?",
+    "error": null,
+    "case": "11_location_crimea",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 0
+  },
+  {
+    "ttft_ms": 526.0,
+    "total_ms": 873.2,
+    "response": "Да, в Крыму есть варианты от 9,5 миллионов. Для себя или под инвестицию рассматриваете?",
+    "error": null,
+    "case": "11_location_crimea",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 1
+  },
+  {
+    "ttft_ms": 2172.9,
+    "total_ms": 2216.0,
+    "response": "Поняла. А какая стадия — готовое жильё или объект в стройке?",
+    "error": null,
+    "case": "11_location_crimea",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 1
+  },
+  {
+    "ttft_ms": 362.9,
+    "total_ms": 581.1,
+    "response": "Конечно, когда вам удобнее созвониться на пятнадцать минут?",
+    "error": null,
+    "case": "12_busy_callback",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 0
+  },
+  {
+    "ttft_ms": 6184.7,
+    "total_ms": 6259.6,
+    "response": "Хорошо, тогда перезвоню в удобное для вас время. Скажите, пожалуйста, когда это будет?",
+    "error": null,
+    "case": "12_busy_callback",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 0
+  },
+  {
+    "ttft_ms": 346.4,
+    "total_ms": 552.0,
+    "response": "Конечно, когда вам удобнее созвониться на пару минут?",
+    "error": null,
+    "case": "12_busy_callback",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 1
+  },
+  {
+    "ttft_ms": 5162.2,
+    "total_ms": 5257.6,
+    "response": "Хорошо, тогда назначьте удобное время — перезвоню вами. Когда вам подойдёт?",
+    "error": null,
+    "case": "12_busy_callback",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 1
+  },
+  {
+    "ttft_ms": 372.6,
+    "total_ms": 579.7,
+    "response": "Здравствуйте! Подскажите, пожалуйста, вы рассматриваете недвижимость для себя или как инвестицию?",
+    "error": null,
+    "case": "db_user7068679_turn1_GOAL",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 0
+  },
+  {
+    "ttft_ms": 141.1,
+    "total_ms": 193.9,
+    "response": "Хорошо. Расскажите, зачем подбираем недвижимость — для проживания или инвестиции?",
+    "error": null,
+    "case": "db_user7068679_turn1_GOAL",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 0
+  },
+  {
+    "ttft_ms": 360.6,
+    "total_ms": 565.6,
+    "response": "Здравствуйте! Подскажите, пожалуйста, объект под себя рассматриваете или как инвестицию?",
+    "error": null,
+    "case": "db_user7068679_turn1_GOAL",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 1
+  },
+  {
+    "ttft_ms": 3230.0,
+    "total_ms": 3307.8,
+    "response": "Замечательно! Скажите, пожалуйста, зачем ищете недвижимость: для себя или как инвестицию?",
+    "error": null,
+    "case": "db_user7068679_turn1_GOAL",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 1
+  },
+  {
+    "ttft_ms": 363.5,
+    "total_ms": 628.0,
+    "response": "Отлично, скажите, какой бюджет вам комфортен для покупки?",
+    "error": null,
+    "case": "db_user7068679_turn3_GOAL",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 0
+  },
+  {
+    "ttft_ms": 6163.2,
+    "total_ms": 6223.8,
+    "response": "Отлично. Для кого подбираем недвижимость — для себя или с целью инвестиций?",
+    "error": null,
+    "case": "db_user7068679_turn3_GOAL",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 0
+  },
+  {
+    "ttft_ms": 403.1,
+    "total_ms": 671.5,
+    "response": "Отлично, тогда для себя или под инвестицию подбираете?",
+    "error": null,
+    "case": "db_user7068679_turn3_GOAL",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 1
+  },
+  {
+    "ttft_ms": 1163.9,
+    "total_ms": 1240.1,
+    "response": "Замечательно. Для кого подбираем недвижимость: для себя или с целью вложений?",
+    "error": null,
+    "case": "db_user7068679_turn3_GOAL",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 1
+  },
+  {
+    "ttft_ms": 339.3,
+    "total_ms": 590.1,
+    "response": "Тогда скажите, какой ориентир по бюджету вам комфортен?",
+    "error": null,
+    "case": "db_user7068679_turn5_GOAL",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 0
+  },
+  {
+    "ttft_ms": 175.9,
+    "total_ms": 257.4,
+    "response": "Поняла. Какой примерный бюджет вы рассматриваете: до десяти, десять-пятнадцать, или выше пятнадцати миллионов?",
+    "error": null,
+    "case": "db_user7068679_turn5_GOAL",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 0
+  },
+  {
+    "ttft_ms": 645.7,
+    "total_ms": 1373.5,
+    "response": "Какой бюджет вам комфортен для покупки?",
+    "error": null,
+    "case": "db_user7068679_turn5_GOAL",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 1
+  },
+  {
+    "ttft_ms": 3169.9,
+    "total_ms": 3226.0,
+    "response": "Хорошо. Какой примерный бюджет у вас на приобретение объекта?",
+    "error": null,
+    "case": "db_user7068679_turn5_GOAL",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 1
+  },
+  {
+    "ttft_ms": 402.4,
+    "total_ms": 859.0,
+    "response": "Для ориентира: до десяти миллионов — это студии под аренду, десять-пятнадцать — полноценные апартаменты, выше пятнадцати — премиум; что вам комфортнее?",
+    "error": null,
+    "case": "db_user7068679_turn7_GOAL",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 0
+  },
+  {
+    "ttft_ms": 1229.7,
+    "total_ms": 1308.6,
+    "response": "Хорошо. До десяти — это студии под аренду, десять-пятнадцать — полноценные апартаменты, выше пятнадцати — премиум. Что комфортнее?",
+    "error": null,
+    "case": "db_user7068679_turn7_GOAL",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 0
+  },
+  {
+    "ttft_ms": 357.3,
+    "total_ms": 752.3,
+    "response": "Ориентир такой: до десяти миллионов — студии под аренду, десять-пятнадцать — полноценные апартаменты, выше пятнадцати — премиум. Что для вас комфортнее?",
+    "error": null,
+    "case": "db_user7068679_turn7_GOAL",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 1
+  },
+  {
+    "ttft_ms": 7232.3,
+    "total_ms": 7318.7,
+    "response": "Хорошо, дайте ориентир: до десяти — это студии под аренду, десять-пятнадцать — полноценные апартаменты, выше — премиум. Что комфортнее?",
+    "error": null,
+    "case": "db_user7068679_turn7_GOAL",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 1
+  },
+  {
+    "ttft_ms": 492.4,
+    "total_ms": 984.3,
+    "response": "В горах сейчас смотрят Алтай от девяти миллионов, Архыз от пятнадцати, Красная Поляна от девятнадцати. Давайте наш эксперт за пятнадцать минут покажет два-три варианта под ваш запрос, когда вам удобно созвониться?",
+    "error": null,
+    "case": "db_user7068679_turn9_GOAL",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 0
+  },
+  {
+    "ttft_ms": 6181.0,
+    "total_ms": 6328.6,
+    "response": "Хорошо, десять миллионов — это подходит для апартаментов у моря или комфорт-класса в горах. В горах, например, Алтай или Архыз — варианты есть. Хотите, чтобы эксперт показал подходящие объекты за 15 минут?",
+    "error": null,
+    "case": "db_user7068679_turn9_GOAL",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 0
+  },
+  {
+    "ttft_ms": 494.9,
+    "total_ms": 989.2,
+    "response": "В горах у нас есть варианты в Алтае от девяти миллионов, в Архызе от пятнадцати и в Красной Поляне от девятнадцати. Давайте наш эксперт за пятнадцать минут покажет два-три варианта под ваш бюджет и подберёт по локации, когда вам удобно?",
+    "error": null,
+    "case": "db_user7068679_turn9_GOAL",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 1
+  },
+  {
+    "ttft_ms": 7222.1,
+    "total_ms": 7335.0,
+    "response": "Расскажите, интересует ли вас Алтай, Архыз или Красная Поляна — цены начинаются от девяти, пятнадцати и девятнадцати миллионов соответственно. Есть предпочтение?",
+    "error": null,
+    "case": "db_user7068679_turn9_GOAL",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 1
+  },
+  {
+    "ttft_ms": 509.9,
+    "total_ms": 1111.2,
+    "response": "По доходности зависит от конкретного объекта и сезона, но у моря спрос обычно шире, а в горах выше средний чек аренды. Что вам ближе — доход с аренды или отдых для себя?",
+    "error": null,
+    "case": "db_user7068679_turn11_GOAL",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 0
+  },
+  {
+    "ttft_ms": 7196.0,
+    "total_ms": 7330.1,
+    "response": "Доходность в горах и у моря зависит от сезона, но в среднем они примерно одинаковые — около 6-8% в год. Что ближе: отдых с семьёй или сдача в аренду?",
+    "error": null,
+    "case": "db_user7068679_turn11_GOAL",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 0
+  },
+  {
+    "ttft_ms": 477.2,
+    "total_ms": 810.4,
+    "response": "Зависит от локации и формата, но чаще у моря спрос на аренду стабильнее круглый год. Для себя рассматриваете или именно под инвестицию?",
+    "error": null,
+    "case": "db_user7068679_turn11_GOAL",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 1
+  },
+  {
+    "ttft_ms": 8211.1,
+    "total_ms": 8312.4,
+    "response": "Доходность в горах и у моря примерно одинаковая — около 6-8% в год, всё зависит от класса объекта. Когда удобно поговорить с экспертом?",
+    "error": null,
+    "case": "db_user7068679_turn11_GOAL",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 1
+  },
+  {
+    "ttft_ms": 665.1,
+    "total_ms": 1899.3,
+    "response": "Тогда давайте наш эксперт за пятнадцать минут покажет вам два-три варианта под ваш запрос. Когда вам удобно созвониться?",
+    "error": null,
+    "case": "db_user7068679_turn13_GOAL",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 0
+  },
+  {
+    "ttft_ms": 6189.7,
+    "total_ms": 6263.5,
+    "response": "Отлично, договоримся о созвоне с экспертом — он покажет варианты под ваш бюджет и локацию. Когда удобно?",
+    "error": null,
+    "case": "db_user7068679_turn13_GOAL",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 0
+  },
+  {
+    "ttft_ms": 424.9,
+    "total_ms": 788.6,
+    "response": "Для подбора я учту ваш бюджет и формат оплаты, а эксперт за пятнадцать минут покажет два-три варианта под ваш запрос. Когда вам удобно созвониться?",
+    "error": null,
+    "case": "db_user7068679_turn13_GOAL",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 1
+  },
+  {
+    "ttft_ms": 7236.2,
+    "total_ms": 7345.6,
+    "response": "Хорошо, тогда договоримся, когда удобно созвониться с экспертом. Когда вам подойдёт время для пятнадцатиминутного разговора?",
+    "error": null,
+    "case": "db_user7068679_turn13_GOAL",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 1
+  },
+  {
+    "ttft_ms": 422.0,
+    "total_ms": 559.2,
+    "response": "Для себя подбираете или как инвестицию?",
+    "error": null,
+    "case": "db_user7107809_turn1_GOAL",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 0
+  },
+  {
+    "ttft_ms": 6211.4,
+    "total_ms": 6279.3,
+    "response": "Отлично. Скажите, какая цель у поиска недвижимости — для проживания или инвестиции?",
+    "error": null,
+    "case": "db_user7107809_turn1_GOAL",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 0
+  },
+  {
+    "ttft_ms": 362.2,
+    "total_ms": 568.8,
+    "response": "Что для вас актуальнее: покупка для себя или как инвестиция?",
+    "error": null,
+    "case": "db_user7107809_turn1_GOAL",
+    "provider": "openai",
+    "model": "gpt-5.4-mini",
+    "run": 1
+  },
+  {
+    "ttft_ms": 7261.6,
+    "total_ms": 7336.3,
+    "response": "Отлично, спасибо. Скажите, для чего ищете недвижимость — для проживания или как инвестицию?",
+    "error": null,
+    "case": "db_user7107809_turn1_GOAL",
+    "provider": "groq",
+    "model": "qwen/qwen3-32b",
+    "run": 1
+  }
+]
