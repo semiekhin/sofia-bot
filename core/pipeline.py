@@ -539,8 +539,16 @@ def _extract_state_from_context(user_message, history, current_state):
             updates["payment_type"] = "full"
             updates["payment_type_confidence"] = "confirmed"
 
-    # Meeting
-    if any(w in text for w in ["давайте созвон", "да, давайте", "созвонимся"]):
+    # Meeting — только если София предлагала созвон в предыдущем сообщении
+    meeting_context = any(
+        w in last_bot_msg
+        for w in ["созвон", "эксперт", "позвон", "встреч", "пятнадцать минут"]
+    )
+    if meeting_context and any(
+        w in text for w in ["давайте созвон", "да, давайте", "давай", "созвонимся"]
+    ):
+        updates["meeting_agreed"] = True
+    elif "созвонимся" in text:
         updates["meeting_agreed"] = True
 
     return updates

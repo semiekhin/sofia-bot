@@ -7,6 +7,7 @@ voice_api.py — WebSocket адаптер для Retell AI Custom LLM
 Endpoint: ws://.../llm-websocket/{call_id}
 """
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -186,6 +187,42 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
                 continue
             last_transcript = user_text
             last_transcript_time = now
+
+            # Debounce: ждём 400ms — если придёт новый транскрипт,
+            # берём его (Retell присылает уточнённую версию с продолжением)
+            debounce_text = user_text
+            debounce_done = False
+            while not debounce_done:
+                try:
+                    raw2 = await asyncio.wait_for(websocket.receive_text(), timeout=0.4)
+                    data2 = json.loads(raw2)
+                    itype2 = data2.get("interaction_type", "")
+                    if itype2 == "update_only":
+                        continue
+                    if itype2 not in (
+                        "response_required",
+                        "reminder_required",
+                    ):
+                        continue
+                    t2 = data2.get("transcript", [])
+                    ut2 = ""
+                    for entry2 in reversed(t2):
+                        if entry2.get("role") == "user":
+                            ut2 = entry2.get("content", "").strip()
+                            break
+                    if ut2:
+                        vd.info(
+                            f"[{cid}] DEBOUNCE_UPDATE "
+                            f'| prev="{debounce_text[:40]}" '
+                            f'| new="{ut2[:40]}"'
+                        )
+                        debounce_text = ut2
+                        last_transcript = ut2
+                        last_transcript_time = time.monotonic()
+                except asyncio.TimeoutError:
+                    debounce_done = True
+
+            user_text = debounce_text
 
             response_id += 1
             t_turn_start = time.monotonic()
