@@ -7,7 +7,6 @@ voice_api.py — WebSocket адаптер для Retell AI Custom LLM
 Endpoint: ws://.../llm-websocket/{call_id}
 """
 
-import asyncio
 import hashlib
 import json
 import logging
@@ -96,6 +95,8 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
 
         # === Цикл обработки сообщений от Retell ===
         is_responding = False  # флаг: pipeline стримит ответ
+        pending_text = ""  # текст, пришедший во время ответа Софии
+        last_user_text = ""  # последнее обработанное сообщение клиента
         last_transcript = ""
         last_transcript_time = 0.0
         while True:
@@ -141,11 +142,10 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
             if not user_text:
                 continue
 
-            # Если pipeline ещё стримит предыдущий ответ — пропускаем
+            # Если pipeline ещё стримит ответ — сохраняем текст в pending
             if is_responding:
-                log.info(
-                    f"[VOICE] Skipping response_required — still responding (text: {user_text[:50]})"
-                )
+                pending_text = user_text
+                vd.info(f"[{cid}] BARGE_IN_PENDING " f'| text="{user_text[:60]}"')
                 continue
 
             # Дедупликация: Retell шлёт partial→updated→final транскрипт
@@ -188,158 +188,131 @@ async def handle_voice_ws(websocket: WebSocket, call_id: str):
             last_transcript = user_text
             last_transcript_time = now
 
-            # Debounce: ждём 400ms — если придёт новый транскрипт,
-            # берём его (Retell присылает уточнённую версию с продолжением)
-            debounce_text = user_text
-            debounce_done = False
-            while not debounce_done:
-                try:
-                    raw2 = await asyncio.wait_for(websocket.receive_text(), timeout=0.4)
-                    data2 = json.loads(raw2)
-                    itype2 = data2.get("interaction_type", "")
-                    if itype2 == "update_only":
-                        continue
-                    if itype2 not in (
-                        "response_required",
-                        "reminder_required",
-                    ):
-                        continue
-                    t2 = data2.get("transcript", [])
-                    ut2 = ""
-                    for entry2 in reversed(t2):
-                        if entry2.get("role") == "user":
-                            ut2 = entry2.get("content", "").strip()
-                            break
-                    if ut2:
-                        vd.info(
-                            f"[{cid}] DEBOUNCE_UPDATE "
-                            f'| prev="{debounce_text[:40]}" '
-                            f'| new="{ut2[:40]}"'
-                        )
-                        debounce_text = ut2
-                        last_transcript = ut2
-                        last_transcript_time = time.monotonic()
-                except asyncio.TimeoutError:
-                    debounce_done = True
+            last_user_text = user_text
 
-            user_text = debounce_text
+            # === Цикл обработки (повторяется если есть pending) ===
+            while True:
+                response_id += 1
+                t_turn_start = time.monotonic()
 
-            response_id += 1
-            t_turn_start = time.monotonic()
-
-            vd.info(
-                f"[{cid}] WS_TRANSCRIPT_RECEIVED | resp_id={response_id} "
-                f'| text="{user_text[:80]}"'
-            )
-
-            # Сохраняем сообщение пользователя
-            save_message(
-                chat_id=user_id,
-                user_id=user_id,
-                user_name=user_name,
-                role="user",
-                content=user_text,
-            )
-
-            # Обрабатываем через единый пайплайн (16 сообщений = 8 ходов)
-            history = get_history(user_id, limit=16)
-
-            # Extractor пропускаем для голоса — экономим ~1-2с
-            # TODO: вернуть когда латенси будет приемлемым
-            # await process_message(
-            #     user_id=user_id,
-            #     user_name=user_name,
-            #     message=user_text,
-            #     history=history,
-            #     state_manager=state_manager,
-            #     channel="voice",
-            # )
-
-            # Собираем полный ответ от pipeline (один yield)
-            full_text = ""
-            is_responding = True
-            async for chunk in stream_voice_response(
-                user_id=user_id,
-                user_message=user_text,
-                user_name=user_name,
-                history=history,
-                state_manager=state_manager,
-                channel="voice",
-                call_id=cid,
-            ):
-                if chunk:
-                    full_text += chunk
-
-            # Очистка от markdown
-            full_text = clean_for_voice(full_text)
-
-            # [END] check
-            end_call = "[END]" in full_text or "[end]" in full_text
-            full_text = full_text.replace("[END]", "").replace("[end]", "").strip()
-            if end_call:
-                state_manager.update_state(
-                    user_id,
-                    {"dialog_finished": True, "finish_type": "llm_end"},
+                vd.info(
+                    f"[{cid}] WS_TRANSCRIPT_RECEIVED | resp_id={response_id} "
+                    f'| text="{user_text[:80]}"'
                 )
 
-            reply_text = full_text or "Повторите, пожалуйста?"
-
-            # Одно сообщение с content_complete: true
-            # Retell получает полную фразу → TTS с правильной интонацией
-            await websocket.send_text(
-                json.dumps(
-                    {
-                        "response_type": "response",
-                        "response_id": response_id,
-                        "content": reply_text,
-                        "content_complete": True,
-                        "end_call": end_call,
-                    }
+                # Сохраняем сообщение пользователя
+                save_message(
+                    chat_id=user_id,
+                    user_id=user_id,
+                    user_name=user_name,
+                    role="user",
+                    content=user_text,
                 )
-            )
 
-            t_ws_sent = time.monotonic()
-            vd.info(
-                f"[{cid}] WS_RESPONSE_SENT "
-                f"| elapsed={(t_ws_sent - t_turn_start)*1000:.0f}ms "
-                f"| len={len(reply_text)} | end_call={end_call}"
-            )
+                # Обрабатываем через единый пайплайн (16 сообщений = 8 ходов)
+                history = get_history(user_id, limit=16)
 
-            is_responding = False
+                # Собираем полный ответ от pipeline (один yield)
+                full_text = ""
+                is_responding = True
+                pending_text = ""  # сбрасываем перед pipeline
+                async for chunk in stream_voice_response(
+                    user_id=user_id,
+                    user_message=user_text,
+                    user_name=user_name,
+                    history=history,
+                    state_manager=state_manager,
+                    channel="voice",
+                    call_id=cid,
+                ):
+                    if chunk:
+                        full_text += chunk
 
-            # Сохраняем полный очищенный ответ
-            save_message(
-                chat_id=user_id,
-                user_id=user_id,
-                user_name=user_name,
-                role="assistant",
-                content=reply_text,
-            )
+                # Очистка от markdown
+                full_text = clean_for_voice(full_text)
 
-            log.info(
-                f"[VOICE] Reply #{response_id}: "
-                f"end_call={end_call}, len={len(reply_text)}"
-            )
+                # [END] check
+                end_call = "[END]" in full_text or "[end]" in full_text
+                full_text = full_text.replace("[END]", "").replace("[end]", "").strip()
+                if end_call:
+                    state_manager.update_state(
+                        user_id,
+                        {"dialog_finished": True, "finish_type": "llm_end"},
+                    )
 
-            # ══════ TURN SUMMARY ══════
-            total_ms = (t_ws_sent - t_turn_start) * 1000
+                reply_text = full_text or "Повторите, пожалуйста?"
 
-            cur_state = state_manager.get_state(user_id)
-            fields = []
-            for fld in ("goal", "location", "budget", "payment_type"):
-                val = getattr(cur_state, fld, None) if cur_state else None
-                if val:
-                    fields.append(f"{fld}={str(val)[:20]}")
-            fields_str = ", ".join(fields) if fields else "none"
+                # Одно сообщение с content_complete: true
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "response_type": "response",
+                            "response_id": response_id,
+                            "content": reply_text,
+                            "content_complete": True,
+                            "end_call": end_call,
+                        }
+                    )
+                )
 
-            vd.info(
-                f"[{cid}] ══════ TURN SUMMARY ══════\n"
-                f'  Transcript: "{user_text[:80]}"\n'
-                f'  Response: "{reply_text[:80]}"\n'
-                f"  Total: {total_ms:.0f}ms\n"
-                f"  State: fields=[{fields_str}]\n"
-                f"  ══════════════════════════════"
-            )
+                t_ws_sent = time.monotonic()
+                vd.info(
+                    f"[{cid}] WS_RESPONSE_SENT "
+                    f"| elapsed={(t_ws_sent - t_turn_start)*1000:.0f}ms "
+                    f"| len={len(reply_text)} | end_call={end_call}"
+                )
+
+                is_responding = False
+
+                # Сохраняем полный очищенный ответ
+                save_message(
+                    chat_id=user_id,
+                    user_id=user_id,
+                    user_name=user_name,
+                    role="assistant",
+                    content=reply_text,
+                )
+
+                log.info(
+                    f"[VOICE] Reply #{response_id}: "
+                    f"end_call={end_call}, len={len(reply_text)}"
+                )
+
+                # ══════ TURN SUMMARY ══════
+                total_ms = (t_ws_sent - t_turn_start) * 1000
+                cur_state = state_manager.get_state(user_id)
+                fields = []
+                for fld in ("goal", "location", "budget", "payment_type"):
+                    val = getattr(cur_state, fld, None) if cur_state else None
+                    if val:
+                        fields.append(f"{fld}={str(val)[:20]}")
+                fields_str = ", ".join(fields) if fields else "none"
+                vd.info(
+                    f"[{cid}] ══════ TURN SUMMARY ══════\n"
+                    f'  Transcript: "{user_text[:80]}"\n'
+                    f'  Response: "{reply_text[:80]}"\n'
+                    f"  Total: {total_ms:.0f}ms\n"
+                    f"  State: fields=[{fields_str}]\n"
+                    f"  ══════════════════════════════"
+                )
+
+                # Проверяем pending: клиент говорил во время ответа
+                if pending_text:
+                    combined = f"{last_user_text} {pending_text}"
+                    vd.info(
+                        f"[{cid}] BARGE_IN_COMBINED "
+                        f'| prev="{last_user_text[:40]}" '
+                        f'| new="{pending_text[:40]}" '
+                        f'| combined="{combined[:80]}"'
+                    )
+                    user_text = combined
+                    last_user_text = user_text
+                    pending_text = ""
+                    # Продолжаем while — обработаем combined
+                    continue
+
+                # Нет pending — выходим из внутреннего цикла
+                break
 
     except WebSocketDisconnect:
         log.info(f"[VOICE] WS disconnected: call_id={call_id}")
