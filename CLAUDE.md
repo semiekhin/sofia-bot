@@ -156,3 +156,20 @@ Python 3.12, FastAPI, SQLite, OpenAI gpt-5.2 (Responses API), ChromaDB (RAG, tex
 - Перезапуск dev: `sudo systemctl restart sofia-web-api-dev`
 - Health check: `curl -s http://localhost:8081/api/health`
 - Линтер: `flake8 *.py --max-line-length=120 --exclude=__pycache__ && black *.py`
+
+## Промпты для Claude Code
+
+Каждый промпт для Claude Code должен заканчиваться блоком:
+
+```
+Задача готова когда:
+1. [проверяемое условие]
+2. [проверяемое условие]
+...
+```
+
+Правила формулировки:
+- Каждый критерий проверяемый: "при X происходит Y", не "работает правильно"
+- 3–6 критериев на задачу, не больше
+- Включать: happy path, основной edge case, логирование если релевантно
+- Не включать: очевидное (код запускается, нет синтаксических ошибок)

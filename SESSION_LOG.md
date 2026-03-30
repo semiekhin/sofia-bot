@@ -1,5 +1,47 @@
 # SESSION_LOG — Последние сессии
 
+## 30.03.2026 — CLAUDE.md: шаблон промптов для Claude Code
+
+**Сделано:**
+- Добавлена секция «Промпты для Claude Code» в CLAUDE.md — формат "Задача готова когда" с проверяемыми критериями (3–6 на задачу)
+
+**Коммиты:** 1
+
+**Файлы:** CLAUDE.md
+
+---
+
+## 29.03.2026 (ночь) — Промпт V5-V5.2, barge-in, meeting_agreed фикс
+
+**Сделано:**
+- **Промпт V5** (b34e5ffc): полная переработка голосового промпта
+  - Persona: Sofia = эксперт по курортной недвижимости, тёплый тон
+  - Few-shot примеры (5 сценариев: приветствие, квалификация, возражение, "ты робот?", завершение)
+  - Позитивные инструкции вместо запретов
+  - Примеры поведения с троллями и "ты робот?"
+- **Промпт V5.1** (e2afcf54): убран пример с троллем (вызывал ложный [END]), добавлено правило уважения к клиенту
+- **Промпт V5.2** (8e0a7738): few-shot для подтверждения приветствия — фикс галлюцинации "повторилось"
+- **meeting_agreed фикс** (e9b47719): `meeting_agreed` срабатывает только если последнее сообщение Софии содержало "созвон/эксперт" — предотвращает ложный CLOSING на "да, давайте пообщаемся"
+- **Transcript debounce 400ms** (e9b47719): ожидание окончания транскрипта от Retell → потом заменён на barge-in
+- **Barge-in pending** (f83631ae): замена debounce на интеллектуальный механизм
+  - Debounce убран — нулевая доп. задержка
+  - Если клиент говорит во время ответа Софии: Retell останавливает TTS, текст сохраняется в `pending_text`
+  - После завершения текущего ответа — склейка предыдущей фразы + продолжение → ответ на полный вопрос
+  - Логи: `BARGE_IN_PENDING`, `BARGE_IN_COMBINED`
+- **Context return на "ты робот?"** (f83631ae): после шутки про кофе — возвращается к предыдущей теме разговора
+
+**Коммиты:** b34e5ffc → f83631ae (5 коммитов)
+
+**Файлы:** core/pipeline.py, voice_api.py
+
+**Открытые вопросы:**
+- Живой тест промпта V5.2 + barge-in
+- Retell Boosted Keywords — по-прежнему нужен API ключ или настройка в dashboard
+
+**Следующий шаг:** живой тест barge-in + промпта V5.2
+
+---
+
 ## 28.03.2026 (ночь) — Groq интеграция, P0 баги, промпт V4
 
 **Сделано:**
@@ -125,46 +167,4 @@
 
 **Следующий шаг:** фикс дедупликации, boosted keywords, тест accuracy mode
 
----
-
-## 26.03.2026 (вечер) — Voice V2: TTS/STT/Pipeline deep dive
-
-**Сделано:**
-- Решён ElevenLabs блокер: причина — бесплатный план (402) + таймауты Pipecat. Оплачен Starter, патч AUDIO_CONTEXT_TIMEOUT=15с
-- Протестированы TTS: OpenAI nova, ElevenLabs Nastya (flash+multilingual), Yandex alena (REST v1)
-- Протестированы STT: OpenAI Whisper (работает), Yandex gRPC v3 (ломает turn detection)
-- core/pipeline.py подключён к Pipecat: SofiaPipelineProcessor ловит LLMContextFrame
-- sanitize_for_tts(): Latin → Cyrillic, удаление URL/email/@username
-- Фикс Retell двойного ответа: is_responding флаг в voice_api.py
-- Оптимизация VAD: stop_secs 0.8→0.3, промпт 533→212 токенов, max_tokens→200
-
-**Файлы:** core/pipeline.py, voice_pipecat_daily.py, voice_api.py, yandex_tts.py, yandex_stt.py
-
-**Решения:**
-- user_aggregator пушит LLMContextFrame, НЕ LLMRunFrame — ловим именно его
-- Async Extractor вызывает extract_sync напрямую (НЕ через process_message — сбрасывает dialog_finished)
-- Патч в системном пакете pipecat — повторять при обновлении
-
-**Следующий шаг:** Yandex TTS gRPC v3 + unsafe_mode для качественных русских ударений
-
----
-
-## 26.03.2026 — P0 деплой: Битрикс ASSIGNED=428 + Voice V1
-
-**Сделано:**
-- SOFIA_AI_USER_ID=428 — София ответственная на время квалификации, робот-распределитель не трогает
-- restore_assigned(): возврат оригинального менеджера из lead_assigned, fallback 426
-- Webhook: если ASSIGNED != 428 → менеджер перехватил → manager_active=1
-- _is_bitrix_session(): Битрикс только для source-сессий (ATL)
-- Деплой в PROD: core/bitrix.py, bot_server.py, web_api.py
-- stream_voice_response(): VOICE_MODEL=gpt-4.1-mini, RAG 10 примеров, async Extractor
-- VOICE_PROMPT_ADDON: 7 правил голосового режима
-
-**Файлы:** core/bitrix.py, bot_server.py, web_api.py, core/pipeline.py
-
-**Решения:**
-- 4 сценария завершения: meeting_agreed, double refusal, timeout, interception
-- Бэкап перед деплоем: /opt/sofia-gpt/backups/20260326_0724/
-
-**Следующий шаг:** Ссылка в Тильде → `https://t.me/humanAINeural_bot?start=ATL`
 

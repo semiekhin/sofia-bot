@@ -2,9 +2,10 @@
 
 ## P0 — Срочно
 
+- [ ] **Живой тест промпта V5.2 + barge-in** — проверить few-shot, barge-in pending, context return
 - [ ] **Ссылка в Тильде** — success URL: `https://t.me/humanAINeural_bot?start=ATL`
 - [ ] **Retell Boosted Keywords** — нужен RETELL_API_KEY или ручная настройка в dashboard. Список: инвестиция, рассрочка, ипотека, Сочи, Туапсе, Анапа, Крым, Архыз, Алтай, миллион, бюджет, стройка, аренда, апартаменты, доходность, Оазис, созвон, эксперт
-- [ ] **Живой тест промпта V4** — проверить фиксы: доходность 8-15%, [END] на "пришлите варианты", anti-looping
+- [x] ~~Живой тест промпта V4~~ — заменён промптом V5-V5.2 (b34e5ffc → 8e0a7738)
 - [x] ~~Фикс дедупликации транскриптов~~ — 3-уровневая: exact + prefix + word overlap 85% (338bd94f)
 - [x] ~~Budget парсинг~~ — _parse_budget_from_text(), дефис, "от-до", без "миллион" (338bd94f)
 
@@ -33,8 +34,12 @@
 - [ ] **core/channel.py, core/observer.py** — рефакторинг каналов
 - [ ] **BUG-004 EN-раскладка** — обработка латиницы в сообщениях
 
-## Завершено (28.03.2026)
+## Завершено (28-29.03.2026)
 
+- [x] Промпт V5-V5.2: persona, few-shot, позитивные инструкции, фикс галлюцинаций (b34e5ffc → 8e0a7738)
+- [x] Barge-in pending: замена debounce, склейка фраз, нулевая задержка (f83631ae)
+- [x] meeting_agreed context check: проверка контекста "созвон/эксперт" (e9b47719)
+- [x] Context return на "ты робот?": возврат к предыдущей теме (f83631ae)
 - [x] Voice pipeline v4: Groq llama-4-scout primary (TTFT 99ms), OpenAI fallback
 - [x] A/B тест: 3 модели, 12 кейсов single-turn + 4 сценария multi-turn
 - [x] Промпт V4: ФАКТЫ, [END] правила, anti-looping, finish_reason
