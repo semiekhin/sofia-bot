@@ -41,9 +41,9 @@ from message_processor import process_message
 from core.pipeline import run_pipeline
 from core.bitrix import (
     create_or_update_lead,
+    finalize_lead,
     find_recent_atlantis_lead,
     is_manager_active,
-    restore_assigned,
     save_original_assigned,
     set_lead_assigned,
     update_lead,
@@ -784,10 +784,10 @@ async def _finalize_timeout(chat_id: int, finish_type: str, bot):
         if new_lead_id and not lead_id:
             save_bitrix_lead_id(user_id, new_lead_id)
 
-        # Вернуть ответственного после завершения
+        # Вернуть ответственного + запустить БП раздачи
         final_lead_id = new_lead_id or lead_id
         if final_lead_id:
-            await restore_assigned(DB_PATH, final_lead_id)
+            await finalize_lead(DB_PATH, final_lead_id)
 
     log(f"⏱️ [TIMEOUT] {finish_type} для chat {chat_id}, user {user_id}")
 
@@ -979,11 +979,11 @@ async def delayed_response(chat_id, user_id, user_name, context, tg_user=None):
             elif lead_id:
                 log(f"🔄 [BITRIX] Лид #{lead_id} обновлён для TG user {user_id}")
 
-            # Вернуть ответственного при финализации
+            # Вернуть ответственного + запустить БП раздачи
             if is_final:
                 final_lead_id = new_lead_id or lead_id
                 if final_lead_id:
-                    await restore_assigned(DB_PATH, final_lead_id)
+                    await finalize_lead(DB_PATH, final_lead_id)
         except Exception as e:
             log(f"❌ [BITRIX] delayed_response error: {e}")
 

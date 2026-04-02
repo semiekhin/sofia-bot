@@ -162,6 +162,10 @@ Telegram: {tg_str}
     if is_final and finish_type:
         comments += f"\nТип завершения: {'созвон' if 'meeting' in str(finish_type) else 'подборка/диалог'}"
 
+    if is_final:
+        summary = build_qualification_summary(state, finish_type)
+        comments += f"\n\n{summary}"
+
     comments += f"\n\n--- Полный диалог ({len(history)} сообщений) ---\n{chat_text}"
 
     return comments, phone, telegram
@@ -480,3 +484,88 @@ def get_original_assigned(db_path: str, lead_id: int) -> int | None:
     row = c.fetchone()
     conn.close()
     return row[0] if row and row[0] else None
+
+
+# ============================================================
+# Запуск бизнес-процесса раздачи лидов
+# ============================================================
+
+_GOAL_LABEL = {
+    "investment": "Инвестиции",
+    "personal": "Для себя",
+    "combined": "Комбинированно",
+}
+_PAYMENT_LABEL = {
+    "full": "Полная оплата",
+    "mortgage": "Ипотека",
+    "installment": "Рассрочка",
+}
+
+
+def build_qualification_summary(state, finish_type: str | None = None) -> str:
+    """Формирует блок итога квалификации для COMMENTS."""
+    ft = finish_type or getattr(state, "finish_type", None)
+    lines = ["[София AI — итог квалификации]"]
+    if ft:
+        lines.append(f"Результат: {ft}")
+    goal = getattr(state, "goal", None)
+    if goal:
+        lines.append(f"Цель: {_GOAL_LABEL.get(goal, goal)}")
+    location = getattr(state, "location", None)
+    if location:
+        lines.append(f"Локация: {location}")
+    budget = getattr(state, "budget", None)
+    if budget:
+        lines.append(f"Бюджет: {budget / 1_000_000:.1f} млн ₽")
+    payment = getattr(state, "payment_type", None)
+    if payment:
+        lines.append(f"Оплата: {_PAYMENT_LABEL.get(payment, payment)}")
+    if getattr(state, "meeting_agreed", False):
+        lines.append("Созвон: согласился")
+    return "\n".join(lines)
+
+
+async def start_distribution_bp(lead_id: int) -> bool:
+    """
+    Запускает БП раздачи лидов (проверка дублей → раздача/контроль качества).
+    Вызывать ПОСЛЕ restore_assigned().
+    Возвращает True если БП запущен, False при ошибке.
+    """
+    template_id = os.getenv("BITRIX_BP_TEMPLATE_ID")
+    if not template_id:
+        log.warning(
+            f"[BITRIX] BP template ID not configured, skipping for lead {lead_id}"
+        )
+        return False
+
+    try:
+        url = f"{BITRIX_BASE_URL}bizproc.workflow.start"
+        payload = {
+            "TEMPLATE_ID": int(template_id),
+            "DOCUMENT_ID": ["crm", "CCrmDocumentLead", f"LEAD_{lead_id}"],
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(url, json=payload) as resp:
+                result = await resp.json()
+
+        if result.get("result"):
+            log.info(
+                f"[BITRIX] BP {template_id} started for lead {lead_id}, "
+                f"workflow_id={result['result']}"
+            )
+            return True
+        else:
+            error = result.get("error_description", result.get("error", "unknown"))
+            log.warning(f"[BITRIX] BP start failed for lead {lead_id}: {error}")
+            return False
+
+    except Exception as e:
+        log.warning(f"[BITRIX] BP start exception for lead {lead_id}: {e}")
+        return False
+
+
+async def finalize_lead(db_path: str, lead_id: int) -> None:
+    """Завершение работы с лидом: вернуть менеджера + запустить БП раздачи."""
+    await restore_assigned(db_path, lead_id)
+    await start_distribution_bp(lead_id)
