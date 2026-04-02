@@ -15,7 +15,8 @@
 - [ ] **Retell begin_message** — убрать или настроить тот же голос что в ответах
 - [ ] **Retell Transcription Mode** — accuracy vs speed тест
 - [ ] **Post-Call Data Extraction** — goal, budget, payment_type, meeting_agreed
-- [ ] **Битрикс в radist_gateway.py** — подключить core/bitrix.py к Radist каналу
+- [ ] **Битрикс в radist_gateway.py** — подключить core/bitrix.py к Radist каналу (prerequisite для БП раздачи в Radist)
+- [ ] **E2E тест БП раздачи** — довести TG диалог до финализации, проверить BP 152 в логах и Битриксе
 - [ ] **deploy.sh** — скрипт деплоя
 
 ## P2 — Улучшения Voice
@@ -34,7 +35,7 @@
 - [ ] **core/channel.py, core/observer.py** — рефакторинг каналов
 - [ ] **BUG-004 EN-раскладка** — обработка латиницы в сообщениях
 
-## Завершено (28-29.03.2026)
+## Завершено (28.03–02.04.2026)
 
 - [x] Промпт V5-V5.2: persona, few-shot, позитивные инструкции, фикс галлюцинаций (b34e5ffc → 8e0a7738)
 - [x] Barge-in pending: замена debounce, склейка фраз, нулевая задержка (f83631ae)
@@ -46,3 +47,4 @@
 - [x] Дедупликация транскриптов Retell (3-уровневая)
 - [x] Budget парсинг (дефис, "от-до", числительные)
 - [x] Исследование LLM: Groq, YandexGPT, Fireworks, Together, DeepSeek
+- [x] Битрикс: БП раздачи (template 152) после квалификации — finalize_lead() в bot_server.py (c1987ff5)

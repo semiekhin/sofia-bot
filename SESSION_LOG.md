@@ -1,5 +1,25 @@
 # SESSION_LOG — Последние сессии
 
+## 02.04.2026 — Битрикс: запуск БП раздачи после квалификации
+
+**Сделано:**
+- **core/bitrix.py**: `start_distribution_bp(lead_id)` — вызов `bizproc.workflow.start` с TEMPLATE_ID из env; `finalize_lead(db_path, lead_id)` — обёртка restore_assigned + BP start; `build_qualification_summary(state)` — итог квалификации в COMMENTS (цель, бюджет, оплата, созвон)
+- **bot_server.py**: оба пути финализации (`_finalize_timeout` и `delayed_response`) используют `finalize_lead()` вместо `restore_assigned()`
+- **.env**: `BITRIX_BP_TEMPLATE_ID=152`
+- Radist не затронут — у него нет Bitrix-интеграции (P1 задача)
+- web_api.py и voice_api.py не изменены
+
+**Коммиты:** c1987ff5
+
+**Файлы:** core/bitrix.py, bot_server.py, .env, BUILD_REPORT_BITRIX_BP.md
+
+**Открытые вопросы:**
+- Radist нужна Bitrix-интеграция (P1) прежде чем подключать БП
+- TEMPLATE_ID=152 — одинаковый для dev/prod?
+- E2E тест не проведён (нужен реальный диалог через Telegram)
+
+---
+
 ## 30.03.2026 — CLAUDE.md: шаблон промптов для Claude Code
 
 **Сделано:**
@@ -121,50 +141,5 @@
 **Следующий шаг:** A/B тест Groq qwen3-32b vs gpt-5.4-mini на 20 диалогах
 
 ---
-
-## 28.03.2026 — Voice Pipeline v2: новая архитектура
-
-**Сделано:**
-- Диагностическое логирование VOICE_DIAG: каждый шаг с таймингами (RAG, LLM TTFT, full, sanitize, WS)
-- Полный анализ таймингов: 14 ходов под микроскопом, найдены bottleneck-и
-- Новая архитектура voice pipeline:
-  - Убран RAG (экономия 150-800ms на ход)
-  - Убран async Extractor gpt-5.2 (экономия 3000ms async + $)
-  - Убран get_system_prompt_v2 + VOICE_PROMPT_ADDON → новый компактный VOICE_SYSTEM_PROMPT
-  - Промпт: 20000 → 2673 символов (5000 → 668 токенов)
-  - Rule-based state extraction вместо LLM-парсинга
-  - Stage определяется из state: GOAL→BUDGET→PAYMENT→MEETING→CLOSING
-  - Sync LLM (один yield целиком) вместо стриминга по токенам
-- Модель: gpt-4.1-mini → gpt-5.4-mini (TTFT 606→325ms по бенчмарку)
-- Промпт: скрипт-вектор + техники Белочкиной (объясни зачем, упрости выбор, два созвона)
-- Дедупликация транскриптов от Retell (частичная, нужна доработка)
-- Лимит истории 16 сообщений для голоса
-- Voice latency research: 7 направлений исследованы → docs/VOICE_LATENCY_RESEARCH.md
-- Приветствие: Oazis Estate → Оазис Эстэйт (кириллица для TTS)
-- Формат логов web_api.py: %(name)s вместо хардкода [WEB-API]
-
-**Результат таймингов:**
-- Pipeline медиана: 1200-2000ms → ~900ms
-- Выбросы: 3300ms → 2048ms (только первый ход)
-- RAG: 150-800ms → 0ms
-- Extractor: 3000ms → 0ms
-
-**Файлы:** core/pipeline.py, voice_api.py, web_api.py, docs/VOICE_LATENCY_RESEARCH.md
-
-**Промпт-правки:**
-- "Поняла" запрещено
-- Один вопрос за ответ (строго)
-- Не оценивать слова клиента
-- Не пугать ограничениями
-- После GOAL — сразу к бюджету, без уточнений про стратегию
-- Prompt caching (1024+ токенов) протестирован — замедляет, откачен к 668 токенам
-
-**Открытые баги:**
-- Дедупликация: точные совпадения транскрипта не ловятся
-- Budget: "десять-пятнадцать" без "миллион" парсит, но через дефис нет
-- Retell begin_message — возможно другой голос на приветствии
-- Retell Boosted Keywords не добавлены
-
-**Следующий шаг:** фикс дедупликации, boosted keywords, тест accuracy mode
 
 
