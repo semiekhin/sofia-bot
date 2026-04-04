@@ -35,6 +35,9 @@ BITRIX_SOURCE_ID = os.getenv("BITRIX_SOURCE_ID", "504")
 BITRIX_ASSIGNED_ID = int(os.getenv("BITRIX_ASSIGNED_ID", "426"))
 BITRIX_ATLANTIS_SOURCE_ID = "397"  # Источник Тильда/Атлантис
 SOFIA_AI_USER_ID = 428  # Сотрудник "Sofia AI" — ответственный на время квалификации
+BITRIX_BP_ASSIGNED_ID = int(
+    os.getenv("BITRIX_BP_ASSIGNED_ID", "24932")
+)  # Ответственный перед запуском БП
 
 
 # ============================================================
@@ -616,7 +619,7 @@ async def start_distribution_bp(lead_id: int) -> bool:
 
 
 async def finalize_lead(db_path: str, lead_id: int) -> None:
-    """Завершение работы с лидом: вернуть менеджера + запустить БП раздачи."""
+    """Завершение работы с лидом: сменить ответственного на BP-assigned + запустить БП."""
     log.info(f"[BITRIX] Финализация лида #{lead_id}")
-    await restore_assigned(db_path, lead_id)
+    await set_lead_assigned(lead_id, BITRIX_BP_ASSIGNED_ID)
     await start_distribution_bp(lead_id)
