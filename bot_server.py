@@ -318,6 +318,17 @@ def init_db():
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     )""")
 
+    # Миграции: колонки добавленные после первоначальной схемы
+    for sql in [
+        "ALTER TABLE client_state ADD COLUMN source_object TEXT",
+        "ALTER TABLE client_state ADD COLUMN finance_interested BOOLEAN DEFAULT 0",
+        "ALTER TABLE client_state ADD COLUMN manager_active INTEGER DEFAULT 0",
+    ]:
+        try:
+            c.execute(sql)
+        except sqlite3.OperationalError:
+            pass  # уже существует
+
     conn.commit()
     conn.close()
 
