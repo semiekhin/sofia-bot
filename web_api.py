@@ -43,7 +43,7 @@ from core.bitrix import (
     get_session_id_by_user_id,
     find_user_id_by_lead,
     is_manager_active,
-    restore_assigned,
+    finalize_lead,
     set_lead_assigned,
     set_manager_active,
     BITRIX_BASE_URL,
@@ -267,9 +267,9 @@ async def generate_response(user_id, user_message, user_name, channel="web"):
                     is_final=True,
                     channel="web",
                 )
-                # Вернуть ответственного после завершения
+                # Финализация: вернуть ответственного + запустить БП
                 if lead_id:
-                    await restore_assigned(DB_PATH, lead_id)
+                    await finalize_lead(DB_PATH, lead_id)
             except Exception as e:
                 log.error(f"❌ [BITRIX] final update error: {e}")
 

@@ -176,6 +176,43 @@ Telegram: {tg_str}
 # ============================================================
 
 
+async def find_lead_by_phone(phone: str) -> int | None:
+    """Поиск существующего лида по телефону через crm.lead.list.
+    Возвращает lead_id или None.
+    """
+    if not phone:
+        return None
+    # Битрикс хранит телефон в разных форматах — ищем по последним 10 цифрам
+    digits = re.sub(r"\D", "", phone)
+    if len(digits) >= 10:
+        search_phone = digits[-10:]
+    else:
+        search_phone = digits
+    params = {
+        "filter[PHONE]": search_phone,
+        "filter[STATUS_ID]": "NEW",
+        "order[DATE_CREATE]": "DESC",
+        "select[]": ["ID", "TITLE", "DATE_CREATE"],
+        "start": 0,
+    }
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(BITRIX_LIST_URL, params=params) as resp:
+                result = await resp.json()
+                leads = result.get("result", [])
+                if leads:
+                    lead_id = int(leads[0]["ID"])
+                    log.info(
+                        f"🔍 [BITRIX] Найден лид #{lead_id} по телефону "
+                        f"{search_phone} ({leads[0].get('TITLE', '?')})"
+                    )
+                    return lead_id
+                return None
+    except Exception as e:
+        log.error(f"❌ [BITRIX] find_lead_by_phone error: {e}")
+        return None
+
+
 async def find_recent_atlantis_lead() -> dict | None:
     """Найти последний лид с SOURCE_ID=397 (Тильда/Атлантис).
     Возвращает dict с ID и ASSIGNED_BY_ID или None.
@@ -358,8 +395,21 @@ async def create_or_update_lead(
     if lead_id:
         await update_lead(lead_id, comments, phone=phone, name=name, is_final=is_final)
         return lead_id
-    else:
-        return await create_lead(name, comments, phone=phone)
+
+    # Дедупликация: ищем существующий лид по телефону перед созданием
+    if phone:
+        existing_id = await find_lead_by_phone(phone)
+        if existing_id:
+            log.info(
+                f"🔗 [BITRIX] Дедупликация: найден лид #{existing_id} "
+                f"по телефону, обновляем вместо создания нового"
+            )
+            await update_lead(
+                existing_id, comments, phone=phone, name=name, is_final=is_final
+            )
+            return existing_id
+
+    return await create_lead(name, comments, phone=phone)
 
 
 # ============================================================
@@ -567,5 +617,6 @@ async def start_distribution_bp(lead_id: int) -> bool:
 
 async def finalize_lead(db_path: str, lead_id: int) -> None:
     """Завершение работы с лидом: вернуть менеджера + запустить БП раздачи."""
+    log.info(f"[BITRIX] Финализация лида #{lead_id}")
     await restore_assigned(db_path, lead_id)
     await start_distribution_bp(lead_id)
