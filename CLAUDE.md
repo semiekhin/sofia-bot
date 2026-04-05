@@ -145,7 +145,7 @@ Python 3.12, FastAPI, SQLite, OpenAI gpt-5.2 (Responses API), ChromaDB (RAG, tex
 - `docs/SOFIA_TASKS.md` — задачи и бэклог
 - `docs/KNOWLEDGE_INDEX.md` — лог решений, уроки из ошибок, инструкции отката
 - `docs/VOICE_RESEARCH_2026.md` — исследование голосового стека (50+ решений)
-- `SESSION_LOG.md` — последние 3 сессии (компактно)
+- `SESSION_LOG.md` — последние 10 сессий (компактно)
 - `BACKLOG.md` — невыполненные задачи по приоритетам
 
 ## Workflow
