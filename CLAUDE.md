@@ -169,8 +169,17 @@ scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/CLAUDE.md ~/projects_claude/Sofi
 
 1. Обновить **SESSION_LOG.md** — что сделано, коммиты, файлы, ключевые метрики
 2. Обновить **BACKLOG.md** — новые задачи в P0, перенести завершённые в "Завершено"
-3. Обновить **memory** (Claude Code) — контекст для следующей сессии
+3. Обновить **memory** файлы Claude Code (`/root/.claude/projects/-opt-sofia-gpt-dev/memory/`):
+   - `project_voice_sprint_next.md` — текущий контекст спринта, что делать дальше
+   - `project_voice_vps.md` — VPS архитектура, proxy, SIP данные
+   - `user_sergey.md` — профиль пользователя
+   - `MEMORY.md` — индекс всех memory файлов
 4. Закоммитить и запушить: `git add SESSION_LOG.md BACKLOG.md CLAUDE.md && git commit && git push`
+
+```bash
+# Скачать memory файлы (для Claude.ai контекста)
+scp -P 2222 root@72.56.64.91:/root/.claude/projects/-opt-sofia-gpt-dev/memory/*.md ~/projects_claude/Sofia/memory/
+```
 
 ## Промпты для Claude Code
 
