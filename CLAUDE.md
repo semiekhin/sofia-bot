@@ -157,6 +157,21 @@ Python 3.12, FastAPI, SQLite, OpenAI gpt-5.2 (Responses API), ChromaDB (RAG, tex
 - Health check: `curl -s http://localhost:8081/api/health`
 - Линтер: `flake8 *.py --max-line-length=120 --exclude=__pycache__ && black *.py`
 
+### Gitpull (скачать на локалку для Claude.ai)
+
+```bash
+scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/BACKLOG.md ~/projects_claude/Sofia/
+scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/SESSION_LOG.md ~/projects_claude/Sofia/
+scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/CLAUDE.md ~/projects_claude/Sofia/
+```
+
+### Session End (обязательно в конце каждой сессии)
+
+1. Обновить **SESSION_LOG.md** — что сделано, коммиты, файлы, ключевые метрики
+2. Обновить **BACKLOG.md** — новые задачи в P0, перенести завершённые в "Завершено"
+3. Обновить **memory** (Claude Code) — контекст для следующей сессии
+4. Закоммитить и запушить: `git add SESSION_LOG.md BACKLOG.md CLAUDE.md && git commit && git push`
+
 ## Промпты для Claude Code
 
 Каждый промпт для Claude Code должен заканчиваться блоком:
