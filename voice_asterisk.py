@@ -1,21 +1,40 @@
 """
-voice_asterisk.py — AudioSocket сервер для Asterisk → Sofia Voice Pipeline
+voice_asterisk.py — AudioSocket сервер: Asterisk → Sofia Voice Pipeline
 
-Фаза 2: Приём аудио от Asterisk через AudioSocket, отправка тишины обратно.
-Фаза 3: STT → LLM → TTS pipeline.
+Pipeline: AudioSocket audio → VAD → STT (Yandex SpeechKit) →
+          LLM (Groq via proxy → stream_voice_response) →
+          TTS (ElevenLabs via proxy) → AudioSocket audio
 
 Asterisk AudioSocket protocol (TCP):
   Packet: [1 byte type] [2 bytes length BE] [payload]
-  Types:  0x01=hangup, 0x10=UUID, 0x11=audio, 0x12=silence, 0xFF=error
-  Audio:  signed linear 16-bit PCM, 8kHz mono (from G.711 channels)
+  Types:  0x00=hangup, 0x01=UUID(16 bytes binary), 0x10=audio(slin 8kHz),
+          0x12=audio(slin 16kHz), 0xFF=error
 
-Запуск: /opt/sofia-voice/venv/bin/python3 voice_asterisk.py
+API routing:
+  - Yandex STT/TTS: direct (works from Russia)
+  - Groq/OpenAI/ElevenLabs: via proxy on 72.56.64.91:8095
+
+Запуск: cd /opt/sofia-voice && venv/bin/python3 voice_asterisk.py
 """
 
 import asyncio
+import hashlib
+import os
 import struct
+import sys
 import time
+import uuid as uuid_mod
+
+import httpx
+from dotenv import load_dotenv
 from loguru import logger
+
+# Add project root to path for imports
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+load_dotenv()
+
+from core.pipeline import stream_voice_response, sanitize_for_tts  # noqa: E402
+from state_manager import StateManager  # noqa: E402
 
 # ============================================================
 # AudioSocket Protocol Constants
@@ -30,10 +49,228 @@ AS_TYPE_ERROR = 0xFF
 AUDIOSOCKET_HOST = "127.0.0.1"
 AUDIOSOCKET_PORT = 9090
 
-# Audio params: Asterisk sends slin (signed linear 16-bit) at 8kHz
-SAMPLE_RATE = 8000
-SAMPLE_WIDTH = 2  # 16-bit = 2 bytes per sample
+# Audio params
+SAMPLE_RATE_IN = 8000  # From Asterisk (G.711 channels)
+SAMPLE_RATE_OUT = 8000  # Back to Asterisk
+SAMPLE_WIDTH = 2  # 16-bit
 CHANNELS = 1
+
+# Voice user ID offset (avoid collision with other channels)
+VOICE_USER_ID_OFFSET = 9_500_000
+
+# VAD settings
+VAD_SILENCE_THRESHOLD = 1.2  # seconds of silence to trigger end-of-speech
+VAD_MIN_SPEECH_DURATION = 0.3  # minimum speech duration to process
+VAD_ENERGY_THRESHOLD = 200  # RMS energy threshold for speech detection
+
+# API Proxy (for Groq/OpenAI/ElevenLabs from Russian VPS)
+LLM_PROXY_BASE = os.getenv("LLM_PROXY_BASE", "http://72.56.64.91:8095")
+
+# ElevenLabs settings (via proxy)
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
+ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "cgSgspJ2msm6clMCkdW9")
+ELEVENLABS_MODEL = "eleven_turbo_v2_5"
+
+# Yandex SpeechKit settings (direct, no proxy needed)
+YANDEX_STT_URL = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize"
+YANDEX_API_KEY = os.getenv("YANDEX_SPEECHKIT_API_KEY", "")
+
+# Database
+SOFIA_PATH = os.getenv("SOFIA_PATH", os.path.dirname(os.path.abspath(__file__)))
+DB_PATH = os.getenv("DB_PATH", "sofia_voice.db")
+if not os.path.isabs(DB_PATH):
+    DB_PATH = os.path.join(SOFIA_PATH, DB_PATH)
+
+
+def call_id_to_user_id(call_uuid: str) -> int:
+    """Convert call UUID to stable user_id."""
+    h = hashlib.md5(call_uuid.encode()).hexdigest()[:8]
+    return VOICE_USER_ID_OFFSET + (int(h, 16) % 1_000_000)
+
+
+# ============================================================
+# Simple Energy-based VAD
+# ============================================================
+
+
+def compute_rms(audio_bytes: bytes) -> float:
+    """Compute RMS energy of 16-bit PCM audio."""
+    if len(audio_bytes) < 2:
+        return 0.0
+    samples = struct.unpack(f"<{len(audio_bytes) // 2}h", audio_bytes)
+    if not samples:
+        return 0.0
+    return (sum(s * s for s in samples) / len(samples)) ** 0.5
+
+
+# ============================================================
+# STT: OpenAI Whisper API
+# ============================================================
+
+
+async def transcribe_audio(audio_pcm: bytes, sample_rate: int = 8000) -> str:
+    """Send PCM audio to Yandex SpeechKit STT, return transcription."""
+    t0 = time.monotonic()
+
+    # Convert PCM to OGG/Opus for Yandex (or send as lpcm)
+    # Yandex REST API accepts lpcm format directly
+    params = {
+        "lang": "ru-RU",
+        "format": "lpcm",
+        "sampleRateHertz": str(sample_rate),
+    }
+    headers = {
+        "Authorization": f"Api-Key {YANDEX_API_KEY}",
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.post(
+                YANDEX_STT_URL,
+                params=params,
+                headers=headers,
+                content=audio_pcm,
+            )
+            if resp.status_code != 200:
+                logger.error(
+                    f"❌ Yandex STT HTTP {resp.status_code}: {resp.text[:200]}"
+                )
+                return ""
+
+            result = resp.json()
+            text = result.get("result", "").strip()
+
+        elapsed = (time.monotonic() - t0) * 1000
+        logger.info(f'🗣️ STT: "{text}" ({elapsed:.0f}ms, {len(audio_pcm)} bytes)')
+        return text
+    except Exception as e:
+        logger.error(f"❌ STT error: {e}")
+        return ""
+
+
+# ============================================================
+# TTS: ElevenLabs Streaming
+# ============================================================
+
+
+async def synthesize_speech(text: str) -> bytes:
+    """Convert text to PCM audio via ElevenLabs API.
+
+    Returns 8kHz 16-bit mono PCM (resampled from ElevenLabs 22050Hz).
+    """
+    t0 = time.monotonic()
+
+    if not ELEVENLABS_API_KEY:
+        logger.error("❌ ELEVENLABS_API_KEY not set")
+        return b""
+
+    url = f"{LLM_PROXY_BASE}/elevenlabs/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
+    headers = {
+        "xi-api-key": ELEVENLABS_API_KEY,
+        "Content-Type": "application/json",
+        "Accept": "audio/mpeg",
+    }
+    payload = {
+        "text": text,
+        "model_id": ELEVENLABS_MODEL,
+        "voice_settings": {
+            "stability": 0.5,
+            "similarity_boost": 0.75,
+        },
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            resp = await client.post(url, json=payload, headers=headers)
+            if resp.status_code != 200:
+                logger.error(
+                    f"❌ ElevenLabs HTTP {resp.status_code}: {resp.text[:200]}"
+                )
+                return b""
+            mp3_data = resp.content
+
+        # Convert MP3 to PCM 8kHz using ffmpeg
+        pcm_data = await _mp3_to_pcm(mp3_data, target_rate=SAMPLE_RATE_OUT)
+
+        elapsed = (time.monotonic() - t0) * 1000
+        duration_sec = len(pcm_data) / (SAMPLE_RATE_OUT * SAMPLE_WIDTH)
+        logger.info(
+            f"🔊 TTS: {len(text)} chars → {len(pcm_data)} bytes "
+            f"({duration_sec:.1f}s audio, {elapsed:.0f}ms)"
+        )
+        return pcm_data
+
+    except Exception as e:
+        logger.error(f"❌ TTS error: {e}")
+        return b""
+
+
+async def _mp3_to_pcm(mp3_data: bytes, target_rate: int = 8000) -> bytes:
+    """Convert MP3 to raw PCM using ffmpeg."""
+    proc = await asyncio.create_subprocess_exec(
+        "ffmpeg",
+        "-i",
+        "pipe:0",
+        "-f",
+        "s16le",
+        "-ar",
+        str(target_rate),
+        "-ac",
+        "1",
+        "-acodec",
+        "pcm_s16le",
+        "pipe:1",
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await proc.communicate(input=mp3_data)
+    if proc.returncode != 0:
+        logger.error(f"❌ ffmpeg error: {stderr.decode()[:200]}")
+        return b""
+    return stdout
+
+
+# ============================================================
+# Message persistence (simplified — no web_api dependency)
+# ============================================================
+
+import sqlite3  # noqa: E402
+
+
+def _ensure_tables(db_path: str):
+    """Create messages table if not exists."""
+    conn = sqlite3.connect(db_path)
+    conn.execute("""CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id TEXT, user_id INTEGER, role TEXT, content TEXT,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP, stage TEXT
+        )""")
+    conn.commit()
+    conn.close()
+
+
+def save_message(chat_id: str, user_id: int, role: str, content: str):
+    """Save message to database."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        "INSERT INTO messages (chat_id, user_id, role, content) VALUES (?,?,?,?)",
+        (chat_id, user_id, role, content),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_history(chat_id: str, limit: int = 20) -> list:
+    """Get conversation history."""
+    conn = sqlite3.connect(DB_PATH)
+    rows = conn.execute(
+        "SELECT role, content FROM messages WHERE chat_id=? "
+        "ORDER BY id DESC LIMIT ?",
+        (chat_id, limit),
+    ).fetchall()
+    conn.close()
+    return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
 
 
 # ============================================================
@@ -42,17 +279,33 @@ CHANNELS = 1
 
 
 class AudioSocketCall:
-    """Handles one AudioSocket connection (one phone call)."""
+    """Handles one AudioSocket connection (one phone call) with full pipeline."""
 
     def __init__(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
         self.reader = reader
         self.writer = writer
         self.call_uuid: str | None = None
-        self.caller_id: str = "unknown"
         self.start_time = time.time()
         self.audio_frames_received = 0
         self.audio_bytes_received = 0
         self._closed = False
+        self._audio_type = AS_TYPE_AUDIO  # Default audio type for responses
+
+        # VAD state
+        self._speech_buffer = bytearray()
+        self._silence_start: float | None = None
+        self._is_speaking = False
+        self._speech_start: float | None = None
+
+        # Pipeline state
+        self._user_id: int = 0
+        self._chat_id: str = ""
+        self._state_manager: StateManager | None = None
+        self._is_responding = False  # Prevent overlapping responses
+        self._greeting_sent = False
+
+        # Timings for current turn
+        self._turn_timings: dict = {}
 
     async def run(self):
         """Main loop: read packets from Asterisk, process them."""
@@ -61,12 +314,10 @@ class AudioSocketCall:
 
         try:
             while not self._closed:
-                # Read 3-byte header: [1 byte type] [2 bytes length BE]
                 header = await self.reader.readexactly(3)
                 msg_type = header[0]
                 msg_len = struct.unpack(">H", header[1:3])[0]
 
-                # Read payload
                 payload = b""
                 if msg_len > 0:
                     payload = await self.reader.readexactly(msg_len)
@@ -74,11 +325,9 @@ class AudioSocketCall:
                 await self._handle_packet(msg_type, payload)
 
         except asyncio.IncompleteReadError:
-            logger.info(
-                f"📞 Connection closed by Asterisk (call_uuid={self.call_uuid})"
-            )
+            logger.info(f"📞 Connection closed (uuid={self.call_uuid})")
         except ConnectionResetError:
-            logger.info(f"📞 Connection reset (call_uuid={self.call_uuid})")
+            logger.info(f"📞 Connection reset (uuid={self.call_uuid})")
         except Exception as e:
             logger.error(f"❌ AudioSocket error: {e}")
         finally:
@@ -86,42 +335,32 @@ class AudioSocketCall:
 
     async def _handle_packet(self, msg_type: int, payload: bytes):
         if msg_type == AS_TYPE_UUID:
-            # UUID is 16 bytes binary, convert to standard string format
             if len(payload) == 16:
-                import uuid as _uuid
-
-                self.call_uuid = str(_uuid.UUID(bytes=payload))
+                self.call_uuid = str(uuid_mod.UUID(bytes=payload))
             else:
                 self.call_uuid = payload.hex()
-            logger.info(f"📞 Call UUID: {self.call_uuid}")
+
+            # Initialize pipeline for this call
+            self._user_id = call_id_to_user_id(self.call_uuid)
+            self._chat_id = str(self._user_id)
+            self._state_manager = StateManager(DB_PATH)
+            logger.info(f"📞 Call UUID: {self.call_uuid}, user_id: {self._user_id}")
+
+            # Send greeting after short delay
+            asyncio.create_task(self._send_greeting())
 
         elif msg_type in (AS_TYPE_AUDIO, AS_TYPE_AUDIO_16K):
             self.audio_frames_received += 1
             self.audio_bytes_received += len(payload)
-
-            # Detect sample rate from type
-            if msg_type == AS_TYPE_AUDIO_16K:
-                self._audio_rate = 16000
-            elif msg_type == AS_TYPE_AUDIO:
-                self._audio_rate = 8000
             self._audio_type = msg_type
 
-            # Log periodically (every ~1 second at 8kHz, 20ms frames = 50 frames/sec)
-            if self.audio_frames_received % 50 == 1:
-                elapsed = time.time() - self.start_time
-                logger.info(
-                    f"🎤 Audio: frame #{self.audio_frames_received}, "
-                    f"{len(payload)} bytes, rate={getattr(self, '_audio_rate', '?')}Hz, "
-                    f"total {self.audio_bytes_received} bytes, "
-                    f"elapsed {elapsed:.1f}s"
-                )
-
-            # Phase 2: send silence back (same type and length as received)
-            # This keeps the call alive — client hears silence, not busy tone
-            await self._send_audio(b"\x00" * len(payload), msg_type)
+            # Process audio through VAD
+            if not self._is_responding:
+                await self._process_audio_vad(payload)
+            # While responding, just consume frames (don't accumulate)
 
         elif msg_type == AS_TYPE_HANGUP:
-            logger.info(f"📞 Hangup received (call_uuid={self.call_uuid})")
+            logger.info(f"📞 Hangup (uuid={self.call_uuid})")
             self._closed = True
 
         elif msg_type == AS_TYPE_ERROR:
@@ -130,6 +369,151 @@ class AudioSocketCall:
             )
             logger.error(f"❌ Asterisk error: {error_msg}")
             self._closed = True
+
+    async def _send_greeting(self):
+        """Send initial greeting when call connects."""
+        await asyncio.sleep(0.3)  # Wait for audio stream to start
+        if self._closed or self._greeting_sent:
+            return
+        self._greeting_sent = True
+
+        logger.info("🎙️ Sending greeting...")
+        greeting = "Здравствуйте! Меня зовут София, я консультант по курортной недвижимости. Чем могу помочь?"
+
+        # Save to DB
+        save_message(self._chat_id, self._user_id, "assistant", greeting)
+
+        # Synthesize and send
+        await self._speak(greeting)
+
+    async def _process_audio_vad(self, audio_bytes: bytes):
+        """Simple energy-based VAD: detect speech end, trigger STT."""
+        rms = compute_rms(audio_bytes)
+        now = time.time()
+
+        if rms > VAD_ENERGY_THRESHOLD:
+            # Speech detected
+            if not self._is_speaking:
+                self._is_speaking = True
+                self._speech_start = now
+                logger.debug("🎤 Speech start detected")
+            self._silence_start = None
+            self._speech_buffer.extend(audio_bytes)
+
+        elif self._is_speaking:
+            # Silence during speech — might be end of utterance
+            self._speech_buffer.extend(audio_bytes)
+
+            if self._silence_start is None:
+                self._silence_start = now
+            elif (now - self._silence_start) >= VAD_SILENCE_THRESHOLD:
+                # Enough silence — process the speech
+                speech_duration = now - (self._speech_start or now)
+                if speech_duration >= VAD_MIN_SPEECH_DURATION:
+                    speech_data = bytes(self._speech_buffer)
+                    self._speech_buffer.clear()
+                    self._is_speaking = False
+                    self._silence_start = None
+                    self._speech_start = None
+
+                    # Process in background to not block audio reading
+                    asyncio.create_task(self._process_turn(speech_data))
+                else:
+                    # Too short — discard
+                    self._speech_buffer.clear()
+                    self._is_speaking = False
+                    self._silence_start = None
+
+    async def _process_turn(self, audio_pcm: bytes):
+        """Full turn: STT → LLM → TTS → send audio."""
+        if self._is_responding or self._closed:
+            return
+        self._is_responding = True
+        turn_start = time.monotonic()
+        self._turn_timings = {}
+
+        try:
+            # 1. STT
+            t0 = time.monotonic()
+            text = await transcribe_audio(audio_pcm, SAMPLE_RATE_IN)
+            self._turn_timings["stt_ms"] = (time.monotonic() - t0) * 1000
+
+            if not text or len(text.strip()) < 2:
+                logger.debug("🎤 Empty transcription, skipping")
+                return
+
+            logger.info(f'🎤 USER: "{text}"')
+            save_message(self._chat_id, self._user_id, "user", text)
+
+            # 2. LLM
+            t0 = time.monotonic()
+            history = get_history(self._chat_id)
+            response = ""
+            async for chunk in stream_voice_response(
+                user_id=self._user_id,
+                user_message=text,
+                user_name="Voice Client",
+                history=history,
+                state_manager=self._state_manager,
+                channel="voice_asterisk",
+                call_id=self.call_uuid or "",
+            ):
+                if chunk:
+                    response += chunk
+            self._turn_timings["llm_ms"] = (time.monotonic() - t0) * 1000
+
+            if not response:
+                response = "Простите, повторите пожалуйста?"
+
+            logger.info(f'🧠 SOFIA: "{response}"')
+            save_message(self._chat_id, self._user_id, "assistant", response)
+
+            # 3. TTS + send audio
+            t0 = time.monotonic()
+            await self._speak(response)
+            self._turn_timings["tts_ms"] = (time.monotonic() - t0) * 1000
+
+            # Log timings
+            total = (time.monotonic() - turn_start) * 1000
+            self._turn_timings["total_ms"] = total
+            logger.info(
+                f"⏱️ Turn timings: "
+                f"STT={self._turn_timings.get('stt_ms', 0):.0f}ms, "
+                f"LLM={self._turn_timings.get('llm_ms', 0):.0f}ms, "
+                f"TTS={self._turn_timings.get('tts_ms', 0):.0f}ms, "
+                f"TOTAL={total:.0f}ms"
+            )
+
+        except Exception as e:
+            logger.error(f"❌ Turn processing error: {e}")
+        finally:
+            self._is_responding = False
+
+    async def _speak(self, text: str):
+        """Synthesize text and send audio to Asterisk."""
+        if self._closed:
+            return
+
+        clean_text = sanitize_for_tts(text)
+        if not clean_text:
+            return
+
+        pcm_data = await synthesize_speech(clean_text)
+        if not pcm_data:
+            return
+
+        # Send audio in chunks matching Asterisk frame size (320 bytes = 20ms @ 8kHz)
+        chunk_size = 320
+        for i in range(0, len(pcm_data), chunk_size):
+            if self._closed:
+                break
+            chunk = pcm_data[i : i + chunk_size]
+            # Pad last chunk if needed
+            if len(chunk) < chunk_size:
+                chunk = chunk + b"\x00" * (chunk_size - len(chunk))
+            await self._send_audio(chunk, self._audio_type)
+            # Pace sending to match real-time playback (20ms per frame)
+            await asyncio.sleep(0.018)  # slightly less than 20ms to avoid underrun
 
     async def _send_audio(self, audio_data: bytes, audio_type: int = AS_TYPE_AUDIO):
         """Send audio packet back to Asterisk."""
@@ -149,7 +533,7 @@ class AudioSocketCall:
             f"📞 Call ended: uuid={self.call_uuid}, "
             f"duration={elapsed:.1f}s, "
             f"audio_frames={self.audio_frames_received}, "
-            f"audio_bytes={self.audio_bytes_received}"
+            f"user_id={self._user_id}"
         )
         try:
             self.writer.close()
@@ -170,6 +554,9 @@ async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.Stream
 
 
 async def main():
+    # Ensure database tables exist
+    _ensure_tables(DB_PATH)
+
     server = await asyncio.start_server(
         handle_connection,
         AUDIOSOCKET_HOST,
@@ -178,7 +565,8 @@ async def main():
 
     addrs = ", ".join(str(sock.getsockname()) for sock in server.sockets)
     logger.info(f"🚀 AudioSocket server listening on {addrs}")
-    logger.info(f"   Audio format: slin16, {SAMPLE_RATE}Hz, {CHANNELS}ch")
+    logger.info("   Pipeline: Whisper STT → Groq LLM → ElevenLabs TTS")
+    logger.info(f"   DB: {DB_PATH}")
     logger.info("   Waiting for Asterisk connections...")
 
     async with server:
@@ -187,6 +575,6 @@ async def main():
 
 if __name__ == "__main__":
     logger.info("=" * 60)
-    logger.info("Sofia Voice — AudioSocket Server (Phase 2)")
+    logger.info("Sofia Voice — Asterisk AudioSocket Pipeline (Phase 3)")
     logger.info("=" * 60)
     asyncio.run(main())

@@ -44,9 +44,10 @@ def _get_groq_client() -> Optional[OpenAI]:
     if _groq_client is None:
         api_key = os.getenv("GROQ_API_KEY")
         if api_key:
+            base_url = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1")
             _groq_client = OpenAI(
                 api_key=api_key,
-                base_url="https://api.groq.com/openai/v1",
+                base_url=base_url,
             )
     return _groq_client
 
