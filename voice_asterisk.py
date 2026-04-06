@@ -68,7 +68,7 @@ LLM_PROXY_BASE = os.getenv("LLM_PROXY_BASE", "http://72.56.64.91:8095")
 
 # ElevenLabs settings (via proxy)
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
-ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "cgSgspJ2msm6clMCkdW9")
+ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "YjESejviApN7SHrbfnA2")  # Nastya
 ELEVENLABS_MODEL = "eleven_turbo_v2_5"
 
 # Yandex SpeechKit settings (direct, no proxy needed)
@@ -153,18 +153,21 @@ async def transcribe_audio(audio_pcm: bytes, sample_rate: int = 8000) -> str:
 # ============================================================
 
 
-async def synthesize_speech(text: str) -> bytes:
-    """Convert text to PCM audio via ElevenLabs API.
+async def stream_tts_audio(text: str):
+    """Stream PCM audio from ElevenLabs TTS through ffmpeg resampler.
 
-    Returns 8kHz 16-bit mono PCM (resampled from ElevenLabs 22050Hz).
+    ElevenLabs → MP3 stream → ffmpeg (proper resampling) → 8kHz PCM chunks.
+    First chunk arrives in ~300-500ms. ffmpeg runs as a persistent pipe.
     """
-    t0 = time.monotonic()
-
     if not ELEVENLABS_API_KEY:
         logger.error("❌ ELEVENLABS_API_KEY not set")
-        return b""
+        return
 
-    url = f"{LLM_PROXY_BASE}/elevenlabs/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
+    url = (
+        f"{LLM_PROXY_BASE}/elevenlabs/v1/text-to-speech/"
+        f"{ELEVENLABS_VOICE_ID}/stream"
+        f"?optimize_streaming_latency=4"
+    )
     headers = {
         "xi-api-key": ELEVENLABS_API_KEY,
         "Content-Type": "application/json",
@@ -179,56 +182,70 @@ async def synthesize_speech(text: str) -> bytes:
         },
     }
 
-    try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            resp = await client.post(url, json=payload, headers=headers)
-            if resp.status_code != 200:
-                logger.error(
-                    f"❌ ElevenLabs HTTP {resp.status_code}: {resp.text[:200]}"
-                )
-                return b""
-            mp3_data = resp.content
-
-        # Convert MP3 to PCM 8kHz using ffmpeg
-        pcm_data = await _mp3_to_pcm(mp3_data, target_rate=SAMPLE_RATE_OUT)
-
-        elapsed = (time.monotonic() - t0) * 1000
-        duration_sec = len(pcm_data) / (SAMPLE_RATE_OUT * SAMPLE_WIDTH)
-        logger.info(
-            f"🔊 TTS: {len(text)} chars → {len(pcm_data)} bytes "
-            f"({duration_sec:.1f}s audio, {elapsed:.0f}ms)"
-        )
-        return pcm_data
-
-    except Exception as e:
-        logger.error(f"❌ TTS error: {e}")
-        return b""
-
-
-async def _mp3_to_pcm(mp3_data: bytes, target_rate: int = 8000) -> bytes:
-    """Convert MP3 to raw PCM using ffmpeg."""
-    proc = await asyncio.create_subprocess_exec(
+    # Start ffmpeg as a streaming converter: MP3 stdin → PCM 8kHz stdout
+    ffmpeg_proc = await asyncio.create_subprocess_exec(
         "ffmpeg",
         "-i",
-        "pipe:0",
+        "pipe:0",  # Input from stdin (MP3 stream)
         "-f",
-        "s16le",
+        "s16le",  # Output format: signed 16-bit little-endian
         "-ar",
-        str(target_rate),
+        "8000",  # Output sample rate: 8kHz
         "-ac",
-        "1",
+        "1",  # Mono
         "-acodec",
         "pcm_s16le",
-        "pipe:1",
+        "pipe:1",  # Output to stdout
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
-    stdout, stderr = await proc.communicate(input=mp3_data)
-    if proc.returncode != 0:
-        logger.error(f"❌ ffmpeg error: {stderr.decode()[:200]}")
-        return b""
-    return stdout
+
+    async def _feed_ffmpeg(resp_stream, proc):
+        """Feed MP3 chunks from ElevenLabs into ffmpeg stdin."""
+        try:
+            async for chunk in resp_stream.aiter_bytes(chunk_size=4096):
+                proc.stdin.write(chunk)
+                await proc.stdin.drain()
+        except Exception as e:
+            logger.debug(f"Feed ffmpeg ended: {e}")
+        finally:
+            proc.stdin.close()
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            async with client.stream(
+                "POST", url, json=payload, headers=headers
+            ) as resp:
+                if resp.status_code != 200:
+                    body = await resp.aread()
+                    logger.error(
+                        f"❌ ElevenLabs HTTP {resp.status_code}: "
+                        f"{body.decode('utf-8', errors='replace')[:200]}"
+                    )
+                    ffmpeg_proc.kill()
+                    return
+
+                # Feed MP3 into ffmpeg in background
+                feed_task = asyncio.create_task(_feed_ffmpeg(resp, ffmpeg_proc))
+
+                # Read PCM from ffmpeg stdout as it becomes available
+                while True:
+                    pcm_chunk = await ffmpeg_proc.stdout.read(4096)
+                    if not pcm_chunk:
+                        break
+                    yield pcm_chunk
+
+                await feed_task
+
+    except Exception as e:
+        logger.error(f"❌ TTS streaming error: {e}")
+    finally:
+        try:
+            ffmpeg_proc.kill()
+        except ProcessLookupError:
+            pass
+        await ffmpeg_proc.wait()
 
 
 # ============================================================
@@ -490,7 +507,10 @@ class AudioSocketCall:
             self._is_responding = False
 
     async def _speak(self, text: str):
-        """Synthesize text and send audio to Asterisk."""
+        """Stream-synthesize text and send audio to Asterisk in real-time.
+
+        Audio starts playing ~300-500ms after call, not 5-8s.
+        """
         if self._closed:
             return
 
@@ -498,22 +518,45 @@ class AudioSocketCall:
         if not clean_text:
             return
 
-        pcm_data = await synthesize_speech(clean_text)
-        if not pcm_data:
-            return
+        # Asterisk frame: 320 bytes = 20ms @ 8kHz slin16
+        frame_size = 320
+        buffer = bytearray()
+        total_bytes = 0
+        first_audio_time = None
+        t0 = time.monotonic()
 
-        # Send audio in chunks matching Asterisk frame size (320 bytes = 20ms @ 8kHz)
-        chunk_size = 320
-        for i in range(0, len(pcm_data), chunk_size):
+        async for pcm_chunk in stream_tts_audio(clean_text):
             if self._closed:
                 break
-            chunk = pcm_data[i : i + chunk_size]
-            # Pad last chunk if needed
-            if len(chunk) < chunk_size:
-                chunk = chunk + b"\x00" * (chunk_size - len(chunk))
-            await self._send_audio(chunk, self._audio_type)
-            # Pace sending to match real-time playback (20ms per frame)
-            await asyncio.sleep(0.018)  # slightly less than 20ms to avoid underrun
+
+            if first_audio_time is None:
+                first_audio_time = (time.monotonic() - t0) * 1000
+                logger.info(f"🔊 TTS first audio chunk: {first_audio_time:.0f}ms")
+
+            buffer.extend(pcm_chunk)
+            total_bytes += len(pcm_chunk)
+
+            # Send complete frames as they accumulate
+            while len(buffer) >= frame_size:
+                frame = bytes(buffer[:frame_size])
+                del buffer[:frame_size]
+                await self._send_audio(frame, self._audio_type)
+                await asyncio.sleep(0.018)
+
+        # Send remaining buffer (pad to frame size)
+        if buffer and not self._closed:
+            remaining = bytes(buffer)
+            if len(remaining) < frame_size:
+                remaining = remaining + b"\x00" * (frame_size - len(remaining))
+            await self._send_audio(remaining, self._audio_type)
+
+        elapsed = (time.monotonic() - t0) * 1000
+        duration_sec = total_bytes / (SAMPLE_RATE_OUT * SAMPLE_WIDTH)
+        logger.info(
+            f"🔊 TTS done: {len(clean_text)} chars → {total_bytes} bytes "
+            f"({duration_sec:.1f}s audio, first={first_audio_time:.0f}ms, "
+            f"total={elapsed:.0f}ms)"
+        )
 
     async def _send_audio(self, audio_data: bytes, audio_type: int = AS_TYPE_AUDIO):
         """Send audio packet back to Asterisk."""
