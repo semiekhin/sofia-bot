@@ -2,8 +2,9 @@
 
 ## P0 — Срочно
 
-- [ ] **Живой тест промпта V5.2 + barge-in** — проверить few-shot, barge-in pending, context return
-- [ ] **Retell Boosted Keywords** — нужен RETELL_API_KEY или ручная настройка в dashboard. Список: инвестиция, рассрочка, ипотека, Сочи, Туапсе, Анапа, Крым, Архыз, Алтай, миллион, бюджет, стройка, аренда, апартаменты, доходность, Оазис, созвон, эксперт
+- [ ] **B1: Filler звуки для голосового стека** — записать через ElevenLabs Nastya: "Мхм...", "Так...", "Да...", "Секундочку...", "Хороший вопрос...". Кешировать как PCM, проигрывать сразу после VAD trigger пока STT+LLM работают
+- [ ] **A3: LLM streaming + sentence-level TTS** — Groq стримит ответ, по предложениям отправляем в ElevenLabs не дожидаясь конца. Предложение = законченная интонационная единица
+- [ ] **Фаза 4: systemd + health check** — sofia-voice-asterisk.service, Restart=always, health endpoint с таймингами
 
 ## P1 — Следующая итерация
 
@@ -20,13 +21,13 @@
 
 ## P2 — Улучшения Voice
 
+- [ ] **Добавить IP 72.56.64.91 в белый список Телфин** — позволит перенести Asterisk на основной сервер, убрать proxy (-20-30ms), упростить архитектуру
+- [ ] **ElevenLabs WebSocket API** — persistent connection вместо HTTP на каждый TTS запрос (-100-200ms)
+- [ ] **Yandex STT gRPC v3 streaming** — вместо REST, параллельно с речью клиента (-200ms). Известная проблема: turn detection
 - [ ] **Yandex TTS gRPC v3 + unsafe_mode** — правильные ударения для русского
-- [ ] **Yandex STT + turn detection** — модуль работает, нужна интеграция с pipecat
-- [ ] **Задарма SIP** — реальные звонки через Vapi/LiveKit/Pipecat
 - [ ] **WebRTC кнопка в веб-виджете** — голосовой звонок в браузере
-- [ ] **Yandex AI Studio (Alice AI / Qwen3-235B)** — серверы в РФ, лучший русский
+- [ ] **Yandex AI Studio (Alice AI / Qwen3-235B)** — серверы в РФ, лучший русский, без proxy
 - [ ] **OpenAI Realtime API** — Voice V3, нативный voice-to-voice
-- [ ] **Retell high_priority_pool** — включить в dashboard (-50-150ms)
 
 ## P3 — Техдолг
 
@@ -35,7 +36,7 @@
 - [ ] **core/channel.py, core/observer.py** — рефакторинг каналов
 - [ ] **BUG-004 EN-раскладка** — обработка латиницы в сообщениях
 
-## Завершено (28.03–05.04.2026)
+## Завершено (28.03–06.04.2026)
 
 - [x] **Фикс SOFIA_PATH в prod .env** — prod бот писал в dev БД, повтор бага 21.03 (05.04)
 - [x] **Фикс логирования bitrix.py** — logging.basicConfig в bot_server.py, логи [BITRIX] видны в journalctl (05.04)
@@ -48,6 +49,13 @@
 - [x] **E2E тест БП раздачи** — форма → лид → TG → 15 мин → BP 152 → раздача (04.04)
 - [x] **docs/LEAD_LIFECYCLE.md** — архитектура CRM-интеграции (04.04)
 - [x] **docs/NEW_CLIENT_ONBOARDING.md** — инструкция подключения нового ЖК (04.04)
+- [x] **Голосовой стек Телфин → Asterisk → AudioSocket → STT/LLM/TTS** — полный pipeline на VPS (06.04)
+- [x] **Asterisk + SIP trunk Телфин** — PJSIP, порт 5090, Registered (06.04)
+- [x] **AudioSocket сервер** — voice_asterisk.py, TCP протокол, двусторонний аудио (06.04)
+- [x] **Nginx LLM proxy** — 72.56.64.91:8095 для Groq/OpenAI/ElevenLabs из России (06.04)
+- [x] **TTS streaming ElevenLabs** — first audio ~400-500ms вместо 5-8 сек (06.04)
+- [x] **VAD 0.7s + barge-in** — перебивание останавливает TTS, контекст сохраняется (06.04)
+- [x] **Фикс промпта "Повторите" на "Завтра"** — добавлен пример для дат/времени (06.04)
 - [x] Промпт V5-V5.2: persona, few-shot, позитивные инструкции (b34e5ffc → 8e0a7738)
 - [x] Barge-in pending: замена debounce, склейка фраз (f83631ae)
 - [x] meeting_agreed context check (e9b47719)

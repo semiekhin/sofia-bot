@@ -1,5 +1,63 @@
 # SESSION_LOG — Последние сессии
 
+## 06.04.2026 — Голосовой стек: Телфин → Asterisk → AudioSocket → STT/LLM/TTS
+
+**Сделано:**
+
+### Фаза 1: Asterisk + SIP trunk Телфин
+- SSH доступ к российскому VPS (`ssh sofia-voice`, 185.207.66.201)
+- VPS очищен (x-ui, zabbix удалены, DNS починен, система обновлена)
+- Asterisk 20 установлен, PJSIP trunk к sipproxy.telphin.ru:5068 (порт 5090)
+- SIP регистрация работает, входящие звонки доходят до Asterisk
+
+### Фаза 2: AudioSocket сервер
+- voice_asterisk.py: TCP сервер на порту 9090, протокол AudioSocket (UUID=0x01, Audio=0x10, Hangup=0x00)
+- Двусторонний аудиопоток подтверждён (433 фрейма за 8.7 сек, clean hangup)
+- Документация протокола исправлена (официальная была неточной)
+
+### Фаза 3: Полный pipeline STT → LLM → TTS
+- **Проблема**: Groq/OpenAI/ElevenLabs заблокированы из России (403)
+- **Решение**: nginx proxy на основном сервере (72.56.64.91:8095), UFW rule для VPS IP
+- STT: Yandex SpeechKit REST (~300ms, напрямую с VPS)
+- LLM: Groq llama-4-scout через proxy (~500ms)
+- TTS: ElevenLabs Nastya через proxy
+- Полный диалог работает: квалификация, ответы по контексту
+
+### Попытка перенести Asterisk на основной сервер
+- Телфин ответил 403 Forbidden Ip — IP 72.56.64.91 не в белом списке
+- Asterisk на основном сервере отключен, вернулись на VPS
+
+### TTS оптимизация: streaming
+- ElevenLabs streaming endpoint + optimize_streaming_latency=4
+- MP3 stream → ffmpeg pipe → 8kHz PCM (proper resampling)
+- First audio: **~400-500ms** (было 5-8 сек полное ожидание)
+- Voice ID исправлен: YjESejviApN7SHrbfnA2 (Nastya, был Jessica)
+
+### Промпт: фикс "Повторите пожалуйста" loop
+- LLM не понимал "Завтра" как ответ на "Когда удобнее?"
+- Добавлен пример и явное правило для дат/времени в VOICE_SYSTEM_PROMPT
+
+### A1: VAD + barge-in
+- VAD silence threshold: 1.2с → 0.7с (-500ms ощущаемой паузы)
+- Barge-in: клиент перебивает → TTS мгновенно останавливается
+- 5+ фреймов (~100ms) sustained speech для подтверждения barge-in
+- Barge-in аудио → VAD → STT → LLM (не теряется контекст)
+
+**Коммиты:** f59186fb → 4c5b34ad (6 коммитов)
+
+**Файлы:** voice_asterisk.py, core/pipeline.py, asterisk/pjsip.conf, asterisk/extensions.conf, asterisk/logger.conf, /etc/nginx/sites-available/llm-proxy
+
+**Текущие тайминги (конец речи → первый звук):**
+- VAD silence: 700ms (клиент не ощущает)
+- STT: ~300ms
+- LLM: ~500ms
+- TTS first byte: ~500ms
+- **Итого до первого звука: ~1300ms** (ощущаемая пауза ~1300ms)
+
+**Оставлено на завтра:** B1 (filler звуки), A3 (LLM streaming + sentence-level TTS)
+
+---
+
 ## 05.04.2026 — Диагностика застрявших лидов, фикс SOFIA_PATH + логирование
 
 **Сделано:**
@@ -100,22 +158,6 @@
 **Коммиты:** 1
 
 **Файлы:** CLAUDE.md
-
----
-
-## 29.03.2026 (ночь) — Промпт V5-V5.2, barge-in, meeting_agreed фикс
-
-**Сделано:**
-- **Промпт V5** (b34e5ffc): полная переработка голосового промпта
-- **Промпт V5.1** (e2afcf54): убран пример с троллем
-- **Промпт V5.2** (8e0a7738): few-shot для подтверждения приветствия
-- **meeting_agreed фикс** (e9b47719): проверка контекста "созвон/эксперт"
-- **Barge-in pending** (f83631ae): замена debounce на интеллектуальный механизм
-- **Context return на "ты робот?"** (f83631ae): возврат к предыдущей теме
-
-**Коммиты:** b34e5ffc → f83631ae (5 коммитов)
-
-**Файлы:** core/pipeline.py, voice_api.py
 
 ---
 
