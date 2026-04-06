@@ -59,7 +59,7 @@ CHANNELS = 1
 VOICE_USER_ID_OFFSET = 9_500_000
 
 # VAD settings
-VAD_SILENCE_THRESHOLD = 1.2  # seconds of silence to trigger end-of-speech
+VAD_SILENCE_THRESHOLD = 0.7  # seconds of silence to trigger end-of-speech
 VAD_MIN_SPEECH_DURATION = 0.3  # minimum speech duration to process
 VAD_ENERGY_THRESHOLD = 200  # RMS energy threshold for speech detection
 
@@ -318,8 +318,14 @@ class AudioSocketCall:
         self._user_id: int = 0
         self._chat_id: str = ""
         self._state_manager: StateManager | None = None
-        self._is_responding = False  # Prevent overlapping responses
+        self._is_responding = False  # True while STT→LLM→TTS pipeline is active
         self._greeting_sent = False
+
+        # Barge-in state
+        self._barge_in_buffer = bytearray()  # Audio accumulated during response
+        self._barge_in_detected = False  # Client started speaking during response
+        self._last_user_text: str = ""  # Last processed user text (for combining)
+        self._cancel_playback = False  # Signal to stop current TTS playback
 
         # Timings for current turn
         self._turn_timings: dict = {}
@@ -374,7 +380,9 @@ class AudioSocketCall:
             # Process audio through VAD
             if not self._is_responding:
                 await self._process_audio_vad(payload)
-            # While responding, just consume frames (don't accumulate)
+            else:
+                # During response: detect barge-in (client speaking over Sofia)
+                await self._detect_barge_in(payload)
 
         elif msg_type == AS_TYPE_HANGUP:
             logger.info(f"📞 Hangup (uuid={self.call_uuid})")
@@ -441,11 +449,40 @@ class AudioSocketCall:
                     self._is_speaking = False
                     self._silence_start = None
 
+    async def _detect_barge_in(self, audio_bytes: bytes):
+        """Detect if client is speaking while Sofia is responding (barge-in).
+
+        Requires 5+ consecutive speech frames (~100ms) to avoid false triggers
+        from noise or echo. Once confirmed, stops TTS and accumulates audio.
+        """
+        rms = compute_rms(audio_bytes)
+        if rms > VAD_ENERGY_THRESHOLD * 1.5:  # Higher threshold during playback
+            self._barge_in_buffer.extend(audio_bytes)
+            if not self._barge_in_detected:
+                # Count consecutive speech frames before confirming barge-in
+                speech_frames = len(self._barge_in_buffer) // 320
+                if speech_frames >= 5:  # ~100ms of sustained speech
+                    self._barge_in_detected = True
+                    self._cancel_playback = True
+                    logger.info(
+                        f"🔇 BARGE-IN confirmed — stopping TTS "
+                        f"({len(self._barge_in_buffer)} bytes accumulated)"
+                    )
+        elif self._barge_in_detected:
+            # Silence after confirmed barge-in — keep accumulating
+            self._barge_in_buffer.extend(audio_bytes)
+        else:
+            # Noise spike, not sustained — reset
+            self._barge_in_buffer.clear()
+
     async def _process_turn(self, audio_pcm: bytes):
-        """Full turn: STT → LLM → TTS → send audio."""
+        """Full turn: STT → LLM → TTS → send audio. Handles barge-in."""
         if self._is_responding or self._closed:
             return
         self._is_responding = True
+        self._cancel_playback = False
+        self._barge_in_detected = False
+        self._barge_in_buffer.clear()
         turn_start = time.monotonic()
         self._turn_timings = {}
 
@@ -460,6 +497,7 @@ class AudioSocketCall:
                 return
 
             logger.info(f'🎤 USER: "{text}"')
+            self._last_user_text = text
             save_message(self._chat_id, self._user_id, "user", text)
 
             # 2. LLM
@@ -485,7 +523,7 @@ class AudioSocketCall:
             logger.info(f'🧠 SOFIA: "{response}"')
             save_message(self._chat_id, self._user_id, "assistant", response)
 
-            # 3. TTS + send audio
+            # 3. TTS + send audio (may be interrupted by barge-in)
             t0 = time.monotonic()
             await self._speak(response)
             self._turn_timings["tts_ms"] = (time.monotonic() - t0) * 1000
@@ -505,6 +543,22 @@ class AudioSocketCall:
             logger.error(f"❌ Turn processing error: {e}")
         finally:
             self._is_responding = False
+
+            # Check for barge-in: client spoke during our response
+            if self._barge_in_detected and self._barge_in_buffer:
+                barge_audio = bytes(self._barge_in_buffer)
+                self._barge_in_buffer.clear()
+                self._barge_in_detected = False
+                logger.info(f"🔇 Processing barge-in audio: {len(barge_audio)} bytes")
+                # Feed barge-in audio through normal VAD pipeline
+                # Reset VAD state and process accumulated audio
+                self._speech_buffer = bytearray(barge_audio)
+                self._is_speaking = True
+                self._speech_start = time.time()
+                self._silence_start = time.time()  # Start silence timer
+            else:
+                self._barge_in_buffer.clear()
+                self._barge_in_detected = False
 
     async def _speak(self, text: str):
         """Stream-synthesize text and send audio to Asterisk in real-time.
@@ -526,7 +580,9 @@ class AudioSocketCall:
         t0 = time.monotonic()
 
         async for pcm_chunk in stream_tts_audio(clean_text):
-            if self._closed:
+            if self._closed or self._cancel_playback:
+                if self._cancel_playback:
+                    logger.info("🔇 TTS playback cancelled (barge-in)")
                 break
 
             if first_audio_time is None:
@@ -538,23 +594,28 @@ class AudioSocketCall:
 
             # Send complete frames as they accumulate
             while len(buffer) >= frame_size:
+                if self._cancel_playback:
+                    break
                 frame = bytes(buffer[:frame_size])
                 del buffer[:frame_size]
                 await self._send_audio(frame, self._audio_type)
                 await asyncio.sleep(0.018)
 
-        # Send remaining buffer (pad to frame size)
-        if buffer and not self._closed:
+        # Send remaining buffer (pad to frame size) — unless cancelled
+        if buffer and not self._closed and not self._cancel_playback:
             remaining = bytes(buffer)
             if len(remaining) < frame_size:
                 remaining = remaining + b"\x00" * (frame_size - len(remaining))
             await self._send_audio(remaining, self._audio_type)
 
         elapsed = (time.monotonic() - t0) * 1000
-        duration_sec = total_bytes / (SAMPLE_RATE_OUT * SAMPLE_WIDTH)
+        duration_sec = (
+            total_bytes / (SAMPLE_RATE_OUT * SAMPLE_WIDTH) if total_bytes else 0
+        )
+        first_ms = f"{first_audio_time:.0f}" if first_audio_time is not None else "N/A"
         logger.info(
             f"🔊 TTS done: {len(clean_text)} chars → {total_bytes} bytes "
-            f"({duration_sec:.1f}s audio, first={first_audio_time:.0f}ms, "
+            f"({duration_sec:.1f}s audio, first={first_ms}ms, "
             f"total={elapsed:.0f}ms)"
         )
 
