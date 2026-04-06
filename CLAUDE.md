@@ -39,12 +39,84 @@ Python 3.12, FastAPI, SQLite, OpenAI gpt-5.2 (Responses API), ChromaDB (RAG, tex
 5. **[END] check:** убирает маркер, ставит `dialog_finished=True, finish_type="llm_end"`
 6. **Object context:** при `source_object` → инъекция карточки объекта + presentation_url в system prompt
 
-**stream_voice_response()** — голосовой стриминг:
-- Модель: `VOICE_MODEL = "gpt-4.1-mini"` (без reasoning)
-- `max_output_tokens=800`, RAG полный (10 примеров)
-- Analyzer пропущен (скорость)
-- Async Extractor post-stream: `extract_sync()` + `merge_extraction_to_state()` через `asyncio.create_task` (НЕ через `process_message` — он сбрасывает `dialog_finished`)
-- `VOICE_PROMPT_ADDON`: 1-2 предложения, разговорный русский, запрет латиницы/URL/email/@username
+**stream_voice_response()** — голосовой pipeline (используется в voice_asterisk.py и voice_api.py):
+- Модель: Groq `llama-4-scout-17b-16e-instruct` (primary), OpenAI `gpt-5.4-mini` (fallback)
+- `max_tokens=400`, **без RAG** (скорость), без Analyzer
+- Rule-based state extraction ДО LLM: goal, budget, payment_type, meeting_agreed
+- VOICE_SYSTEM_PROMPT: компактный промпт со скриптом продаж и примерами
+- `sanitize_for_tts()`: убирает латиницу, URL, email, @mentions
+
+### Голосовой стек Asterisk (voice_asterisk.py)
+
+**Архитектура (2 сервера):**
+
+```
+Клиент звонит +79310091644
+    │
+    ▼
+Телфин SIP (sipproxy.telphin.ru:5068)
+    │
+    ▼
+┌─────────────── VPS 185.207.66.201 (ssh sofia-voice) ───────────────┐
+│ Asterisk 20 (PJSIP, порт 5090)                                     │
+│    │                                                                 │
+│    ▼ AudioSocket (TCP localhost:9090)                                │
+│ voice_asterisk.py:                                                   │
+│    ├─ VAD (energy-based, 0.7s silence threshold)                    │
+│    ├─ Barge-in detection (5+ frames, cancel TTS)                    │
+│    ├─ STT: Yandex SpeechKit REST v1 (~300ms) ──── напрямую         │
+│    ├─ LLM: Groq llama-4-scout (~500ms) ────────── через proxy ──┐  │
+│    └─ TTS: ElevenLabs Nastya streaming (~500ms) ── через proxy ─┤  │
+└─────────────────────────────────────────────────────────────────┘  │
+                                                                      │
+┌─────────────── Основной сервер 72.56.64.91 ────────────────────────┤
+│ nginx proxy :8095 (UFW: only 185.207.66.201)                       │
+│    ├─ /groq/     → https://api.groq.com/                           │
+│    ├─ /openai/   → https://api.openai.com/                         │
+│    └─ /elevenlabs/ → https://api.elevenlabs.io/                    │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+**Почему 2 сервера:** Телфин блокирует SIP по IP (403 Forbidden Ip) — VPS в белом списке. Groq/OpenAI/ElevenLabs блокируют Россию — proxy через нидерландский сервер.
+
+**AudioSocket протокол (TCP):**
+- Пакет: `[1 byte type][2 bytes length BE][payload]`
+- UUID=0x01 (16 bytes binary), Audio=0x10 (slin 8kHz), Hangup=0x00, Error=0xFF
+- Телфин отправляет INVITE на extension 's'
+
+**Тайминги (конец речи → первый звук ответа):**
+- VAD silence: 700ms (клиент сам молчит)
+- STT (Yandex): ~300ms
+- LLM (Groq via proxy): ~500ms
+- TTS first byte (ElevenLabs streaming via proxy): ~500ms
+- **Итого: ~1300ms ощущаемая пауза**
+
+**TTS streaming:** ElevenLabs `/stream` endpoint + `optimize_streaming_latency=4` → MP3 stream → ffmpeg pipe → 8kHz PCM → AudioSocket фреймы (320 bytes = 20ms)
+
+**SIP данные Телфин:**
+- Сервер: sipproxy.telphin.ru:5068
+- Добавочный: 15400*101, пароль: jAJk6585e
+- Кодеки: alaw, ulaw (G.711)
+- Номер: +79310091644
+
+**Файлы голосового стека:**
+- `voice_asterisk.py` — AudioSocket сервер + VAD + STT/LLM/TTS pipeline
+- `asterisk/pjsip.conf` — PJSIP trunk к Телфин
+- `asterisk/extensions.conf` — dialplan (входящий → AudioSocket)
+- `asterisk/logger.conf` — логирование Asterisk
+- `/etc/nginx/sites-available/llm-proxy` — nginx proxy config
+- VPS: `/opt/sofia-voice/` — рабочая директория, venv, .env, sofia_voice.db
+
+**Деплой голосового стека:**
+```bash
+# Скопировать код на VPS
+scp voice_asterisk.py sofia-voice:/opt/sofia-voice/
+scp core/pipeline.py sofia-voice:/opt/sofia-voice/core/
+# Перезапустить
+ssh sofia-voice "fuser -k 9090/tcp; sleep 1; cd /opt/sofia-voice && nohup venv/bin/python3 voice_asterisk.py > /tmp/audiosocket.log 2>&1 &"
+# Проверить логи
+ssh sofia-voice "cat /tmp/audiosocket.log"
+```
 
 **Стадии (RAG stages):** GREETING → ACTUALIZATION → QUALIFICATION → PRESENTATION → OBJECTION → MEETING → CLOSING
 
