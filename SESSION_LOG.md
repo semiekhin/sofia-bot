@@ -1,5 +1,54 @@
 # SESSION_LOG — Последние сессии
 
+## 07.04.2026 — Research Qwen3-TTS + ElevenLabs voice tuning + VAD 0.4s + промпт-дамп
+
+**Сделано:**
+
+### Research: Qwen3-TTS качество для голосовой Софии
+- Исследованы 5 API для Qwen3-TTS: WaveSpeed AI, DashScope (Alibaba), fal.ai, Replicate, HuggingFace
+- Выбран WaveSpeed AI ($1 free credit, REST API, без карты)
+- Сгенерировано **30 аудиофайлов** с реальными фразами Софии:
+  - 20 базовых: 5 фраз × 4 голоса (Vivian, Serena, Sohee, VoiceDesign)
+  - 10 со стилями: 3 голоса × 3 style_instruction + 2 voice_description варианта
+- Файлы в `/tmp/qwen3_tts_test/`, REPORT.md с таблицей
+- Вывод: для production нужен DashScope (streaming, Katerina для русского, $0.115/10k chars) или self-hosted GPU
+
+### ElevenLabs Voice Settings (по настройкам Сергея из UI)
+- stability: 0.5 → **0.35** (более выразительный)
+- similarity_boost: 0.75 → **0.79**
+- speed: **1.19** (новый параметр, top-level в API body)
+- style и use_speaker_boost — протестированы, убраны (добавляли латентность)
+
+### VAD threshold снижен
+- VAD_SILENCE_THRESHOLD: 0.7s → **0.4s** (-300ms ощущаемой паузы)
+- Задача A1 из бэклога выполнена (1.2 → 0.7 → 0.4)
+
+### Промпт-дамп
+- Создан `TASK_DUMP_SOFIA_PROMPTS.md` — полный дамп всех 9 промптов системы
+- Карта: какой промпт где вызывается (Extractor → Analyzer → RAG → Generator)
+- Анализ логов: 3 голосовых звонка + 1 текстовый диалог за 07.04
+
+### Анализ диалогов — найденные проблемы
+- LLM выдумал фейковый номер телефона (+7 123 456 78 90) — критический баг
+- "В Сочи → в Туапсе" бессвязная логика (llama-4-scout)
+- Реакция на мусор STT ("Эротика", "Зависят облака")
+- Длинные ответы для голоса (194-240 символов при лимите 1-2 предложения)
+
+**Коммиты:** TBD (текущий)
+
+**Файлы:** voice_asterisk.py, TASK_DUMP_SOFIA_PROMPTS.md, /tmp/qwen3_tts_test/
+
+**Текущие тайминги (обновлены):**
+- VAD silence: **400ms** (было 700ms)
+- STT: ~300ms
+- LLM: ~500ms
+- TTS first byte: ~450-700ms
+- **Итого: ~1000ms** (было ~1300ms)
+
+**Следующая сессия:** Сценарий исходящего обзвона — ЖК RIZALTA (сбор информации, оффер, новый промпт)
+
+---
+
 ## 06.04.2026 — Голосовой стек: Телфин → Asterisk → AudioSocket → STT/LLM/TTS
 
 **Сделано:**

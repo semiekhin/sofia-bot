@@ -59,7 +59,7 @@ CHANNELS = 1
 VOICE_USER_ID_OFFSET = 9_500_000
 
 # VAD settings
-VAD_SILENCE_THRESHOLD = 0.7  # seconds of silence to trigger end-of-speech
+VAD_SILENCE_THRESHOLD = 0.4  # seconds of silence to trigger end-of-speech
 VAD_MIN_SPEECH_DURATION = 0.3  # minimum speech duration to process
 VAD_ENERGY_THRESHOLD = 200  # RMS energy threshold for speech detection
 
@@ -177,9 +177,10 @@ async def stream_tts_audio(text: str):
         "text": text,
         "model_id": ELEVENLABS_MODEL,
         "voice_settings": {
-            "stability": 0.5,
-            "similarity_boost": 0.75,
+            "stability": 0.35,
+            "similarity_boost": 0.79,
         },
+        "speed": 1.19,
     }
 
     # Start ffmpeg as a streaming converter: MP3 stdin → PCM 8kHz stdout
