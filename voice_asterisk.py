@@ -403,8 +403,18 @@ class AudioSocketCall:
             return
         self._greeting_sent = True
 
-        logger.info("🎙️ Sending greeting...")
-        greeting = "Здравствуйте! Меня зовут София, я консультант по курортной недвижимости. Чем могу помочь?"
+        voice_prompt_mode = os.getenv("VOICE_PROMPT_MODE", "atlantis")
+        logger.info(f"🎙️ Sending greeting... [prompt mode: {voice_prompt_mode}]")
+        if voice_prompt_mode == "rizalta":
+            greeting = (
+                "Алло? Добрый день! Это Софья, агентство Оазис. "
+                "Две минуты есть? Хочу классное предложение быстро рассказать."
+            )
+        else:
+            greeting = (
+                "Здравствуйте! Меня зовут София, "
+                "я консультант по курортной недвижимости. Чем могу помочь?"
+            )
 
         # Save to DB
         save_message(self._chat_id, self._user_id, "assistant", greeting)
