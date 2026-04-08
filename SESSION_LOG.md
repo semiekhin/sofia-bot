@@ -1,5 +1,57 @@
 # SESSION_LOG — Последние сессии
 
+## 08.04.2026 — Bitrix-Radist интеграция + RIZALTA промпт + git recovery
+
+**Сделано:**
+
+### Git recovery после краша
+- Восстановлен контекст: 5 uncommitted файлов в DEV, 9 в PROD
+- DEV: 3 коммита (Bitrix-Radist, docs, TTS model switch)
+- PROD: 5 коммитов по каналам (core/bitrix, Telegram, Radist, Web API, docs)
+- PROD push заблокирован by design (push URL = `no_push`)
+
+### Bitrix-интеграция в Radist gateway (задача из прошлой сессии)
+- Таблица radist_leads, привязка к ATL-лидам через find_recent_atlantis_lead
+- Таймауты 15/60/15 мин (аналог bot_server.py)
+- manager_active guard, финализация
+- Окно матчинга 60 секунд в find_recent_atlantis_lead (core/bitrix.py)
+- find_user_id_by_lead расширен для telegram_leads + radist_leads
+
+### RIZALTA голосовой промпт
+- Добавлена константа VOICE_SYSTEM_PROMPT_RIZALTA в core/pipeline.py
+- Переключатель VOICE_PROMPT_MODE (env, default "atlantis")
+- Обнаружено: voice_asterisk.py имеет захардкоженный greeting в _send_greeting()
+- Фикс: переключатель в _send_greeting() по VOICE_PROMPT_MODE
+- Промпт v1 (скриптовый, 3 диалога) → заменён на goal-oriented v1 (минималистичный)
+- Деплой на VPS sofia-voice, .env VOICE_PROMPT_MODE=rizalta
+
+### Тестовые звонки (Сергей)
+- Звонок 1: Софья отвечала в Atlantis-стиле → найден баг (greeting не переключался)
+- Звонок 2: после фикса greeting — RIZALTA-стиль, но диалог "плохой" (ударения, обрыв)
+- Звонок 3: goal-oriented промпт — "не очень хорошо, перестала отвечать"
+- **Вывод: нужна тонкая настройка промпта, таймингов, stability. Утром продолжим.**
+
+### Прочее
+- ElevenLabs TTS model switch: eleven_turbo_v2_5 → eleven_multilingual_v2 (для PVC)
+
+**Коммиты:**
+- 12e4bf18 feat: Bitrix CRM integration for Radist channel + 60s lead matching window
+- ee24321b docs: session 07.04-08.04
+- e72bc253 chore: switch ElevenLabs TTS to eleven_multilingual_v2
+- 32c9996d feat(voice): add RIZALTA outbound prompt + VOICE_PROMPT_MODE switch
+- 2d51ede5 feat(voice): wire VOICE_PROMPT_MODE switch into voice_asterisk.py greeting
+- c47d1f1b feat(voice): goal-oriented RIZALTA prompt v1 (no script, no stages)
+
+**Файлы:** core/pipeline.py, core/bitrix.py, sofia_radist_gateway.py, voice_asterisk.py, CLAUDE.md, BACKLOG.md
+
+**Открытые проблемы для следующей сессии:**
+- RIZALTA промпт: диалог обрывается, качество речи плохое
+- Нужна тонкая настройка: ElevenLabs parameters, max_tokens, промпт
+- Возможно eleven_multilingual_v2 хуже по latency чем turbo_v2_5
+- Нужен анализ логов звонков для понимания где именно проблема
+
+---
+
 ## 07.04.2026 — Research Qwen3-TTS + ElevenLabs voice tuning + VAD 0.4s + промпт-дамп
 
 **Сделано:**

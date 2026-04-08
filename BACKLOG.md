@@ -2,10 +2,9 @@
 
 ## P0 — Срочно
 
-- [ ] **RIZALTA: Сценарий исходящего обзвона** — сбор информации по ЖК RIZALTA (файлы, RAG, веб), составление оффера, новый голосовой промпт для холодного обзвона. Смена парадигмы: с входящей квалификации на исходящий обзвон с конкретным предложением
+- [ ] **RIZALTA промпт тонкая настройка** — диалог обрывается, качество плохое. Анализ логов звонков, тюнинг ElevenLabs params (stability/similarity/speed), проверка latency eleven_multilingual_v2 vs turbo_v2_5, max_tokens, итерации промпта
 - [ ] **B1: Filler звуки для голосового стека** — записать через ElevenLabs Nastya: "Мхм...", "Так...", "Да...", "Секундочку...", "Хороший вопрос...". Кешировать как PCM, проигрывать сразу после VAD trigger пока STT+LLM работают
 - [ ] **A3: LLM streaming + sentence-level TTS** — Groq стримит ответ, по предложениям отправляем в ElevenLabs не дожидаясь конца. Предложение = законченная интонационная единица
-- [ ] **V6 промпт для голоса** — жёсткие запреты, {stage}+{state}+{next_question}, логика бюджет→локация, STT фильтр, few-shot 6-8 примеров, max_tokens=80
 - [ ] **Фаза 4: systemd + health check** — sofia-voice-asterisk.service, Restart=always, health endpoint с таймингами
 - [ ] **Proxy monitoring** — алерт если 8095 упал, автоперезапуск nginx, логирование запросов через proxy
 
@@ -15,7 +14,7 @@
 - [ ] **Вынести хардкоды в env/config** — SOFIA_AI_USER_ID (428), BITRIX_ATLANTIS_SOURCE_ID (397) → в .env или source_objects.py
 - [ ] **Таймаут для web-виджета** — сейчас web-сессии не финализируются по таймауту, только по [END] от LLM
 - [ ] **Лиды без бот-диалога** — клиенты из Тильды, не перешедшие в TG, не проходят квалификацию Софией. Варианты: CRM-робот с таймаутом или принять как нормальный путь
-- [ ] **Битрикс в radist_gateway.py** — подключить core/bitrix.py к Radist каналу (лиды из WhatsApp/Max не уходят в раздачу)
+- [x] ~~**Битрикс в radist_gateway.py**~~ — выполнено 08.04: radist_leads таблица, привязка ATL-лидов, таймауты 15/60/15
 - [ ] **Groq платный план** — бесплатный throttled 70% запросов в A/B тесте
 - [ ] **Retell begin_message** — убрать или настроить тот же голос что в ответах
 - [ ] **Retell Transcription Mode** — accuracy vs speed тест
@@ -65,6 +64,11 @@
 - [x] **ElevenLabs voice tuning** — stability=0.35, similarity=0.79, speed=1.19 (07.04)
 - [x] **Research Qwen3-TTS** — 30 аудиофайлов, WaveSpeed API, отчёт готов (07.04)
 - [x] **TASK_DUMP_SOFIA_PROMPTS.md** — полный дамп всех 9 промптов системы (07.04)
+- [x] **Bitrix в Radist gateway** — radist_leads, ATL-привязка, таймауты 15/60/15, manager_active (08.04)
+- [x] **Окно матчинга 60 сек** — find_recent_atlantis_lead фильтр >=DATE_CREATE (08.04)
+- [x] **RIZALTA промпт v1** — VOICE_SYSTEM_PROMPT_RIZALTA + VOICE_PROMPT_MODE switch (08.04)
+- [x] **Git recovery после краша** — DEV 3 коммита, PROD 5 коммитов по каналам (08.04)
+- [x] **ElevenLabs multilingual_v2** — switch для PVC голоса Nastya (08.04)
 - [x] Промпт V5-V5.2: persona, few-shot, позитивные инструкции (b34e5ffc → 8e0a7738)
 - [x] Barge-in pending: замена debounce, склейка фраз (f83631ae)
 - [x] meeting_agreed context check (e9b47719)
