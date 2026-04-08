@@ -10,6 +10,7 @@ import aiohttp
 from aiohttp import web
 import json
 import logging
+import random
 from datetime import datetime
 import sqlite3
 import os
@@ -33,6 +34,16 @@ from state_manager import StateManager
 from message_processor import process_message
 from message_queue import process_with_queue
 from core.pipeline import run_pipeline
+from core.bitrix import (
+    create_or_update_lead,
+    finalize_lead,
+    find_recent_atlantis_lead,
+    is_manager_active,
+    save_original_assigned,
+    set_lead_assigned,
+    update_lead,
+    SOFIA_AI_USER_ID,
+)
 
 load_dotenv()
 
@@ -208,9 +219,16 @@ def init_radist_db():
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )""")
 
+    # Таблица привязки radist user_id → bitrix lead_id
+    c.execute("""CREATE TABLE IF NOT EXISTS radist_leads (
+        user_id INTEGER PRIMARY KEY,
+        bitrix_lead_id INTEGER NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""")
+
     conn.commit()
     conn.close()
-    log("📦 БД инициализирована (radist_messages, radist_chats)")
+    log("📦 БД инициализирована (radist_messages, radist_chats, radist_leads)")
 
 
 def save_message(
@@ -307,6 +325,296 @@ async def send_message(connection_id: int, chat_id: int, text: str) -> bool:
     except Exception as e:
         log(f"❌ [{channel.upper()}] Исключение при отправке: {e}")
         return False
+
+
+# ============================================
+# BITRIX — привязка radist user_id к лиду
+# ============================================
+
+
+def get_radist_lead_id(user_id: int) -> int | None:
+    """Получить bitrix_lead_id из radist_leads."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT bitrix_lead_id FROM radist_leads WHERE user_id = ?", (user_id,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row and row[0] else None
+
+
+def save_radist_lead_id(user_id: int, lead_id: int):
+    """Сохранить bitrix_lead_id в radist_leads."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.execute(
+        """INSERT INTO radist_leads (user_id, bitrix_lead_id)
+           VALUES (?, ?)
+           ON CONFLICT(user_id) DO UPDATE SET bitrix_lead_id = ?""",
+        (user_id, lead_id, lead_id),
+    )
+    conn.commit()
+    conn.close()
+
+
+def _is_radist_bitrix_session(user_id: int) -> bool:
+    """Битрикс-интеграция только для сессий с source_object (ATL и др.)."""
+    state = state_manager.get_state(user_id)
+    return bool(getattr(state, "source_object", None))
+
+
+def _get_radist_user_name(user_id: int) -> str:
+    """Получить user_name из radist_chats по user_id."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    # user_id = -(offset + chat_id), chat_id нужен для поиска
+    # Ищем по всем radist_chats
+    channel_offset = {"max": 1000000, "telegram": 2000000, "whatsapp": 3000000}
+    for ch, offset in channel_offset.items():
+        chat_id = -(user_id) - offset
+        if chat_id > 0:
+            c.execute(
+                "SELECT user_name FROM radist_chats WHERE channel = ? AND chat_id = ?",
+                (ch, chat_id),
+            )
+            row = c.fetchone()
+            if row:
+                conn.close()
+                return row[0] or "Клиент"
+    conn.close()
+    return "Клиент"
+
+
+def _get_radist_history_for_bitrix(channel: str, chat_id: int, limit: int = 100):
+    """Получить историю из radist_messages в формате для Bitrix."""
+    return get_history(channel, chat_id, limit)
+
+
+# ============================================
+# ТАЙМАУТЫ (15/60/15 минут) — аналог bot_server.py
+# ============================================
+
+radist_reminder_tasks = {}  # {user_key: asyncio.Task}
+radist_reminder_sent = {}  # {user_key: True}
+
+REMINDER_PHRASES = [
+    "{name}, продолжим общение?",
+    "{name}, не забыли про меня?",
+]
+
+TIMEOUT_NO_RESPONSE = 15 * 60  # Сценарий А: 15 мин без ответа после первого сообщения
+TIMEOUT_REMINDER = 60 * 60  # Сценарий Б: 60 мин → напоминание
+TIMEOUT_AFTER_REMINDER = 15 * 60  # Сценарий Б: +15 мин после напоминания → финализация
+
+
+def _get_radist_last_message_time(channel: str, chat_id: int) -> float | None:
+    """Время последнего сообщения в radist-диалоге."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "SELECT timestamp FROM radist_messages WHERE channel = ? AND chat_id = ? "
+        "ORDER BY timestamp DESC LIMIT 1",
+        (channel, chat_id),
+    )
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return None
+    ts = row[0]
+    if isinstance(ts, str):
+        try:
+            return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S").timestamp()
+        except ValueError:
+            return None
+    return float(ts)
+
+
+def _count_radist_user_messages(channel: str, chat_id: int) -> int:
+    """Количество сообщений от клиента в radist-диалоге."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "SELECT COUNT(*) FROM radist_messages WHERE channel = ? AND chat_id = ? "
+        "AND role = 'user'",
+        (channel, chat_id),
+    )
+    count = c.fetchone()[0]
+    conn.close()
+    return count
+
+
+def _is_radist_dialog_active(user_id: int) -> bool:
+    """Проверяет что диалог не завершён и менеджер не перехватил."""
+    state = state_manager.get_state(user_id)
+    if state and getattr(state, "dialog_finished", False):
+        return False
+    if is_manager_active(DB_PATH, user_id):
+        return False
+    return True
+
+
+async def _radist_finalize_timeout(
+    user_key: str,
+    user_id: int,
+    channel: str,
+    chat_id: int,
+    connection_id: int,
+    phone: str,
+    user_name: str,
+    finish_type: str,
+):
+    """Финализирует radist-диалог по таймауту. Битрикс — только для source-сессий."""
+    state_manager.update_state(
+        user_id, {"dialog_finished": True, "finish_type": finish_type}
+    )
+
+    if _is_radist_bitrix_session(user_id):
+        try:
+            state_fresh = state_manager.get_state(user_id)
+            history = get_history(channel, chat_id, limit=100)
+            lead_id = get_radist_lead_id(user_id)
+
+            new_lead_id = await create_or_update_lead(
+                lead_id,
+                user_name,
+                state_fresh,
+                history,
+                is_final=True,
+                channel="radist_telegram",
+            )
+            if new_lead_id and not lead_id:
+                save_radist_lead_id(user_id, new_lead_id)
+
+            final_lead_id = new_lead_id or lead_id
+            if final_lead_id:
+                await finalize_lead(DB_PATH, final_lead_id)
+        except Exception as e:
+            logging.warning(f"⚠️ [RADIST BITRIX] finalize_timeout error: {e}")
+
+    log(f"⏱️ [TIMEOUT] {finish_type} для user_key={user_key}, user_id={user_id}")
+
+    radist_reminder_tasks.pop(user_key, None)
+    radist_reminder_sent.pop(user_key, None)
+
+
+async def radist_send_reminder(
+    user_key: str,
+    user_id: int,
+    channel: str,
+    chat_id: int,
+    connection_id: int,
+    phone: str,
+    user_name: str,
+):
+    """Отправляет напоминание через 60 мин (сценарий Б)."""
+    log(
+        f"⏳ [TIMEOUT-Б] Запущен для {user_name}, "
+        f"user_key={user_key}, ждём {TIMEOUT_REMINDER}с"
+    )
+    try:
+        await asyncio.sleep(TIMEOUT_REMINDER)
+
+        if not _is_radist_dialog_active(user_id):
+            return
+
+        state = state_manager.get_state(user_id)
+        if state and state.meeting_agreed:
+            return
+
+        history = get_history(channel, chat_id)
+        if not history:
+            return
+
+        last_msg = history[-1]
+        if last_msg.get("role") != "assistant":
+            return
+
+        # Отправляем напоминание через Radist
+        reminder_text = random.choice(REMINDER_PHRASES).format(name=user_name)
+        success = await send_message(connection_id, chat_id, reminder_text)
+        if success:
+            contact_id = 0  # Не критично для напоминания
+            save_message(
+                channel,
+                connection_id,
+                chat_id,
+                contact_id,
+                phone,
+                "assistant",
+                reminder_text,
+            )
+            log(f"⏰ [RADIST] Напоминание → {user_name}")
+            await notify_observer(channel, phone, user_name, "out", reminder_text)
+
+        radist_reminder_sent[user_key] = True
+
+        # Ждём ещё 15 мин
+        await asyncio.sleep(TIMEOUT_AFTER_REMINDER)
+
+        if not _is_radist_dialog_active(user_id):
+            return
+
+        last_time = _get_radist_last_message_time(channel, chat_id)
+        if (
+            last_time
+            and (datetime.now().timestamp() - last_time) >= TIMEOUT_AFTER_REMINDER - 30
+        ):
+            await _radist_finalize_timeout(
+                user_key,
+                user_id,
+                channel,
+                chat_id,
+                connection_id,
+                phone,
+                user_name,
+                "no_response_after_reminder",
+            )
+    except asyncio.CancelledError:
+        log(f"⏳ [TIMEOUT-Б] Отменён для {user_key}")
+    except Exception as e:
+        log(f"❌ [TIMEOUT-Б] Ошибка для {user_key}: {e}")
+
+
+async def radist_timeout_no_response(
+    user_key: str,
+    user_id: int,
+    channel: str,
+    chat_id: int,
+    connection_id: int,
+    phone: str,
+    user_name: str,
+):
+    """Сценарий А: 0 сообщений от клиента → 15 мин → финализация."""
+    log(
+        f"⏳ [TIMEOUT-A] Запущен для {user_name}, "
+        f"user_key={user_key}, ждём {TIMEOUT_NO_RESPONSE}с"
+    )
+    try:
+        await asyncio.sleep(TIMEOUT_NO_RESPONSE)
+
+        if not _is_radist_dialog_active(user_id):
+            log(f"⏳ [TIMEOUT-A] Диалог не активен для {user_key}, пропускаем")
+            return
+
+        user_count = _count_radist_user_messages(channel, chat_id)
+        if user_count > 1:
+            # >1 потому что первое сообщение — триггер, ответ клиента = 2+
+            log(f"⏳ [TIMEOUT-A] Клиент ответил ({user_count} msgs), пропускаем")
+            return
+
+        log(f"⏳ [TIMEOUT-A] Финализируем — 0 ответов для {user_key}")
+        await _radist_finalize_timeout(
+            user_key,
+            user_id,
+            channel,
+            chat_id,
+            connection_id,
+            phone,
+            user_name,
+            "no_response",
+        )
+    except asyncio.CancelledError:
+        log(f"⏳ [TIMEOUT-A] Отменён для {user_key}")
+    except Exception as e:
+        log(f"❌ [TIMEOUT-A] Ошибка для {user_key}: {e}")
 
 
 # ============================================
@@ -450,6 +758,7 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
     channel_offset = {"max": 1000000, "telegram": 2000000, "whatsapp": 3000000}
     offset = channel_offset.get(channel, 9000000)
     user_id = -(offset + chat_id)
+    user_key = f"{channel}:{chat_id}"
 
     if not user_name:
         user_name = phone
@@ -457,18 +766,55 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
     emoji = CHANNEL_EMOJI.get(channel, "📨")
     log(f"{emoji} [{channel.upper()}] {phone}: {combined_message}")
 
+    # Отмена предыдущих таймеров при новом сообщении
+    if user_key in radist_reminder_tasks:
+        radist_reminder_tasks[user_key].cancel()
+    radist_reminder_sent.pop(user_key, None)
+
     # ════════════════════════════════════════════════════════════════════════
     # Source routing: распознаём объект из первого сообщения
     # ════════════════════════════════════════════════════════════════════════
     from config.source_objects import detect_source
 
     obj_config, clean_text = detect_source(combined_message)
+    is_first_atl = False
     if obj_config:
         state_manager.update_state(user_id, {"source_object": obj_config["key"]})
         log(
-            f"🏷️ [{channel.upper()}] Объект распознан: {obj_config['short_name']} → source_object={obj_config['key']}"
+            f"🏷️ [{channel.upper()}] Объект распознан: "
+            f"{obj_config['short_name']} → source_object={obj_config['key']}"
         )
         combined_message = clean_text
+        is_first_atl = obj_config.get("key") == "atlantis"
+
+    # ════════════════════════════════════════════════════════════════════════
+    # Bitrix: привязка к лиду при первом ATL-сообщении
+    # ════════════════════════════════════════════════════════════════════════
+    if is_first_atl:
+        try:
+            lead_data = await find_recent_atlantis_lead()
+            if lead_data:
+                existing_lead_id = lead_data["id"]
+                save_radist_lead_id(user_id, existing_lead_id)
+
+                orig_assigned = lead_data.get("assigned_by_id")
+                if orig_assigned:
+                    save_original_assigned(DB_PATH, existing_lead_id, orig_assigned)
+
+                await set_lead_assigned(existing_lead_id, SOFIA_AI_USER_ID)
+
+                radist_info = f"Radist {channel}: {phone or user_name}"
+                await update_lead(
+                    existing_lead_id,
+                    comments=(f"{radist_info}\n" f"София подключена к диалогу."),
+                )
+                log(
+                    f"🔗 [BITRIX] Привязан к лиду Тильды #{existing_lead_id} "
+                    f"для radist user {user_id}, original_assigned={orig_assigned}"
+                )
+        except Exception as e:
+            logging.warning(f"⚠️ [RADIST BITRIX] find_recent_atlantis_lead error: {e}")
+
     # Сохраняем входящее сообщение
     save_message(
         channel, connection_id, chat_id, contact_id, phone, "user", combined_message
@@ -476,6 +822,13 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
 
     # Отправляем в Observer
     await notify_observer(channel, phone, user_name, "in", combined_message)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # Guard: manager_active — София молчит
+    # ════════════════════════════════════════════════════════════════════════
+    if is_manager_active(DB_PATH, user_id):
+        log(f"🛑 [{channel.upper()}] manager_active=1 для user_id={user_id}, молчим")
+        return {"response": None, "send_callback": None}
 
     # Получаем историю
     history = get_history(channel, chat_id, limit=100)
@@ -502,7 +855,7 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
 
     if response is None:
         log(f"🔇 [{channel.upper()}] Ответ не требуется — молчим")
-        return
+        return {"response": None, "send_callback": None}
 
     # Callback для отправки (вызывается после проверки очереди)
     async def send_callback():
@@ -513,6 +866,90 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
         if success:
             log(f"{emoji} [{channel.upper()}] → {user_name}: {response[:50]}...")
             await notify_observer(channel, phone, user_name, "out", response)
+
+        # ════════════════════════════════════════════════════════════════
+        # Bitrix: meeting_agreed → финализация
+        # ════════════════════════════════════════════════════════════════
+        state_fresh = state_manager.get_state(user_id)
+        meeting_ok = bool(getattr(state_fresh, "meeting_agreed", False))
+        if meeting_ok and not getattr(state_fresh, "dialog_finished", False):
+            state_manager.update_state(
+                user_id, {"dialog_finished": True, "finish_type": "meeting"}
+            )
+            state_fresh = state_manager.get_state(user_id)
+            log(f"✅ [RADIST] meeting_agreed → финализация для user {user_id}")
+
+        is_final = bool(getattr(state_fresh, "dialog_finished", False))
+
+        # ════════════════════════════════════════════════════════════════
+        # Bitrix CRM: только для source-сессий (ATL и др.)
+        # ════════════════════════════════════════════════════════════════
+        if _is_radist_bitrix_session(user_id):
+            try:
+                history_fresh = get_history(channel, chat_id, limit=100)
+                lead_id = get_radist_lead_id(user_id)
+
+                new_lead_id = await create_or_update_lead(
+                    lead_id,
+                    user_name,
+                    state_fresh,
+                    history_fresh,
+                    is_final=is_final,
+                    channel="radist_telegram",
+                )
+                if new_lead_id and not lead_id:
+                    save_radist_lead_id(user_id, new_lead_id)
+                    log(
+                        f"🏷️ [BITRIX] Лид #{new_lead_id} создан "
+                        f"для radist user {user_id}"
+                    )
+                elif lead_id:
+                    log(
+                        f"🔄 [BITRIX] Лид #{lead_id} обновлён "
+                        f"для radist user {user_id}"
+                    )
+
+                if is_final:
+                    final_lead_id = new_lead_id or lead_id
+                    if final_lead_id:
+                        await finalize_lead(DB_PATH, final_lead_id)
+            except Exception as e:
+                logging.warning(f"⚠️ [RADIST BITRIX] create_or_update error: {e}")
+
+        # ════════════════════════════════════════════════════════════════
+        # Таймеры (если диалог не финализирован)
+        # ════════════════════════════════════════════════════════════════
+        if not is_final:
+            if user_key in radist_reminder_tasks:
+                radist_reminder_tasks[user_key].cancel()
+            radist_reminder_sent.pop(user_key, None)
+
+            if is_first_atl:
+                # Сценарий А: первый ATL-контакт → 15 мин без ответа → finalize
+                radist_reminder_tasks[user_key] = asyncio.create_task(
+                    radist_timeout_no_response(
+                        user_key,
+                        user_id,
+                        channel,
+                        chat_id,
+                        connection_id,
+                        phone,
+                        user_name,
+                    )
+                )
+            else:
+                # Сценарий Б: диалог идёт → 60 мин → reminder → 15 мин → finalize
+                radist_reminder_tasks[user_key] = asyncio.create_task(
+                    radist_send_reminder(
+                        user_key,
+                        user_id,
+                        channel,
+                        chat_id,
+                        connection_id,
+                        phone,
+                        user_name,
+                    )
+                )
 
     return {"response": response, "send_callback": send_callback}
 

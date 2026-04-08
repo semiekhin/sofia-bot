@@ -15,6 +15,7 @@ import logging
 import os
 import re
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
 
@@ -34,6 +35,7 @@ BITRIX_LIST_URL = BITRIX_BASE_URL + "crm.lead.list"
 BITRIX_SOURCE_ID = os.getenv("BITRIX_SOURCE_ID", "504")
 BITRIX_ASSIGNED_ID = int(os.getenv("BITRIX_ASSIGNED_ID", "426"))
 BITRIX_ATLANTIS_SOURCE_ID = "397"  # Источник Тильда/Атлантис
+ATLANTIS_LEAD_MATCH_WINDOW_SECONDS = 60  # Окно матчинга: Тильда → Telegram за 60 сек
 SOFIA_AI_USER_ID = 428  # Сотрудник "Sofia AI" — ответственный на время квалификации
 BITRIX_BP_ASSIGNED_ID = int(
     os.getenv("BITRIX_BP_ASSIGNED_ID", "24932")
@@ -217,11 +219,16 @@ async def find_lead_by_phone(phone: str) -> int | None:
 
 
 async def find_recent_atlantis_lead() -> dict | None:
-    """Найти последний лид с SOURCE_ID=397 (Тильда/Атлантис).
+    """Найти последний лид с SOURCE_ID=397 (Тильда/Атлантис) за последние 60 секунд.
     Возвращает dict с ID и ASSIGNED_BY_ID или None.
     """
+    msk = timezone(timedelta(hours=3))
+    cutoff = datetime.now(msk) - timedelta(seconds=ATLANTIS_LEAD_MATCH_WINDOW_SECONDS)
+    cutoff_str = cutoff.strftime("%Y-%m-%dT%H:%M:%S+03:00")
+
     params = {
         "filter[SOURCE_ID]": BITRIX_ATLANTIS_SOURCE_ID,
+        "filter[>=DATE_CREATE]": cutoff_str,
         "order[DATE_CREATE]": "DESC",
         "select[]": ["ID", "TITLE", "DATE_CREATE", "ASSIGNED_BY_ID"],
         "start": 0,
@@ -231,6 +238,12 @@ async def find_recent_atlantis_lead() -> dict | None:
             async with session.get(BITRIX_LIST_URL, params=params) as resp:
                 result = await resp.json()
                 leads = result.get("result", [])
+                log.info(
+                    f"🔗 [BITRIX] find_recent_atlantis_lead: "
+                    f"фильтр DATE_CREATE >= {cutoff_str}, "
+                    f"SOURCE_ID={BITRIX_ATLANTIS_SOURCE_ID}, "
+                    f"найдено: {len(leads)} лидов"
+                )
                 if leads:
                     lead = leads[0]
                     lead_id = int(lead["ID"])
@@ -244,7 +257,6 @@ async def find_recent_atlantis_lead() -> dict | None:
                         "id": lead_id,
                         "assigned_by_id": int(assigned) if assigned else None,
                     }
-                log.info("🔗 [BITRIX] Лидов Тильды не найдено")
                 return None
     except Exception as e:
         log.error(f"❌ [BITRIX] find_recent_atlantis_lead error: {e}")
@@ -454,13 +466,43 @@ def get_session_id_by_user_id(db_path: str, user_id: int) -> str | None:
 
 
 def find_user_id_by_lead(db_path: str, lead_id: int) -> int | None:
-    """Найти user_id по bitrix_lead_id (web_sessions)."""
+    """Найти user_id по bitrix_lead_id (web_sessions → telegram_leads → radist_leads)."""
     conn = sqlite3.connect(db_path)
     c = conn.cursor()
+
+    # 1. web_sessions
     c.execute("SELECT user_id FROM web_sessions WHERE bitrix_lead_id = ?", (lead_id,))
     row = c.fetchone()
+    if row:
+        conn.close()
+        return row[0]
+
+    # 2. telegram_leads
+    try:
+        c.execute(
+            "SELECT user_id FROM telegram_leads WHERE bitrix_lead_id = ?", (lead_id,)
+        )
+        row = c.fetchone()
+        if row:
+            conn.close()
+            return row[0]
+    except Exception:
+        pass  # таблица может не существовать
+
+    # 3. radist_leads
+    try:
+        c.execute(
+            "SELECT user_id FROM radist_leads WHERE bitrix_lead_id = ?", (lead_id,)
+        )
+        row = c.fetchone()
+        if row:
+            conn.close()
+            return row[0]
+    except Exception:
+        pass  # таблица может не существовать
+
     conn.close()
-    return row[0] if row else None
+    return None
 
 
 # ============================================================
