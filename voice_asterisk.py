@@ -69,7 +69,7 @@ LLM_PROXY_BASE = os.getenv("LLM_PROXY_BASE", "http://72.56.64.91:8095")
 # ElevenLabs settings (via proxy)
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "YjESejviApN7SHrbfnA2")  # Nastya
-ELEVENLABS_MODEL = "eleven_turbo_v2_5"
+ELEVENLABS_MODEL = "eleven_multilingual_v2"
 
 # Yandex SpeechKit settings (direct, no proxy needed)
 YANDEX_STT_URL = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize"
