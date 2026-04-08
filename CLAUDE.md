@@ -120,11 +120,18 @@ ssh sofia-voice "fuser -k 9090/tcp; sleep 1; cd /opt/sofia-voice && nohup venv/b
 ssh sofia-voice "cat /tmp/audiosocket.log"
 ```
 
+**VOICE_PROMPT_MODE (08.04):**
+- env-переменная `VOICE_PROMPT_MODE`: `atlantis` (default) или `rizalta`
+- Переключает greeting в `voice_asterisk.py` (`_send_greeting()`) и system prompt в `core/pipeline.py` (`stream_voice_response()`)
+- На VPS `.env`: `VOICE_PROMPT_MODE=rizalta`
+- `VOICE_SYSTEM_PROMPT` — Atlantis (входящая квалификация), НЕ ТРОГАТЬ
+- `VOICE_SYSTEM_PROMPT_RIZALTA` — RIZALTA goal-oriented промпт (исходящий обзвон)
+
 **ElevenLabs TTS:**
 - Nastya — Professional Voice Clone (PVC). ElevenLabs рекомендует для PVC использовать **Multilingual v2**, НЕ v3
-- В коде: `eleven_turbo_v2_5` (voice_asterisk.py) / `eleven_flash_v2_5` (voice_pipecat.py) — компромисс скорость/качество
+- В коде: `eleven_multilingual_v2` (voice_asterisk.py, переключено 08.04) / `eleven_flash_v2_5` (voice_pipecat.py)
 - Настройки (07.04): stability=0.35, similarity_boost=0.79, speed=1.19
-- TODO: протестировать `eleven_multilingual_v2` — лучше качество PVC, но неизвестна latency streaming
+- Статус (08.04): multilingual_v2 протестирован, качество ударений требует тюнинга
 
 **Стадии (RAG stages):** GREETING → ACTUALIZATION → QUALIFICATION → PRESENTATION → OBJECTION → MEETING → CLOSING
 
