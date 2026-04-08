@@ -62,7 +62,7 @@ Python 3.12, FastAPI, SQLite, OpenAI gpt-5.2 (Responses API), ChromaDB (RAG, tex
 │    │                                                                 │
 │    ▼ AudioSocket (TCP localhost:9090)                                │
 │ voice_asterisk.py:                                                   │
-│    ├─ VAD (energy-based, 0.7s silence threshold)                    │
+│    ├─ VAD (energy-based, 0.4s silence threshold)                    │
 │    ├─ Barge-in detection (5+ frames, cancel TTS)                    │
 │    ├─ STT: Yandex SpeechKit REST v1 (~300ms) ──── напрямую         │
 │    ├─ LLM: Groq llama-4-scout (~500ms) ────────── через proxy ──┐  │
@@ -77,19 +77,21 @@ Python 3.12, FastAPI, SQLite, OpenAI gpt-5.2 (Responses API), ChromaDB (RAG, tex
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-**Почему 2 сервера:** Телфин блокирует SIP по IP (403 Forbidden Ip) — VPS в белом списке. Groq/OpenAI/ElevenLabs блокируют Россию — proxy через нидерландский сервер.
+**Архитектурное решение (08.04.2026):** Двухсерверная архитектура — **постоянная**, не временная. Телфин не меняет GeoIP настройки, задача переноса Asterisk на NL-сервер закрыта как невыполнимая. Proxy на 72.56.64.91 = production-компонент, не костыль. +20-30ms на API запрос — приемлемо.
+- Телфин блокирует SIP по IP (403 Forbidden Ip) — VPS в белом списке
+- Groq/OpenAI/ElevenLabs блокируют Россию — proxy через нидерландский сервер
 
 **AudioSocket протокол (TCP):**
 - Пакет: `[1 byte type][2 bytes length BE][payload]`
 - UUID=0x01 (16 bytes binary), Audio=0x10 (slin 8kHz), Hangup=0x00, Error=0xFF
 - Телфин отправляет INVITE на extension 's'
 
-**Тайминги (конец речи → первый звук ответа):**
-- VAD silence: 700ms (клиент сам молчит)
+**Тайминги (конец речи → первый звук ответа, обновлено 07.04):**
+- VAD silence: 400ms (снижено с 700ms)
 - STT (Yandex): ~300ms
 - LLM (Groq via proxy): ~500ms
-- TTS first byte (ElevenLabs streaming via proxy): ~500ms
-- **Итого: ~1300ms ощущаемая пауза**
+- TTS first byte (ElevenLabs streaming via proxy): ~450-700ms
+- **Итого: ~1000ms ощущаемая пауза**
 
 **TTS streaming:** ElevenLabs `/stream` endpoint + `optimize_streaming_latency=4` → MP3 stream → ffmpeg pipe → 8kHz PCM → AudioSocket фреймы (320 bytes = 20ms)
 
@@ -117,6 +119,12 @@ ssh sofia-voice "fuser -k 9090/tcp; sleep 1; cd /opt/sofia-voice && nohup venv/b
 # Проверить логи
 ssh sofia-voice "cat /tmp/audiosocket.log"
 ```
+
+**ElevenLabs TTS:**
+- Nastya — Professional Voice Clone (PVC). ElevenLabs рекомендует для PVC использовать **Multilingual v2**, НЕ v3
+- В коде: `eleven_turbo_v2_5` (voice_asterisk.py) / `eleven_flash_v2_5` (voice_pipecat.py) — компромисс скорость/качество
+- Настройки (07.04): stability=0.35, similarity_boost=0.79, speed=1.19
+- TODO: протестировать `eleven_multilingual_v2` — лучше качество PVC, но неизвестна latency streaming
 
 **Стадии (RAG stages):** GREETING → ACTUALIZATION → QUALIFICATION → PRESENTATION → OBJECTION → MEETING → CLOSING
 
@@ -180,6 +188,29 @@ ssh sofia-voice "cat /tmp/audiosocket.log"
 - После задачи: `flake8 + black` → коммит
 - Деплой в прод: только по явной команде "YES"
 - User ID формулы критичны — коллизия = смешанные чаты
+
+### Парадигмы каналов
+
+- **Atlantis** = только текстовые каналы (Telegram/Web/Radist). Голоса для Atlantis НЕ существует
+- **Голосовой канал** = отдельный продукт. Первый сценарий — исходящий обзвон по RIZALTA
+- НЕ путать! Не нужно "переписывать промпт для Atlantis-голоса"
+
+### Уроки из тестовых голосовых звонков (07.04)
+
+- **LLM выдумывает телефоны** — "+7 123 456 78 90" → нужен жёсткий запрет в промпте + regex post-processing
+- **Бессвязная склейка** — "В Сочи → в Туапсе" → нужна явная логика бюджет → допустимые локации
+- **Мусор STT** — "Эротика", "Зависят облака" → нужен фильтр перед LLM (confidence / классификатор)
+- **Длинные ответы** — 240 символов при лимите "1-2 предложения" → soft constraint не работает, нужен max_tokens=80 + "25 слов" в промпте
+- **Стадии не соблюдаются** — звонок 3 пропустил оплату → нужен детерминированный `compute_next_required_question(state)` инжектируемый в промпт
+
+### Структура V6 промпта (черновик)
+
+1. Жёсткие запреты в начале (LLM видит при каждой генерации)
+2. `{stage}` + `{state_summary}` + `{next_required_question}` блок
+3. Явная логика бюджет → локация (исключающие диапазоны)
+4. Defensive блок про мусор STT
+5. Few-shot 6-8 примеров без противоречий со скриптом
+6. Стилистические правила в конце
 
 ### Уроки из ошибок
 
