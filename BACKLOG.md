@@ -2,11 +2,12 @@
 
 ## P0 — Срочно
 
-- [ ] **RIZALTA промпт тонкая настройка** — диалог обрывается, качество плохое. Анализ логов звонков, тюнинг ElevenLabs params (stability/similarity/speed), проверка latency eleven_multilingual_v2 vs turbo_v2_5, max_tokens, итерации промпта
-- [ ] **B1: Filler звуки для голосового стека** — записать через ElevenLabs Nastya: "Мхм...", "Так...", "Да...", "Секундочку...", "Хороший вопрос...". Кешировать как PCM, проигрывать сразу после VAD trigger пока STT+LLM работают
-- [ ] **A3: LLM streaming + sentence-level TTS** — Groq стримит ответ, по предложениям отправляем в ElevenLabs не дожидаясь конца. Предложение = законченная интонационная единица
-- [ ] **Фаза 4: systemd + health check** — sofia-voice-asterisk.service, Restart=always, health endpoint с таймингами
-- [ ] **Proxy monitoring** — алерт если 8095 упал, автоперезапуск nginx, логирование запросов через proxy
+- [ ] **Ударения ElevenLabs** — Flash v2.5 ~80% точность на русском. Варианты: (a) pronunciation dictionary (нужен Scale план $99/мес), (b) предобработка текста через RUAccent/silero-stress, (c) Yandex SpeechKit gRPC v3 как TTS (99% ударений, но нет voice cloning)
+- [ ] **Паузы между фразами** — `add_ssml_breaks()` работает, но `<break>` в больших количествах вызывает артефакты. Нужен тюнинг: оптимальное время паузы, максимум breaks, может ли быть лучше через post-processing аудио
+- [ ] **B1: Filler звуки** — записать через ElevenLabs Nastya: "Угу...", "Так...", "Секундочку...". Кешировать как PCM, проигрывать сразу после VAD trigger. Даёт ~500ms «бесплатной» маскировки латентности
+- [ ] **A3: Sentence-level TTS streaming** — Groq стримит → по предложениям → ElevenLabs. Ожидаемый gain: -100-200ms
+- [ ] **Фаза 4: systemd + health check** — sofia-voice-asterisk.service, Restart=always
+- [ ] **Proxy monitoring** — алерт если 8095 упал
 
 ## P1 — Следующая итерация
 
@@ -24,11 +25,10 @@
 ## P2 — Улучшения Voice
 
 - [x] ~~**Добавить IP 72.56.64.91 в белый список Телфин**~~ — закрыто 08.04: Телфин не меняет GeoIP, двухсерверная архитектура — постоянное решение
-- [ ] **ElevenLabs WebSocket API** — persistent connection вместо HTTP на каждый TTS запрос (-100-200ms)
-- [ ] **Yandex STT gRPC v3 streaming** — вместо REST, параллельно с речью клиента (-200ms). Известная проблема: turn detection
-- [ ] **Yandex TTS gRPC v3 + unsafe_mode** — правильные ударения для русского
+- [ ] **Yandex STT gRPC v3 streaming** — вместо REST, параллельно с речью клиента (-200ms). Proto файлы уже в yandex_proto/. Gain: -150-200ms
+- [ ] **Architecture A: Hybrid Brain** — async gpt-5.2+RAG «мозг» после каждого хода → stage_directive для kimi-k2. Качество текстовой Софии + скорость голосовой
+- [ ] **Architecture B: Pre-recorded Bank** — 60 WAV-фраз покрывают 70% реплик, LLM-роутер выбирает код фразы. Gain: 350ms на 70% ходов
 - [ ] **WebRTC кнопка в веб-виджете** — голосовой звонок в браузере
-- [ ] **Yandex AI Studio (Alice AI / Qwen3-235B)** — серверы в РФ, лучший русский, без proxy
 - [ ] **OpenAI Realtime API** — Voice V3, нативный voice-to-voice
 
 ## P3 — Техдолг / Стратегия
@@ -39,6 +39,14 @@
 - [ ] **Чистка мусора в prod** — лишние файлы
 - [ ] **core/channel.py, core/observer.py** — рефакторинг каналов
 - [ ] **BUG-004 EN-раскладка** — обработка латиницы в сообщениях
+
+## Завершено (09.04.2026)
+
+- [x] **Radist dedup fix** — save_message+notify_observer вынесены из цикла queue, одна запись на пачку сообщений (DEV+PROD)
+- [x] **Voice Research Sprint** — 54 аудиосемпла, 9 LLM, 16 TTS, 7 STT, отчёт RESEARCH_REPORT_VOICE_AGENT_v1.md
+- [x] **Voice Stack Tuning v2** — kimi-k2 LLM, Flash v2.5 TTS, новые VoiceSettings, VAD 300ms, SSML breaks
+- [x] **RIZALTA Prompt v2** — канонический питч, «всегда вопрос», Софья→София, 6 примеров диалогов
+- [x] **Groq платный план** — решено через kimi-k2 (throttling не наблюдается)
 
 ## Завершено (28.03–06.04.2026)
 

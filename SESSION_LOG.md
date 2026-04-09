@@ -1,5 +1,53 @@
 # SESSION_LOG — Последние сессии
 
+## 09.04.2026 — Radist dedup fix + Voice Research + Voice Stack Tuning v2 + RIZALTA Prompt v2
+
+**Сделано:**
+
+### 1. Диагностика и фикс дублирования сообщений в Radist (DIAG+FIX)
+- Диагностика: клиентские реплики дублировались кумулятивно в radist_messages, Observer и Bitrix COMMENTS
+- Причина: `save_message()` и `notify_observer()` вызывались на каждой итерации `_process_loop` в message_queue.py
+- Фикс: вынос save/notify в замыкание `save_user_and_notify()`, вызов один раз через `send_callback`
+- Доп. фикс: `get_history()` ORDER BY timestamp → id (устранение недетерминированности)
+- DEV коммит: `7f4c96a2`, PROD cherry-pick: `3892c648`
+- Деплой в PROD: рестарт sofia-radist.service, подтверждён работающим
+
+### 2. Voice Research Sprint (3 часа, 3 параллельных агента)
+- Протестировано: 9 LLM (Groq+OpenAI), 16 TTS движков, 7 STT
+- Сгенерировано: 23 коротких + 12 длинных + 19 finalists = 54 аудиофайла
+- Главное открытие: **kimi-k2-instruct** на Groq — лучший русский для голоса (TTFT ~300ms, качество 5/5)
+- ElevenLabs Flash v2.5 = Turbo v2.5 (deprecated) — 3x быстрее MLv2
+- Yandex SpeechKit: лучшие ударения (99%), но нет voice cloning
+- Отчёт: `docs/RESEARCH_REPORT_VOICE_AGENT_v1.md`
+- Семплы: `voice_samples_v2/` (short + long + finalists)
+
+### 3. Voice Stack Tuning v2 (деплой на VPS sofia-voice)
+- LLM: llama-4-scout → **kimi-k2-instruct** (устранение Йода-русского)
+- TTS: eleven_multilingual_v2 → **eleven_flash_v2_5** (TTFB 960ms→300ms)
+- VoiceSettings: stability 0.35→0.50, similarity 0.79→0.85, speed 1.19→1.10
+- max_tokens: 400→150
+- VAD: 0.4→0.3
+- SSML: `add_ssml_breaks()` — автовставка `<break time="0.3s"/>` между предложениями (без `<speak>` обёртки!)
+
+### 4. RIZALTA Prompt v2
+- Полностью новый промпт: канонический питч (дословный), ГЛАВНОЕ ПРАВИЛО «всегда вопрос после информации», 6 примеров диалогов
+- Софья → София (глобально в RIZALTA)
+- Greeting: «Здравствуйте! Это София, агентство Оазис. Вам удобно сейчас разговаривать?»
+- Первый тестовый звонок — «в целом приемлемо, не идеально, ударения и паузы требуют доработки»
+
+### Баг найден и пофиксен в процессе
+- `<speak>` обёртка SSML ломала ElevenLabs streaming endpoint (30s timeout) — убрана, breaks идут инлайн
+
+**Ключевые метрики:**
+- Латентность: ~1000ms → ~600-700ms (perceived)
+- Качество русского LLM: 3/5 → 5/5 (kimi-k2 vs llama-4-scout)
+- TTS TTFB: ~960ms → ~300ms
+
+**Коммиты DEV:** `7f4c96a2` (radist dedup)
+**Файлы на VPS:** voice_asterisk.py, core/pipeline.py, .env (прямые правки, без git)
+
+---
+
 ## 08.04.2026 — Bitrix-Radist интеграция + RIZALTA промпт + git recovery
 
 **Сделано:**

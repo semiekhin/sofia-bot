@@ -40,7 +40,7 @@ Python 3.12, FastAPI, SQLite, OpenAI gpt-5.2 (Responses API), ChromaDB (RAG, tex
 6. **Object context:** при `source_object` → инъекция карточки объекта + presentation_url в system prompt
 
 **stream_voice_response()** — голосовой pipeline (используется в voice_asterisk.py и voice_api.py):
-- Модель: Groq `llama-4-scout-17b-16e-instruct` (primary), OpenAI `gpt-5.4-mini` (fallback)
+- Модель: Groq `kimi-k2-instruct` (primary, переключено 09.04 с llama-4-scout), OpenAI `gpt-5.4-mini` (fallback)
 - `max_tokens=400`, **без RAG** (скорость), без Analyzer
 - Rule-based state extraction ДО LLM: goal, budget, payment_type, meeting_agreed
 - VOICE_SYSTEM_PROMPT: компактный промпт со скриптом продаж и примерами
@@ -65,7 +65,7 @@ Python 3.12, FastAPI, SQLite, OpenAI gpt-5.2 (Responses API), ChromaDB (RAG, tex
 │    ├─ VAD (energy-based, 0.4s silence threshold)                    │
 │    ├─ Barge-in detection (5+ frames, cancel TTS)                    │
 │    ├─ STT: Yandex SpeechKit REST v1 (~300ms) ──── напрямую         │
-│    ├─ LLM: Groq llama-4-scout (~500ms) ────────── через proxy ──┐  │
+│    ├─ LLM: Groq kimi-k2 (~300ms) ───────────────── через proxy ──┐  │
 │    └─ TTS: ElevenLabs Nastya streaming (~500ms) ── через proxy ─┤  │
 └─────────────────────────────────────────────────────────────────┘  │
                                                                       │
@@ -86,12 +86,12 @@ Python 3.12, FastAPI, SQLite, OpenAI gpt-5.2 (Responses API), ChromaDB (RAG, tex
 - UUID=0x01 (16 bytes binary), Audio=0x10 (slin 8kHz), Hangup=0x00, Error=0xFF
 - Телфин отправляет INVITE на extension 's'
 
-**Тайминги (конец речи → первый звук ответа, обновлено 07.04):**
-- VAD silence: 400ms (снижено с 700ms)
+**Тайминги (конец речи → первый звук ответа, обновлено 09.04):**
+- VAD silence: 300ms (снижено с 400ms, 09.04)
 - STT (Yandex): ~300ms
-- LLM (Groq via proxy): ~500ms
-- TTS first byte (ElevenLabs streaming via proxy): ~450-700ms
-- **Итого: ~1000ms ощущаемая пауза**
+- LLM (Groq kimi-k2 via proxy): ~300ms (было ~500ms с llama-4-scout)
+- TTS first byte (ElevenLabs Flash v2.5 via proxy): ~300ms (было ~960ms с MLv2)
+- **Итого: ~600-700ms ощущаемая пауза** (было ~1000ms)
 
 **TTS streaming:** ElevenLabs `/stream` endpoint + `optimize_streaming_latency=4` → MP3 stream → ffmpeg pipe → 8kHz PCM → AudioSocket фреймы (320 bytes = 20ms)
 
@@ -127,11 +127,15 @@ ssh sofia-voice "cat /tmp/audiosocket.log"
 - `VOICE_SYSTEM_PROMPT` — Atlantis (входящая квалификация), НЕ ТРОГАТЬ
 - `VOICE_SYSTEM_PROMPT_RIZALTA` — RIZALTA goal-oriented промпт (исходящий обзвон)
 
-**ElevenLabs TTS:**
-- Nastya — Professional Voice Clone (PVC). ElevenLabs рекомендует для PVC использовать **Multilingual v2**, НЕ v3
-- В коде: `eleven_multilingual_v2` (voice_asterisk.py, переключено 08.04) / `eleven_flash_v2_5` (voice_pipecat.py)
-- Настройки (07.04): stability=0.35, similarity_boost=0.79, speed=1.19
-- Статус (08.04): multilingual_v2 протестирован, качество ударений требует тюнинга
+**ElevenLabs TTS (обновлено 09.04):**
+- Nastya — Professional Voice Clone (PVC), voice_id=YjESejviApN7SHrbfnA2
+- Модель: `eleven_flash_v2_5` (переключено 09.04 с multilingual_v2, Turbo v2.5 deprecated → Flash)
+- Flash v2.5 TTFB ~300ms (vs MLv2 ~960ms = 3x быстрее), стоимость 0.5x
+- Настройки (09.04): stability=0.50, similarity_boost=0.85, speed=1.10
+- SSML: `<break time="0.3s"/>` поддерживается (inline, без `<speak>` обёртки). Max 2 breaks на реплику
+- Pronunciation dictionaries: alias-правила доступны, но требуют Scale план ($99/мес) — не используем
+- Ударения: ~80% точность на русском (все модели ElevenLabs одинаково). Yandex SpeechKit лучше (99%), но нет voice cloning
+- `add_ssml_breaks()` — функция в voice_asterisk.py, автоматически вставляет breaks между предложениями
 
 **Стадии (RAG stages):** GREETING → ACTUALIZATION → QUALIFICATION → PRESENTATION → OBJECTION → MEETING → CLOSING
 
