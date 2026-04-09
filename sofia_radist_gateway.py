@@ -256,7 +256,7 @@ def get_history(channel: str, chat_id: int, limit: int = 100) -> list:
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
-        "SELECT role, content FROM radist_messages WHERE channel = ? AND chat_id = ? ORDER BY timestamp DESC LIMIT ?",
+        "SELECT role, content FROM radist_messages WHERE channel = ? AND chat_id = ? ORDER BY id DESC LIMIT ?",
         (channel, chat_id, limit),
     )
     rows = c.fetchall()
@@ -815,20 +815,20 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
         except Exception as e:
             logging.warning(f"⚠️ [RADIST BITRIX] find_recent_atlantis_lead error: {e}")
 
-    # Сохраняем входящее сообщение
-    save_message(
-        channel, connection_id, chat_id, contact_id, phone, "user", combined_message
-    )
-
-    # Отправляем в Observer
-    await notify_observer(channel, phone, user_name, "in", combined_message)
+    # Сохранение клиентского сообщения — вызывается один раз после
+    # опустошения очереди (внутри send_callback), а не на каждой итерации
+    async def save_user_and_notify():
+        save_message(
+            channel, connection_id, chat_id, contact_id, phone, "user", combined_message
+        )
+        await notify_observer(channel, phone, user_name, "in", combined_message)
 
     # ════════════════════════════════════════════════════════════════════════
     # Guard: manager_active — София молчит
     # ════════════════════════════════════════════════════════════════════════
     if is_manager_active(DB_PATH, user_id):
         log(f"🛑 [{channel.upper()}] manager_active=1 для user_id={user_id}, молчим")
-        return {"response": None, "send_callback": None}
+        return {"response": None, "send_callback": save_user_and_notify}
 
     # Получаем историю
     history = get_history(channel, chat_id, limit=100)
@@ -846,7 +846,7 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
     # Если WAIT — не отвечаем
     if result["skip_response"]:
         log(f"⏸️ [{channel.upper()}] WAIT: пропускаем ответ")
-        return {"response": None, "send_callback": None}
+        return {"response": None, "send_callback": save_user_and_notify}
 
     # Генерация ответа
     response = await generate_response(
@@ -855,10 +855,11 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
 
     if response is None:
         log(f"🔇 [{channel.upper()}] Ответ не требуется — молчим")
-        return {"response": None, "send_callback": None}
+        return {"response": None, "send_callback": save_user_and_notify}
 
     # Callback для отправки (вызывается после проверки очереди)
     async def send_callback():
+        await save_user_and_notify()
         save_message(
             channel, connection_id, chat_id, contact_id, phone, "assistant", response
         )
