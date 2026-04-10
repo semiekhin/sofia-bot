@@ -24,7 +24,14 @@ from telegram.ext import (
 )
 
 import os
+import logging
 from dotenv import load_dotenv
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
 from sofia_prompt_v2 import BOT_NAME
 
 try:
@@ -328,6 +335,13 @@ def init_db():
             c.execute(sql)
         except sqlite3.OperationalError:
             pass  # уже существует
+
+    c.execute("""CREATE TABLE IF NOT EXISTS observer_topics_bot (
+        telegram_user_id INTEGER PRIMARY KEY,
+        thread_id INTEGER NOT NULL,
+        user_name TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    )""")
 
     conn.commit()
     conn.close()
@@ -879,6 +893,72 @@ async def timeout_checker_no_response(chat_id, user_name, context):
         log(f"❌ [TIMEOUT-A] Ошибка для chat {chat_id}: {e}")
 
 
+# ============================================
+# OBSERVER — трансляция диалогов в группу
+# ============================================
+
+
+async def get_or_create_bot_topic(bot, telegram_user_id: int, user_name: str):
+    """Получает или создаёт тему для TG-клиента в группе наблюдателей."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "SELECT thread_id FROM observer_topics_bot WHERE telegram_user_id = ?",
+        (telegram_user_id,),
+    )
+    row = c.fetchone()
+    if row:
+        conn.close()
+        return row[0]
+
+    display_name = f"💬 {user_name} (TG)" if user_name else f"💬 TG {telegram_user_id}"
+    try:
+        topic = await bot.create_forum_topic(
+            chat_id=OBSERVER_CHAT_ID, name=display_name[:128]
+        )
+        thread_id = topic.message_thread_id
+        c.execute(
+            "INSERT OR REPLACE INTO observer_topics_bot "
+            "(telegram_user_id, thread_id, user_name) VALUES (?, ?, ?)",
+            (telegram_user_id, thread_id, display_name),
+        )
+        conn.commit()
+        conn.close()
+        return thread_id
+    except Exception as e:
+        logging.warning(f"⚠️ [TG] Observer topic error: {e}")
+        conn.close()
+        return None
+
+
+async def notify_bot_observer(
+    bot, telegram_user_id: int, user_name: str, role: str, content: str
+):
+    """Отправляет копию сообщения в группу наблюдателей."""
+    if not OBSERVER_CHAT_ID:
+        return
+
+    thread_id = await get_or_create_bot_topic(bot, telegram_user_id, user_name)
+
+    if role == "user":
+        text = f"👤 <b>{user_name}:</b>\n{content}"
+    else:
+        text = f"🤖 <b>София:</b>\n{content}"
+
+    if len(text) > 4000:
+        text = text[:4000] + "..."
+
+    try:
+        await bot.send_message(
+            chat_id=OBSERVER_CHAT_ID,
+            message_thread_id=thread_id,
+            text=text,
+            parse_mode="HTML",
+        )
+    except Exception as e:
+        logging.warning(f"⚠️ [TG] Observer send error: {e}")
+
+
 async def delayed_response(chat_id, user_id, user_name, context, tg_user=None):
     await asyncio.sleep(ANTIFLOOD_DELAY)
     unprocessed = get_unprocessed_messages(chat_id)
@@ -895,6 +975,9 @@ async def delayed_response(chat_id, user_id, user_name, context, tg_user=None):
         log(f"⚠️ Накопилось {len(unprocessed)} сообщений от {user_name}")
 
     mark_messages_processed(chat_id)
+
+    # Observer: входящее сообщение клиента
+    await notify_bot_observer(context.bot, user_id, user_name, "user", combined_message)
 
     # ════════════════════════════════════════════════════════════════════════
     # Унифицированная обработка через message_processor
@@ -949,6 +1032,9 @@ async def delayed_response(chat_id, user_id, user_name, context, tg_user=None):
 
     await context.bot.send_message(chat_id=chat_id, text=response)
     log(f"📤 София → {user_name}: {response[:100]}...")
+
+    # Observer: ответ Софии
+    await notify_bot_observer(context.bot, user_id, user_name, "assistant", response)
 
     # meeting_agreed → финализация (логика состояния, не Битрикс)
     state_fresh = state_manager.get_state(user_id)
