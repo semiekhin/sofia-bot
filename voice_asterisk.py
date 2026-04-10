@@ -70,7 +70,7 @@ LLM_PROXY_BASE = os.getenv("LLM_PROXY_BASE", "http://72.56.64.91:8095")
 # ElevenLabs settings (via proxy)
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "YjESejviApN7SHrbfnA2")  # Nastya
-ELEVENLABS_MODEL = "eleven_flash_v2_5"
+ELEVENLABS_MODEL = "eleven_v3"
 
 # Yandex SpeechKit settings (direct, no proxy needed)
 YANDEX_STT_URL = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize"
@@ -187,7 +187,7 @@ async def stream_tts_audio(text: str):
     url = (
         f"{LLM_PROXY_BASE}/elevenlabs/v1/text-to-speech/"
         f"{ELEVENLABS_VOICE_ID}/stream"
-        f"?optimize_streaming_latency=4"
+        # f"?optimize_streaming_latency=4"  # disabled for v3
     )
     headers = {
         "xi-api-key": ELEVENLABS_API_KEY,
