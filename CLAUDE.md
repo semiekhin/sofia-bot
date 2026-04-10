@@ -127,7 +127,7 @@ ssh sofia-voice "cat /tmp/audiosocket.log"
 - `VOICE_SYSTEM_PROMPT` — Atlantis (входящая квалификация), НЕ ТРОГАТЬ
 - `VOICE_SYSTEM_PROMPT_RIZALTA` — RIZALTA goal-oriented промпт (исходящий обзвон)
 
-**ElevenLabs TTS (обновлено 09.04):**
+**ElevenLabs TTS (обновлено 10.04, v3 locked):**
 - Nastya — Professional Voice Clone (PVC), voice_id=YjESejviApN7SHrbfnA2
 - Модель: `eleven_v3` (переключено 10.04 после A/B теста v3 vs MLv2 vs Flash v2.5)
 - v3 TTFB ~700-900ms (медленнее Flash, но значительно лучше просодия и ударения)
@@ -251,7 +251,7 @@ ssh sofia-voice "cat /tmp/audiosocket.log"
 | RADIST_DEV_MODE | true | false | Radist не отправляет ответы |
 | ELEVENLABS_API_KEY | + (Starter) | — | ElevenLabs TTS |
 | YANDEX_SPEECHKIT_API_KEY | + | — | Yandex STT/TTS |
-| GROQ_API_KEY | + | — | Groq (не используется пока) |
+| GROQ_API_KEY | + | — | Groq (kimi-k2 voice LLM) |
 | DAILY_API_KEY | + | — | Daily WebRTC |
 | WEB_API_PORT | 8081 | 8080 | Порт web API |
 
@@ -261,6 +261,8 @@ ssh sofia-voice "cat /tmp/audiosocket.log"
 - `docs/SOFIA_TASKS.md` — задачи и бэклог
 - `docs/KNOWLEDGE_INDEX.md` — лог решений, уроки из ошибок, инструкции отката
 - `docs/VOICE_RESEARCH_2026.md` — исследование голосового стека (50+ решений)
+- `docs/STRESS_RESEARCH.md` — research ударений: ruaccent, U+0301, ElevenLabs (10.04)
+- `docs/ELEVENLABS_V3_RESEARCH.md` — research v3 vs MLv2 vs Flash, API, PVC, pricing (10.04)
 - `SESSION_LOG.md` — последние 10 сессий (компактно)
 - `BACKLOG.md` — невыполненные задачи по приоритетам
 
