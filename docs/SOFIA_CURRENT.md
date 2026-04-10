@@ -1,6 +1,6 @@
 # Текущий статус Sofia-GPT
 
-📅 **Последняя сессия:** 28.03.2026 (Voice Pipeline v2 — новая архитектура)
+📅 **Последняя сессия:** 10.04.2026 (A/B test TTS → Eleven v3 locked)
 
 ## Архитектурная карта: ПРОД vs DEV
 
@@ -91,14 +91,37 @@
 | sofia-radist-dev.service (dev) | 5002 | running | core/pipeline.py |
 | voice_pipecat_daily.py (dev) | 8083 | manual | Pipecat + Daily + core/pipeline.py |
 
-## Тайминги Voice (Retell, 28.03.2026)
+## Голосовой стек (locked 10.04.2026)
+
+**Архитектура:** VPS 185.207.66.201 (Asterisk + AudioSocket) → proxy 72.56.64.91:8095 → Groq/ElevenLabs
+
+| Компонент | Значение |
+|-----------|----------|
+| TTS | **eleven_v3**, Nastya PVC (YjESejviApN7SHrbfnA2) |
+| VoiceSettings | stability=0.50, similarity_boost=0.85, speed=1.10 |
+| LLM | kimi-k2-instruct (Groq via proxy) |
+| STT | Yandex SpeechKit REST v1 |
+| VAD | energy-based, silence threshold 0.3s |
+| max_tokens | 150 |
+| SSML | add_ssml_breaks (0.3s between sentences, max 2) |
+| Prompt | VOICE_SYSTEM_PROMPT_RIZALTA v2 (canonical pitch) |
+
+**Решение по модели (A/B тест 10.04):** v3 выбран за просодию и ударения. Flash v2.5 отклонён (быстрее, но хуже качество). MLv2 отклонён (медленнее v3, не лучше по качеству).
+
+**Тайминги (конец речи → первый звук ответа):**
+| Этап | Время |
+|------|-------|
+| VAD silence | 300ms |
+| STT (Yandex) | ~300ms |
+| LLM (Groq kimi-k2 via proxy) | ~300ms |
+| TTS TTFB (ElevenLabs v3 via proxy) | ~700-900ms |
+| **Итого** | **~900-1100ms** |
+
+## Тайминги Voice (Retell, устаревшее, 28.03.2026)
 
 | Этап | Retell STT | LLM (gpt-5.4-mini) | Retell TTS | Итого |
 |------|------------|---------------------|------------|-------|
 | TTFB | ~300-500ms | 325-900ms | ~200-400ms | **~0.9-1.8с** |
-
-Voice pipeline v2: без RAG (0ms), без Extractor (0ms), промпт 668 токенов, sync LLM.
-Было (v1): RAG 150-800ms + Extractor 3000ms async + промпт 5000 токенов.
 
 ## .env: dev
 

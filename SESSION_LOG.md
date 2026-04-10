@@ -1,5 +1,56 @@
 # SESSION_LOG — Последние сессии
 
+## 10.04.2026 — Stress Research + TTS A/B Test + Eleven v3 Locked
+
+**Сделано:**
+
+### 1. Stress Research (ruaccent + U+0301)
+- ruaccent 1.5.8.3 протестирован на 16 словах-ловушках: **75% точность** (12/16)
+- Латентность ruaccent: **388ms среднее** — превышает порог 200ms в 2x
+- Баг ONNX: `token_type_ids` отсутствует, патч `np.zeros_like(input_ids)` в accent_model.py
+- U+0301 (combining acute accent) — **не документирован** в ElevenLabs
+- Phoneme tags — только для английского, только eleven_flash_v2
+- **Решение: Вариант B — ручной словарь фонетических замен** (0ms, 100% контроль)
+- Отчёт: `docs/STRESS_RESEARCH.md`
+- Тестовые аудио: `voice_samples_v2/stress_test/` (4 mp3)
+
+### 2. TTS Model Research (Flash v2.5 vs MLv2 vs v3)
+- eleven_v3 доступен через API на Starter плане, model_id = `eleven_v3`
+- v3 TTFB = 700-900ms (Flash = 367ms, MLv2 = 585-3060ms)
+- v3 НЕ поддерживает `optimize_streaming_latency`
+- v3 PVC "not fully optimized" по документации, но по факту Nastya звучит хорошо
+- v3 = 2x дороже Flash по кредитам (1 vs 0.5 за символ)
+- Отчёт: `docs/ELEVENLABS_V3_RESEARCH.md`
+- Семплы: `voice_samples_v2/v3_vs_multilingual/` (6 mp3), `voice_samples_v2/stability_test/` (8 mp3)
+
+### 3. Live A/B Test (на реальных звонках)
+- Этап 1: v3 → Сергей: "прекрасно звучит"
+- Этап 2: MLv2 stable (stab=0.7, sim=0.9) → отклонён
+- **Решение: eleven_v3 = production TTS модель**
+- Компромисс: TTFB +400-500ms vs Flash, компенсируется fillers (следующий спринт)
+
+### 4. Sync DEV от VPS
+- VPS → DEV: voice_asterisk.py (Flash v2.5 → v3, add_ssml_breaks, VoiceSettings, RIZALTA prompt v2)
+- Два коммита: `8d468477` (sync), `04d9a710` (v3 adoption)
+
+### 5. CLAUDE.md обновлён
+- ElevenLabs: Flash v2.5 → eleven_v3
+- Тайминги обновлены: TTS TTFB ~700-900ms
+
+**Коммиты DEV:** `8d468477` (sync), `04d9a710` (v3 lock)
+**Файлы:** voice_asterisk.py, core/pipeline.py, docs/STRESS_RESEARCH.md, docs/ELEVENLABS_V3_RESEARCH.md, docs/SOFIA_CURRENT.md, SESSION_LOG.md
+
+**Текущие тайминги (обновлены):**
+- VAD silence: 300ms
+- STT (Yandex): ~300ms
+- LLM (Groq kimi-k2 via proxy): ~300ms
+- TTS TTFB (ElevenLabs v3 via proxy): ~700-900ms
+- **Итого: ~900-1100ms ощущаемая пауза** (было ~600-700ms с Flash)
+
+**Следующий спринт:** Fillers (B1) для маскировки латентности v3
+
+---
+
 ## 09.04.2026 — Radist dedup fix + Voice Research + Voice Stack Tuning v2 + RIZALTA Prompt v2
 
 **Сделано:**

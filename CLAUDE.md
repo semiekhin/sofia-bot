@@ -90,8 +90,8 @@ Python 3.12, FastAPI, SQLite, OpenAI gpt-5.2 (Responses API), ChromaDB (RAG, tex
 - VAD silence: 300ms (снижено с 400ms, 09.04)
 - STT (Yandex): ~300ms
 - LLM (Groq kimi-k2 via proxy): ~300ms (было ~500ms с llama-4-scout)
-- TTS first byte (ElevenLabs Flash v2.5 via proxy): ~300ms (было ~960ms с MLv2)
-- **Итого: ~600-700ms ощущаемая пауза** (было ~1000ms)
+- TTS first byte (ElevenLabs v3 via proxy): ~700-900ms (было ~300ms с Flash v2.5)
+- **Итого: ~900-1100ms ощущаемая пауза** (было ~600-700ms с Flash, качество v3 значительно лучше)
 
 **TTS streaming:** ElevenLabs `/stream` endpoint + `optimize_streaming_latency=4` → MP3 stream → ffmpeg pipe → 8kHz PCM → AudioSocket фреймы (320 bytes = 20ms)
 
@@ -129,8 +129,10 @@ ssh sofia-voice "cat /tmp/audiosocket.log"
 
 **ElevenLabs TTS (обновлено 09.04):**
 - Nastya — Professional Voice Clone (PVC), voice_id=YjESejviApN7SHrbfnA2
-- Модель: `eleven_flash_v2_5` (переключено 09.04 с multilingual_v2, Turbo v2.5 deprecated → Flash)
-- Flash v2.5 TTFB ~300ms (vs MLv2 ~960ms = 3x быстрее), стоимость 0.5x
+- Модель: `eleven_v3` (переключено 10.04 после A/B теста v3 vs MLv2 vs Flash v2.5)
+- v3 TTFB ~700-900ms (медленнее Flash, но значительно лучше просодия и ударения)
+- v3 НЕ поддерживает optimize_streaming_latency
+- v3 стоимость 1x кредит/символ (Flash = 0.5x)
 - Настройки (09.04): stability=0.50, similarity_boost=0.85, speed=1.10
 - SSML: `<break time="0.3s"/>` поддерживается (inline, без `<speak>` обёртки). Max 2 breaks на реплику
 - Pronunciation dictionaries: alias-правила доступны, но требуют Scale план ($99/мес) — не используем
