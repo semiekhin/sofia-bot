@@ -509,3 +509,144 @@ DEV bot_server.py последний коммит `73b14516` (04.04) — бол�
 2. 20-мин safety-net робот в Bitrix — настроен?
 3. Цены в atlantis_context.md актуальны?
 4. Observer в PROD bot_server.py — это deliberate? Нужно ли перенести в DEV?
+
+---
+
+## 8. Переход на @SofiaOazis (08.04)
+
+### A. Код распознавания ATL-триггера в Radist gateway
+
+**Файл:** `/opt/sofia-gpt/sofia_radist_gateway.py` (PROD, идентичен DEV)
+
+**Source routing (строки 774-788):** При каждом входящем сообщении вызывается `detect_source(combined_message)` из `config/source_objects.py`. Ищет ключевые слова `["атлантис", "atlantis", "#ATL"]` в тексте. При совпадении:
+- Устанавливает `source_object = "atlantis"` в `state_manager`
+- Логирует: `🏷️ [TELEGRAM] Объект распознан: АК Атлантис → source_object=atlantis`
+
+**Триггерная фраза:** Prefilled-текст из Business Link — `"Здравствуйте, отправьте, пожалуйста, презентацию АК «Атлантис»"` — содержит ключевое слово **"Атлантис"** → `detect_source()` **срабатывает корректно**.
+
+**Ответ с презентацией:** Формируется pipeline'ом через `run_pipeline()` с `source_object=atlantis`. Контекст из `objects/atlantis_context.md` инжектируется в system prompt, включая `presentation_url`. Подтверждено реальными диалогами — София отвечает: *"Конечно) Вот презентация АК «Атлантис»: https://api.atlantis-invest.ru/objects/atlantis_presentation.pdf"*
+
+**Код подтверждён в PROD:** grep показывает строки 656-663, 777-788 — идентичны DEV.
+
+### B. Bitrix-интеграция Radist для ATL
+
+**Точки вклинивания (подтверждены в PROD):**
+
+| Точка | Строки | Описание | Статус |
+|-------|--------|----------|--------|
+| ТОЧКА 1: Привязка к лиду | 793-816 | `find_recent_atlantis_lead()` → 60с окно → `save_radist_lead_id()` → `set_lead_assigned(428)` | ✅ Работает |
+| ТОЧКА 2: Update на каждое сообщение | (в process_message) | `create_or_update_lead()` при каждом ответе для source-сессий | ✅ Работает |
+| ТОЧКА 3: Финализация по таймауту | 454-492 | `_radist_finalize_timeout()` → `create_or_update_lead(is_final=True)` → `finalize_lead()` | ✅ Работает |
+| ТОЧКА 4: Финализация по meeting_agreed | (в pipeline callback) | `dialog_finished + finish_type=llm_end` → finalize | ✅ Работает |
+
+**Таблица `radist_leads`:**
+
+| user_id | bitrix_lead_id | created_at |
+|---------|----------------|------------|
+| -42073637 | 265164 | 10.04 12:59 |
+| -42061270 | 265094 | 10.04 06:43 |
+| -42056655 | 265062 | 09.04 22:04 |
+| -42051855 | 265028 | 09.04 14:53 |
+| -42032263 | 264876 | 09.04 01:38 |
+| -42025820 | 264756 | 08.04 14:32 |
+| -41048553 | 264842 | 08.04 15:13 |
+| -40927660 | 264844 | 08.04 15:20 |
+
+**8 ATL-привязок через Radist** с 08.04, все с bitrix_lead_id.
+
+### C. Тильда — что стоит сейчас
+
+**invest-apartmens.online/atlantis** (основной лендинг, Яндекс.Директ):
+
+Все 3 формы на странице имеют `data-field-formmsgurl-value`:
+
+| Форма | URL после submit |
+|-------|-----------------|
+| "Презентация в WhatsApp Атлантис" | `https://t.me/m/QinKZEsTNmRi` ✅ |
+| "Планировки Атлантис" | `https://t.me/m/QinKZEsTNmRi` ✅ |
+| "Обратный звонок Атлантис" | `https://t.me/m/QinKZEsTNmRi` ✅ |
+
+> **Тильда ПЕРЕКЛЮЧЕНА на @SofiaOazis.** Все формы ведут на Business Link `t.me/m/QinKZEsTNmRi`, а не на старый `t.me/humanAINeural_bot?start=ATL`.
+
+**go/atlantis.html** (redirect-страница на сервере):
+Также переключена — `var bot = "SofiaOazis"`, prefilled-текст: *"Добрый день! Отправьте, пожалуйста, презентацию АК «Атлантис»"*.
+
+**atlantis-invest.ru:** Нет TG-ссылок на странице (только виджет). Формы не обнаружены.
+
+**sochiremstroy.tilda.ws:** Ссылка `t.me` без конкретного адреса в общем блоке соцсетей. Виджет подключён.
+
+### D. Живой трафик через @SofiaOazis после 08.04
+
+**8 ATL-сессий через Radist с 08.04:**
+
+| # | user_id | Клиент | Лид Bitrix | Диалог | Finalize | ASSIGNED после |
+|---|---------|--------|------------|--------|----------|----------------|
+| 1 | -42025820 | Sergey Stetsenko | #264756 | 15 msg, meeting_agreed=1 | llm_end ✅ | 173310 |
+| 2 | -41048553 | Анна Радченко | #264842 | — | llm_end ✅ | не найден* |
+| 3 | -40927660 | Юля Смм | #264844 | — | llm_end ✅ | не найден* |
+| 4 | -42032263 | ♤♡◇♧ (Алексей) | #264876 | — | llm_end ✅ | 88324 |
+| 5 | -42051855 | Алина | #265028 | — | llm_end ✅ | 24932 |
+| 6 | -42056655 | OLEG Oleg | #265062 | 3 msg | no_response_after_reminder | 173310 |
+| 7 | -42061270 | Наталья Десяева | #265094 | 1 msg | no_response | (BP 152 started) |
+| 8 | -42073637 | Игорь Крицкий | #265164 | 1 msg | no_response | 99582 |
+
+*Лиды #264842, #264844 не найдены через Bitrix API (возможно удалены/объединены).
+
+**Полный flow подтверждён логами (пример — Игорь Крицкий, 10.04 15:59):**
+```
+15:59:42 🏷️ [TELEGRAM] Объект распознан: АК Атлантис → source_object=atlantis
+15:59:42 🔗 find_recent_atlantis_lead: найдено 1 лидов
+15:59:43 🔗 Привязан к лиду Тильды #265164, original_assigned=428
+16:00:22 ⏳ [TIMEOUT-A] Запущен, ждём 900с
+16:15:22 ⏳ [TIMEOUT-A] Финализируем — 0 ответов
+16:15:24 [BITRIX] BP 152 started for lead 265164
+```
+
+**Случай Наталья Десяева (10.04 09:43) — find_recent_atlantis_lead НЕ нашёл лид:**
+```
+09:43:34 🏷️ Объект распознан: АК Атлантис
+09:43:34 find_recent_atlantis_lead: найдено 0 лидов
+```
+Лид Тильды был создан **раньше 60-секундного окна** — пользователь заполнил форму, но пришёл в TG позже. Лид #265094 был создан позже при финализации через `create_or_update_lead(is_final=True)`.
+
+### E. Состояние Сергея (@SofiaOazis тест 08.04)
+
+**radist_chats:** `Sergey Stetsenko` (chat_id=40025820, phone=79881817871, created_at=2026-04-08 14:37:47)
+
+**client_state:**
+```
+user_id:        -42025820
+source_object:  atlantis
+dialog_finished: 1
+finish_type:    llm_end
+meeting_agreed: 1
+manager_active: 0
+bitrix_lead_id: 264756
+```
+
+**Диалог (15 сообщений, полный цикл):**
+```
+user:  Здравствуйте, отправьте, пожалуйста, презентацию АК "Атлантис"
+bot:   Конечно) Вот презентация АК «Атлантис»: [PDF link]...
+user:  Для себя
+bot:   ...студии 35-40 м² от 16,8 млн или 1-спальни от 20,7 млн...
+user:  30
+bot:   ...на 30 млн можно 2-спальню 54-65 м² (от 22,8 до 26,4 млн)...
+user:  Рассрочка
+bot:   ...рассрочка есть, условия зависят от корпуса...
+user:  Нормально → Море → И то и то → Сейчас → 911-1111111, Ватсап
+bot:   Отлично, записала) Передала номер — эксперт наберёт в WhatsApp
+```
+
+**Вывод:** Тестовая сессия Сергея прошла **полный цикл**: source_object=atlantis → квалификация → meeting_agreed → finalize_lead → лид #264756 передан менеджеру (ASSIGNED=173310). Состояние чистое, dialog_finished=1, manager_active=0. **Не замусорено.**
+
+### Итог по переходу на @SofiaOazis
+
+| Вопрос | Ответ |
+|--------|-------|
+| Тильда переключена? | **ДА.** Все 3 формы на invest-apartmens.online ведут на `t.me/m/QinKZEsTNmRi` |
+| go/atlantis.html переключена? | **ДА.** `bot = "SofiaOazis"` |
+| Код в prod? | **ДА.** detect_source + find_recent_atlantis_lead + finalize_lead |
+| Живой трафик? | **ДА.** 8 ATL-сессий с 08.04, 6 из них — реальные клиенты |
+| Лиды в Bitrix? | **ДА.** 8 записей в radist_leads, BP 152 запускается, ASSIGNED переназначается |
+| Старый bot (/start ATL)? | **Всё ещё работает**, но трафик туда не идёт (Тильда переключена). Последний ATL-клиент в боте: Сергей 08.04 |
