@@ -219,6 +219,12 @@ def init_radist_db():
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )""")
 
+    # Миграция: tg_username в radist_chats
+    try:
+        c.execute("ALTER TABLE radist_chats ADD COLUMN tg_username TEXT")
+    except sqlite3.OperationalError:
+        pass  # уже существует
+
     # Таблица привязки radist user_id → bitrix lead_id
     c.execute("""CREATE TABLE IF NOT EXISTS radist_leads (
         user_id INTEGER PRIMARY KEY,
@@ -271,16 +277,32 @@ def save_chat(
     contact_id: int,
     phone: str,
     user_name: str = None,
+    tg_username: str = None,
 ):
     """Сохраняет информацию о чате"""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute(
-        "INSERT OR REPLACE INTO radist_chats (channel, connection_id, chat_id, contact_id, phone, user_name) VALUES (?, ?, ?, ?, ?, ?)",
-        (channel, connection_id, chat_id, contact_id, phone, user_name),
+        "INSERT OR REPLACE INTO radist_chats "
+        "(channel, connection_id, chat_id, contact_id, phone, user_name, tg_username) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (channel, connection_id, chat_id, contact_id, phone, user_name, tg_username),
     )
     conn.commit()
     conn.close()
+
+
+def get_tg_username(channel: str, chat_id: int) -> str:
+    """Получить tg_username из radist_chats."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute(
+        "SELECT tg_username FROM radist_chats WHERE channel = ? AND chat_id = ?",
+        (channel, chat_id),
+    )
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row and row[0] else ""
 
 
 # ============================================
@@ -472,6 +494,10 @@ async def _radist_finalize_timeout(
             history = get_history(channel, chat_id, limit=100)
             lead_id = get_radist_lead_id(user_id)
 
+            # Получаем сохранённый TG username для передачи в Bitrix
+            stored_tg = get_tg_username(channel, chat_id)
+            tg_url = f"https://t.me/{stored_tg}" if stored_tg else ""
+
             new_lead_id = await create_or_update_lead(
                 lead_id,
                 user_name,
@@ -479,6 +505,8 @@ async def _radist_finalize_timeout(
                 history,
                 is_final=True,
                 channel="radist_telegram",
+                telegram_username=f"@{stored_tg}" if stored_tg else None,
+                telegram_url=tg_url,
             )
             if new_lead_id and not lead_id:
                 save_radist_lead_id(user_id, new_lead_id)
@@ -754,6 +782,8 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
     contact_id = context["contact_id"]
     phone = context["phone"]
     user_name = context["user_name"]
+    tg_username = context.get("tg_username", "")
+    tg_profile_link = context.get("tg_profile_link", "")
 
     channel_offset = {"max": 1000000, "telegram": 2000000, "whatsapp": 3000000}
     offset = channel_offset.get(channel, 9000000)
@@ -790,6 +820,13 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
     # ════════════════════════════════════════════════════════════════════════
     # Bitrix: привязка к лиду при первом ATL-сообщении
     # ════════════════════════════════════════════════════════════════════════
+    # Telegram URL для Bitrix (нормализация)
+    telegram_url = ""
+    if tg_username:
+        telegram_url = f"https://t.me/{tg_username}"
+    elif tg_profile_link and tg_profile_link.startswith("https://t.me/"):
+        telegram_url = tg_profile_link
+
     if is_first_atl:
         try:
             lead_data = await find_recent_atlantis_lead()
@@ -807,6 +844,7 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
                 await update_lead(
                     existing_lead_id,
                     comments=(f"{radist_info}\n" f"София подключена к диалогу."),
+                    telegram_url=telegram_url,
                 )
                 log(
                     f"🔗 [BITRIX] Привязан к лиду Тильды #{existing_lead_id} "
@@ -897,6 +935,8 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
                     history_fresh,
                     is_final=is_final,
                     channel="radist_telegram",
+                    telegram_username=f"@{tg_username}" if tg_username else None,
+                    telegram_url=telegram_url,
                 )
                 if new_lead_id and not lead_id:
                     save_radist_lead_id(user_id, new_lead_id)
@@ -994,6 +1034,8 @@ async def handle_webhook(request):
             contact_id = event_data.get("contact_id")
             phone = chat.get("phone", "")
             user_name = chat.get("name", phone)
+            tg_username = chat.get("username") or ""
+            tg_profile_link = chat.get("profile_link") or ""
 
             # Игнорируем исходящие сообщения (от бота)
             direction = message.get("direction")
@@ -1012,7 +1054,15 @@ async def handle_webhook(request):
 
             if user_message and chat_id:
                 # Сохраняем информацию о чате
-                save_chat(channel, connection_id, chat_id, contact_id, phone, user_name)
+                save_chat(
+                    channel,
+                    connection_id,
+                    chat_id,
+                    contact_id,
+                    phone,
+                    user_name,
+                    tg_username=tg_username,
+                )
 
                 # Обрабатываем через очередь (защита от race condition)
                 user_key = f"{channel}:{chat_id}"
@@ -1023,6 +1073,8 @@ async def handle_webhook(request):
                     "contact_id": contact_id,
                     "phone": phone,
                     "user_name": user_name,
+                    "tg_username": tg_username,
+                    "tg_profile_link": tg_profile_link,
                 }
                 asyncio.create_task(
                     process_with_queue(

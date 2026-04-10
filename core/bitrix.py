@@ -322,6 +322,7 @@ async def create_lead(
     phone: str = None,
     source_id: str = None,
     assigned_id: int = None,
+    telegram_url: str = None,
 ) -> int | None:
     """Создать новый лид. Возвращает lead_id или None.
     По умолчанию ответственный = Sofia AI (428) на время квалификации.
@@ -335,6 +336,8 @@ async def create_lead(
     }
     if phone:
         fields["PHONE"] = [{"VALUE": phone, "VALUE_TYPE": "MOBILE"}]
+    if telegram_url:
+        fields["UF_CRM_TELEGRAM"] = telegram_url
 
     try:
         async with aiohttp.ClientSession() as session:
@@ -359,11 +362,14 @@ async def update_lead(
     name: str = None,
     is_final: bool = False,
     assigned_id: int = None,
+    telegram_url: str = None,
 ) -> bool:
     """Обновить существующий лид. Возвращает True при успехе."""
     fields = {"COMMENTS": comments}
     if assigned_id:
         fields["ASSIGNED_BY_ID"] = assigned_id
+    if telegram_url:
+        fields["UF_CRM_TELEGRAM"] = telegram_url
     if is_final:
         if phone:
             fields["PHONE"] = [{"VALUE": phone, "VALUE_TYPE": "MOBILE"}]
@@ -395,10 +401,13 @@ async def create_or_update_lead(
     is_final: bool = False,
     channel: str = "web",
     telegram_username: str = None,
+    telegram_url: str = None,
 ) -> int | None:
     """
     Если lead_id есть → update, иначе → create.
     Возвращает lead_id (существующий или новый).
+    telegram_url пишется в UF_CRM_TELEGRAM только если непустой
+    (не затирает существующее значение).
     """
     comments, phone, telegram = build_lead_comments(
         state, history, is_final, channel, telegram_username=telegram_username
@@ -407,8 +416,18 @@ async def create_or_update_lead(
     if name.startswith("web_"):
         name = "Клиент с сайта"
 
+    # telegram_url передаём только если есть — не затираем существующее
+    tg_url = telegram_url if telegram_url else None
+
     if lead_id:
-        await update_lead(lead_id, comments, phone=phone, name=name, is_final=is_final)
+        await update_lead(
+            lead_id,
+            comments,
+            phone=phone,
+            name=name,
+            is_final=is_final,
+            telegram_url=tg_url,
+        )
         return lead_id
 
     # Дедупликация: ищем существующий лид по телефону перед созданием
@@ -420,11 +439,16 @@ async def create_or_update_lead(
                 f"по телефону, обновляем вместо создания нового"
             )
             await update_lead(
-                existing_id, comments, phone=phone, name=name, is_final=is_final
+                existing_id,
+                comments,
+                phone=phone,
+                name=name,
+                is_final=is_final,
+                telegram_url=tg_url,
             )
             return existing_id
 
-    return await create_lead(name, comments, phone=phone)
+    return await create_lead(name, comments, phone=phone, telegram_url=tg_url)
 
 
 # ============================================================
