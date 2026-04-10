@@ -2,6 +2,8 @@
 
 ## P0 — Срочно
 
+- [ ] **Спринт 2: Username из Radist в Bitrix** — chat.username и chat.profile_link прилетают в webhook но игнорируются. Менеджеры теряют лиды из-за этого (кейс Игорь Критский — закрыт как JUNK потому что номер не отвечал, а @Kritsky_igor в Bitrix не попал). 10-15 мин работы, одна строка кода, прямое влияние на конверсию.
+- [ ] **Git-sanity scan prod vs dev** — пройтись по всем логическим файлам (core/, config/, *_server.py, *_gateway.py), сравнить md5 HEAD в prod и dev, найти расхождения. Известные уже сейчас: source_objects.py (prompt_addon только в dev, не закоммичен). Могут быть другие. Мини-спринт на 15-20 мин.
 - [ ] **B1: Filler звуки** — записать через ElevenLabs v3 Nastya: "Угу", "Так", "Понятно", "Хорошо". Кешировать как 8kHz PCM, проигрывать сразу после VAD trigger. Маскировка ~200-250ms латентности v3. Sprint Contract готов.
 - [ ] **A3: Sentence-level TTS streaming** — Groq стримит → первое предложение → ElevenLabs v3 сразу. Gain: -100-200ms. Делать ПОСЛЕ fillers.
 - [ ] **Ударения: ручной словарь** — STRESS_DICT с фонетическими заменами для проблемных слов (Белокуриха, РИЗАЛТА, эскроу). Research завершён: ruaccent отклонён (388ms, 75%), U+0301 не документирован в ElevenLabs.
@@ -12,6 +14,9 @@
 
 - [ ] **Рефакторинг find_recent_atlantis_lead()** → универсальный `find_recent_lead_by_source(source_id)` — сейчас хардкод на SOURCE_ID=397, блокер для масштабирования на новые ЖК
 - [ ] **Вынести хардкоды в env/config** — SOFIA_AI_USER_ID (428), BITRIX_ATLANTIS_SOURCE_ID (397) → в .env или source_objects.py
+- [ ] **Спринт 3: возврат виджета в новом формате** — slide-out side tab на invest-apartmens.online/atlantis (заменяет старый круглый bubble). Требует: новая вёрстка (side tab вместо bubble, брендинг Атлантиса сохранить), URL-based source_object detection (по page_url а не по ключевым словам в тексте), разделение prompt_addon по каналам: Telegram — не спрашивать контакты, виджет — обязательно спрашивать телефон, таймаут финализации для виджет-сессий (или покрытие Bitrix-роботом), Bitrix-интеграция: source_id, attention к ASSIGNED=428 flow. **БЛОКЕР:** ждёт verification что 20-минутный Bitrix-робот реально работает — без safety-net виджет утопит CRM зависшими лидами.
+- [ ] **Safety-net verification** — после того как админ добьёт 20-минутный робот в Bitrix: проверить что робот ловит Тильда-лидов с ASSIGNED=428 старше 20 мин и корректно передаёт менеджеру через БП 152. Тест-кейсы: лид #264518 (Роман) и аналогичные. Если робот не покрывает — план Б: cron внутри Sofia.
+- [ ] **source_objects.py prompt_addon разделение по каналам** — сейчас DEV имеет незакоммиченный prompt_addon "не запрашивай контакты", который применяется ко всем Атлантис-сессиям включая виджет (где логика должна быть обратной). Нужно разделение: Telegram наследует prompt_addon, виджет — нет. Связано со Спринтом 3.
 - [ ] **Таймаут для web-виджета** — сейчас web-сессии не финализируются по таймауту, только по [END] от LLM
 - [ ] **Лиды без бот-диалога** — клиенты из Тильды, не перешедшие в TG, не проходят квалификацию Софией. Варианты: CRM-робот с таймаутом или принять как нормальный путь
 - [x] ~~**Битрикс в radist_gateway.py**~~ — выполнено 08.04: radist_leads таблица, привязка ATL-лидов, таймауты 15/60/15
@@ -41,6 +46,8 @@
 
 ## Завершено (10.04.2026)
 
+- [x] **Аудит Атлантиса** — docs/AUDIT_ATLANTIS_2026-04-10.md, 8 секций, зафиксирован переход на @SofiaOazis, 5 открытых проблем с приоритетами
+- [x] **Спринт 1: merge bot_server.py** — Observer portback из PROD в DEV (6 блоков, 86 строк), единственное различие осталось — env-default OBSERVER_CHAT_ID. DEV стал deploy-ready. Коммит 75b779a5.
 - [x] **TTS A/B тест: v3 locked** — live A/B: v3 > MLv2 > Flash v2.5. Eleven v3 = production TTS (10.04)
 - [x] **Stress Research** — ruaccent 75%/388ms отклонён, U+0301 не документирован → ручной словарь (10.04)
 - [x] **ElevenLabs v3 Research** — model_id, streaming, TTFB, PVC compatibility, pricing (10.04)

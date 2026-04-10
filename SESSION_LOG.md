@@ -1,5 +1,81 @@
 # SESSION_LOG — Последние сессии
 
+## 10.04.2026 — Аудит Атлантис + merge bot_server.py (Observer portback)
+
+**Сделано:**
+
+### 1. Полный аудит Атлантиса (docs/AUDIT_ATLANTIS_2026-04-10.md)
+- Зафиксирован переход на @SofiaOazis через Telegram Business Link
+  (https://t.me/m/QinKZEsTNmRi) — Тильда переключена на всех 3 формах
+  invest-apartmens.online, старая ссылка t.me/humanAINeural_bot?start=ATL
+  нигде не используется
+- ATL-flow через Radist работает полностью: 8 сессий за 2 дня, 6 реальных
+  клиентов, 5 из 6 финализированы через БП 152
+- Radist dedup fix (3892c648) фактически верифицирован живым трафиком
+- Виджет на invest-apartmens.online/atlantis отключён 04.04, код страницы
+  очищен от упоминаний Sofia (возврат — Спринт 3)
+- 3 домена виджета по web_sessions: invest-apartmens.online (180),
+  atlantis-invest.ru (6), sochiremstroy (2)
+- rizaltabelokurikha.ru — другой виджет (EvaChatWidget), не наш
+- Атлантис = Крым, Новофёдоровка, Cosmos Crimea (не Сочи — зафиксировано
+  исправление в userMemories)
+
+### 2. Расследование зависших лидов на ASSIGNED=428
+- Лид #264518 (Роман) — Тильда-форма "Презентация в WhatsApp", клиент
+  не дошёл до бота, висит 87ч. Sofia такого клиента не видит в принципе.
+- Лид #264372 ("пывп") — тест-мусор, 110ч
+- Системная причина: safety-net для Тильда-лидов без диалога
+  отсутствует. 20-минутный Bitrix-робот должен был быть настроен 04.04,
+  админ забыл — добивает сегодня
+- Добавлено в BACKLOG P1: safety-net verification после настройки робота
+
+### 3. Спринт: merge bot_server.py — Observer portback (коммит 75b779a5)
+- Проблема: коммит 49659ffb (08.04) добавил Observer напрямую в PROD,
+  не был портирован в DEV. Любой будущий деплой DEV→PROD молча удалил бы
+  Observer из PROD.
+- Разведка Фазы 1: первая попытка Claude Code ошибочно показала одинаковый
+  49659ffb в обеих ветках (неправильный cwd при git log). Повторная
+  проверка подтвердила: коммит есть только в PROD, в DEV его никогда не
+  было, reflog чистый, shell history чистый — Observer никто специально
+  не отключал, просто не дошёл до dev
+- Merge: 6 блоков (86 строк) перенесены из PROD в DEV:
+  1. import logging + logging.basicConfig (строки 27, 29-34)
+  2. OBSERVER_CHAT_ID (структура из PROD, env-default "-5206139579" для
+     dev-группы сохранён)
+  3. CREATE TABLE observer_topics_bot (339-345)
+  4. get_or_create_bot_topic() + notify_bot_observer() (896-961)
+  5. notify_bot_observer для входящего (979-981)
+  6. notify_bot_observer для ответа Софии (1035-1037)
+- Итоговый diff PROD vs DEV: ровно 1 строка (OBSERVER_CHAT_ID default),
+  остальные 86 строк идентичны
+- flake8 + black проходят, ast.parse + import bot_server OK
+- PROD не трогали, snapshot /tmp/bot_server.prod.snapshot и
+  /tmp/bot_server.dev.snapshot оставлены как rollback
+
+### 4. Зафиксировано на будущее (см. ниже — в CLAUDE.md как правила)
+- Правило: любой прямой коммит в PROD должен немедленно портироваться
+  в DEV или явно фиксироваться в SESSION_LOG
+- Нужна регулярная git-sanity проверка расхождений prod vs dev по всем
+  файлам (как минимум core/, config/, *_server.py, *_gateway.py)
+
+**Коммиты:**
+- 75b779a5 (DEV) — merge: bot_server.py — Observer portback из PROD
+
+**Файлы:**
+- docs/AUDIT_ATLANTIS_2026-04-10.md (новый)
+- bot_server.py (DEV, +86 строк)
+- SESSION_LOG.md, BACKLOG.md, CLAUDE.md (этот апдейт)
+
+**Открыто для следующих спринтов:**
+- Спринт 2: username из Radist в Bitrix (10-15 мин, быстрая победа)
+- Спринт 3: возврат виджета в новом формате (slide-out side tab), ждёт
+  verification 20-минутного робота Bitrix
+- source_objects.py prompt_addon (DEV-only, не закоммичен) — требует
+  разделения логики запроса контактов по каналам (виджет vs Telegram)
+- git-sanity полный scan prod vs dev — можно выполнить отдельным мини-спринтом
+
+---
+
 ## 10.04.2026 — Stress Research + TTS A/B Test + Eleven v3 Locked
 
 **Сделано:**

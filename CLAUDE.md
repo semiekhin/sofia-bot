@@ -163,9 +163,10 @@ ssh sofia-voice "cat /tmp/audiosocket.log"
 
 | Канал | Файл | User ID формула | Bitrix | Особенности |
 |-------|------|-----------------|--------|-------------|
-| Telegram бот | bot_server.py | telegram_user_id (положительный) | Только source-сессии (`_is_bitrix_session()`) | /start с параметром ATL, WAIT-логика (`should_skip_response`), таблица `telegram_leads`, таймауты (15мин/60мин/15мин) |
+| Telegram бот @humanAINeural_bot | bot_server.py | telegram_user_id (положительный) | Только source-сессии (`_is_bitrix_session()`) | Legacy канал. До 08.04 был основным ATL-каналом через /start ATL. После 08.04 Тильда переключена на @SofiaOazis (Radist), новых ATL-клиентов через @humanAINeural_bot нет. Сервис крутится, решение о статусе (оставить как fallback / потушить) — открытый вопрос. |
 | Web виджет | web_api.py | 9_000_000 + autoincrement | Да, каждое сообщение | UUID session_id → user_id, resume session, Observer |
-| Radist (Max/TG/WA) | sofia_radist_gateway.py | -(offset + chat_id)* | **НЕТ** (P1 задача) | Через @SofiaOazis бот в Radist, `process_with_queue()`, Observer |
+| Radist Telegram @SofiaOazis | sofia_radist_gateway.py | -(offset + chat_id)* | Да, полный цикл (find_recent_atlantis_lead → finalize_lead → БП 152) | **Основной ATL-канал с 08.04**. Telegram Business Link https://t.me/m/QinKZEsTNmRi с prefilled "Здравствуйте, отправьте презентацию АК «Атлантис»" → detect_source("Атлантис") → source_object=atlantis → Bitrix full cycle. `process_with_queue()`, Observer, radist_leads таблица |
+| Radist Max | sofia_radist_gateway.py | -(1000000 + chat_id) | Нет | Dormant с февраля 2026, 0 сообщений за 30 дней |
 | Voice V1 (Retell) | voice_api.py | 7_000_000 + md5[:8] % 1M | Нет | WS адаптер, `is_responding` флаг, `clean_for_voice()` |
 | Voice V2 (Pipecat) | voice_pipecat_daily.py | 8_000_000 + md5[:8] % 1M | Нет | SofiaPipelineProcessor → stream_voice_response(), `sanitize_for_tts()`, Yandex TTS |
 
@@ -202,6 +203,13 @@ ssh sofia-voice "cat /tmp/audiosocket.log"
 - Деплой в прод: только по явной команде "YES"
 - User ID формулы критичны — коллизия = смешанные чаты
 
+### Синхронизация prod ↔ dev
+
+- Любой прямой коммит в PROD (при git recovery, экстренных фиксах, hot-patch) должен **немедленно** портироваться в DEV — либо тем же коммитом, либо явно зафиксирован в SESSION_LOG как "PROD ушёл вперёд по X, нужен backport в dev".
+- Без этой фиксации расхождение становится миной: будущий обычный деплой DEV→PROD молча удалит PROD-фичу, никто не заметит.
+- Исторический прецедент: коммит 49659ffb (08.04, Observer) был добавлен напрямую в PROD при git recovery, не портирован 2 дня, подсвечен аудитом 10.04, портирован коммитом 75b779a5.
+- Периодически (раз в 1-2 недели или при подозрениях) делать git-sanity scan: сравнить md5 HEAD всех критичных файлов (core/, config/, *_server.py, *_gateway.py) между prod и dev. Расхождения — разбирать.
+
 ### Парадигмы каналов
 
 - **Atlantis** = только текстовые каналы (Telegram/Web/Radist). Голоса для Atlantis НЕ существует
@@ -236,6 +244,9 @@ ssh sofia-voice "cat /tmp/audiosocket.log"
 - **Yandex TTS REST v1 + латиница:** плохие ударения. Нужен gRPC v3 + unsafe_mode
 - **user_aggregator пушит LLMContextFrame**, НЕ LLMRunFrame — SofiaPipelineProcessor ловит именно его
 - **Retell двойной ответ:** два response_required подряд. Фикс: `is_responding` флаг
+- **Observer portback (08.04 → 10.04):** при git recovery 08.04 коммит 49659ffb был сделан напрямую в PROD. Не попал в DEV. 2 дня мина лежала — любой деплой DEV→PROD молча удалил бы Observer. Нашли через аудит. Урок: прямые prod-коммиты = источник расхождения, требуют немедленного backport или явной фиксации в SESSION_LOG.
+- **Аудит должен сверять git и диск (10.04):** первая версия аудита AUDIT_ATLANTIS заявила "prod и dev разошлись по bot_server.py, prod новее по Observer". При детальной проверке оказалось что коммит 49659ffb есть только в prod-git, в dev его вообще нет. Аудит смотрел только на файлы на диске. Урок: при сравнении веток проверять `git log --oneline`, `md5 git HEAD:file`, `md5 on-disk file` — все три показателя, и явно различать "расхождение в git" vs "расхождение между git и диском".
+- **Claude Code и cwd при git-операциях (10.04):** при проверке коммита 49659ffb Claude Code дважды запустил `git log` с неправильным cwd (из /opt/sofia-gpt когда ожидался /opt/sofia-gpt-dev), получил ложный вывод "коммит есть в обеих ветках". Исправлено явным `cd` перед каждой git-командой. Урок: в multi-repo окружении всегда явный `cd /opt/sofia-gpt` или `cd /opt/sofia-gpt-dev` перед git-вызовами, не полагаться на текущую cwd.
 
 ## .env ключи
 
@@ -263,6 +274,7 @@ ssh sofia-voice "cat /tmp/audiosocket.log"
 - `docs/VOICE_RESEARCH_2026.md` — исследование голосового стека (50+ решений)
 - `docs/STRESS_RESEARCH.md` — research ударений: ruaccent, U+0301, ElevenLabs (10.04)
 - `docs/ELEVENLABS_V3_RESEARCH.md` — research v3 vs MLv2 vs Flash, API, PVC, pricing (10.04)
+- `docs/AUDIT_ATLANTIS_2026-04-10.md` — полный аудит Атлантиса на 10.04: виджет, Telegram-бот + Тильда (ATL-flow), Radist (@SofiaOazis), Bitrix, контент, git-состояние, переход на @SofiaOazis
 - `SESSION_LOG.md` — последние 10 сессий (компактно)
 - `BACKLOG.md` — невыполненные задачи по приоритетам
 
