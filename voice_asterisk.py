@@ -18,6 +18,7 @@ API routing:
 """
 
 import asyncio
+import re
 import hashlib
 import os
 import struct
@@ -59,7 +60,7 @@ CHANNELS = 1
 VOICE_USER_ID_OFFSET = 9_500_000
 
 # VAD settings
-VAD_SILENCE_THRESHOLD = 0.4  # seconds of silence to trigger end-of-speech
+VAD_SILENCE_THRESHOLD = 0.3  # seconds of silence to trigger end-of-speech
 VAD_MIN_SPEECH_DURATION = 0.3  # minimum speech duration to process
 VAD_ENERGY_THRESHOLD = 200  # RMS energy threshold for speech detection
 
@@ -69,7 +70,7 @@ LLM_PROXY_BASE = os.getenv("LLM_PROXY_BASE", "http://72.56.64.91:8095")
 # ElevenLabs settings (via proxy)
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "YjESejviApN7SHrbfnA2")  # Nastya
-ELEVENLABS_MODEL = "eleven_multilingual_v2"
+ELEVENLABS_MODEL = "eleven_flash_v2_5"
 
 # Yandex SpeechKit settings (direct, no proxy needed)
 YANDEX_STT_URL = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize"
@@ -153,6 +154,26 @@ async def transcribe_audio(audio_pcm: bytes, sample_rate: int = 8000) -> str:
 # ============================================================
 
 
+def add_ssml_breaks(text: str) -> str:
+    """Add SSML <break> tags between sentences for more natural TTS pacing.
+
+    Only wraps multi-sentence text. Max 2 breaks per utterance to avoid
+    ElevenLabs Flash v2.5 artifacts.
+    """
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    if len(sentences) <= 1:
+        return text
+    parts = [sentences[0]]
+    breaks_added = 0
+    for s in sentences[1:]:
+        if breaks_added < 2:
+            parts.append('<break time="0.3s"/>' + s)
+            breaks_added += 1
+        else:
+            parts.append(s)
+    return " ".join(parts)
+
+
 async def stream_tts_audio(text: str):
     """Stream PCM audio from ElevenLabs TTS through ffmpeg resampler.
 
@@ -177,10 +198,10 @@ async def stream_tts_audio(text: str):
         "text": text,
         "model_id": ELEVENLABS_MODEL,
         "voice_settings": {
-            "stability": 0.35,
-            "similarity_boost": 0.79,
+            "stability": 0.50,
+            "similarity_boost": 0.85,
         },
-        "speed": 1.19,
+        "speed": 1.10,
     }
 
     # Start ffmpeg as a streaming converter: MP3 stdin → PCM 8kHz stdout
@@ -407,8 +428,8 @@ class AudioSocketCall:
         logger.info(f"🎙️ Sending greeting... [prompt mode: {voice_prompt_mode}]")
         if voice_prompt_mode == "rizalta":
             greeting = (
-                "Алло? Добрый день! Это Софья, агентство Оазис. "
-                "Две минуты есть? Хочу классное предложение быстро рассказать."
+                "Здравствуйте! Это София, агентство Оазис. "
+                "Вам удобно сейчас разговаривать?"
             )
         else:
             greeting = (
@@ -580,6 +601,7 @@ class AudioSocketCall:
             return
 
         clean_text = sanitize_for_tts(text)
+        clean_text = add_ssml_breaks(clean_text)
         if not clean_text:
             return
 
