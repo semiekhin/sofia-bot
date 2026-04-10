@@ -2,12 +2,10 @@
 
 ## P0 — Срочно
 
-- [ ] **Спринт 2: Username из Radist в Bitrix** — chat.username и chat.profile_link прилетают в webhook но игнорируются. Менеджеры теряют лиды из-за этого (кейс Игорь Критский — закрыт как JUNK потому что номер не отвечал, а @Kritsky_igor в Bitrix не попал). 10-15 мин работы, одна строка кода, прямое влияние на конверсию.
 - [ ] **Git-sanity scan prod vs dev** — пройтись по всем логическим файлам (core/, config/, *_server.py, *_gateway.py), сравнить md5 HEAD в prod и dev, найти расхождения. Известные уже сейчас: source_objects.py (prompt_addon только в dev, не закоммичен). Могут быть другие. Мини-спринт на 15-20 мин.
 - [ ] **B1: Filler звуки** — записать через ElevenLabs v3 Nastya: "Угу", "Так", "Понятно", "Хорошо". Кешировать как 8kHz PCM, проигрывать сразу после VAD trigger. Маскировка ~200-250ms латентности v3. Sprint Contract готов.
 - [ ] **A3: Sentence-level TTS streaming** — Groq стримит → первое предложение → ElevenLabs v3 сразу. Gain: -100-200ms. Делать ПОСЛЕ fillers.
 - [ ] **Ударения: ручной словарь** — STRESS_DICT с фонетическими заменами для проблемных слов (Белокуриха, РИЗАЛТА, эскроу). Research завершён: ruaccent отклонён (388ms, 75%), U+0301 не документирован в ElevenLabs.
-- [ ] **Фаза 4: systemd + health check** — sofia-voice-asterisk.service, Restart=always
 - [ ] **Proxy monitoring** — алерт если 8095 упал
 
 ## P1 — Следующая итерация
@@ -22,6 +20,7 @@
 - [x] ~~**Битрикс в radist_gateway.py**~~ — выполнено 08.04: radist_leads таблица, привязка ATL-лидов, таймауты 15/60/15
 - [ ] **Groq платный план** — бесплатный throttled 70% запросов в A/B тесте
 - [ ] **Retell begin_message** — убрать или настроить тот же голос что в ответах
+- [ ] **logrotate для Asterisk логов** — /var/log/asterisk/full.log и messages.log по 4.5 GB каждый. Без ротации сервер повторно упрётся в 100% диска через 4-6 недель
 - [ ] **Retell Transcription Mode** — accuracy vs speed тест
 - [ ] **Post-Call Data Extraction** — goal, budget, payment_type, meeting_agreed
 - [ ] **deploy.sh** — скрипт деплоя (сейчас ручной cp + restart)
@@ -29,6 +28,9 @@
 ## P2 — Улучшения Voice
 
 - [x] ~~**Добавить IP 72.56.64.91 в белый список Телфин**~~ — закрыто 08.04: Телфин не меняет GeoIP, двухсерверная архитектура — постоянное решение
+- [ ] **fail2ban или UFW whitelist против SIP-сканеров** — 193.46.255.104 и подобные раздувают Asterisk-логи на VPS 185.207.66.201
+- [ ] **UFW на VPS 185.207.66.201** — сейчас неактивен, SSH и Asterisk открыты в мир
+- [ ] **Проверить STT pipeline voice_asterisk.py** — логи говорят "Whisper STT", CLAUDE.md говорит "Yandex SpeechKit". Привести документацию в соответствие с реальным кодом
 - [ ] **Yandex STT gRPC v3 streaming** — вместо REST, параллельно с речью клиента (-200ms). Proto файлы уже в yandex_proto/. Gain: -150-200ms
 - [ ] **Architecture A: Hybrid Brain** — async gpt-5.2+RAG «мозг» после каждого хода → stage_directive для kimi-k2. Качество текстовой Софии + скорость голосовой
 - [ ] **Architecture B: Pre-recorded Bank** — 60 WAV-фраз покрывают 70% реплик, LLM-роутер выбирает код фразы. Gain: 350ms на 70% ходов
@@ -37,6 +39,7 @@
 
 ## P3 — Техдолг / Стратегия
 
+- [ ] **Очистить legacy на VPS** — /root/dnstt, /root/microsocks, /root/go, /root/slowdns — от предыдущего владельца, безопасно удалить
 - [ ] **AI-ассистент руководителя над Битрикс/amoCRM** — Telegram-бот, function calling (20-30 целевых функций: crm.deal.list, tasks.list, user.list), запросы натуральным языком ("у кого провал по сделкам", "кто не дорабатывает"). Потенциально отдельный продукт, переиспользует архитектуру Sofia. Начинать после стабилизации голосовой Sofia + RIZALTA
 
 - [ ] **Логирование бота в stdout** — сейчас bot_server.py пишет в файл через print(), не видно в journalctl
@@ -48,6 +51,8 @@
 
 - [x] **Аудит Атлантиса** — docs/AUDIT_ATLANTIS_2026-04-10.md, 8 секций, зафиксирован переход на @SofiaOazis, 5 открытых проблем с приоритетами
 - [x] **Спринт 1: merge bot_server.py** — Observer portback из PROD в DEV (6 блоков, 86 строк), единственное различие осталось — env-default OBSERVER_CHAT_ID. DEV стал deploy-ready. Коммит 75b779a5.
+- [x] **Спринт 2: Radist username → Bitrix** — chat.username из webhook → UF_CRM_TELEGRAM + COMMENTS. Коммит 8b504869. Ждёт деплой в PROD.
+- [x] **Фаза 4: systemd + health check** — sofia-voice.service на VPS, Restart=on-failure, auto-restart протестирован. Голосовой канал защищён от ребутов.
 - [x] **TTS A/B тест: v3 locked** — live A/B: v3 > MLv2 > Flash v2.5. Eleven v3 = production TTS (10.04)
 - [x] **Stress Research** — ruaccent 75%/388ms отклонён, U+0301 не документирован → ручной словарь (10.04)
 - [x] **ElevenLabs v3 Research** — model_id, streaming, TTFB, PVC compatibility, pricing (10.04)

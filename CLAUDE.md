@@ -114,11 +114,14 @@ Python 3.12, FastAPI, SQLite, OpenAI gpt-5.2 (Responses API), ChromaDB (RAG, tex
 # Скопировать код на VPS
 scp voice_asterisk.py sofia-voice:/opt/sofia-voice/
 scp core/pipeline.py sofia-voice:/opt/sofia-voice/core/
-# Перезапустить
-ssh sofia-voice "fuser -k 9090/tcp; sleep 1; cd /opt/sofia-voice && nohup venv/bin/python3 voice_asterisk.py > /tmp/audiosocket.log 2>&1 &"
-# Проверить логи
-ssh sofia-voice "cat /tmp/audiosocket.log"
+# Перезапустить через systemd (НЕ nohup!)
+ssh sofia-voice "systemctl restart sofia-voice"
+# Проверить статус и логи
+ssh sofia-voice "systemctl status sofia-voice"
+ssh sofia-voice "journalctl -u sofia-voice -n 50 --no-pager"
 ```
+
+**systemd unit (создан 10.04):** `/etc/systemd/system/sofia-voice.service` — Type=simple, Restart=on-failure, RestartSec=3, EnvironmentFile=/opt/sofia-voice/.env, LOGURU_COLORIZE=false. Автостарт при ребуте включён (enabled).
 
 **VOICE_PROMPT_MODE (08.04):**
 - env-переменная `VOICE_PROMPT_MODE`: `atlantis` (default) или `rizalta`

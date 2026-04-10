@@ -52,7 +52,30 @@
 - PROD не трогали, snapshot /tmp/bot_server.prod.snapshot и
   /tmp/bot_server.dev.snapshot оставлены как rollback
 
-### 4. Зафиксировано на будущее (см. ниже — в CLAUDE.md как правила)
+### 4. Спринт 2: Radist username → Bitrix (коммит 8b504869)
+- chat.username и chat.profile_link из Radist webhook теперь извлекаются
+  и передаются в Bitrix: UF_CRM_TELEGRAM = https://t.me/username (кликабельная
+  ссылка) + COMMENTS строка "Telegram: @username"
+- Нормализация: пустой username → не пишем, не затираем существующее.
+  Fallback: profile_link если username пуст
+- tg_username сохраняется в radist_chats (миграция ALTER TABLE) для доступа
+  при финализации по таймауту
+- Dry-run тест: payload с username содержит UF_CRM_TELEGRAM, без username —
+  поле отсутствует (не затирает)
+- Файлы: sofia_radist_gateway.py (+76), core/bitrix.py (+12)
+
+### 5. Спринт: sofia-voice systemd unit (VPS 185.207.66.201)
+- **Инцидент:** ребут сервера хостингом (апгрейд 14→29 GB диск,
+  961 MB → 1.9 GB RAM), voice_asterisk.py не поднялся (~40 мин даунтайма)
+- Создан `/etc/systemd/system/sofia-voice.service`: Type=simple,
+  Restart=on-failure, RestartSec=3, EnvironmentFile, LOGURU_COLORIZE=false
+- systemctl enable + start → active (running), MainPID=2941, 34.6M памяти
+- Auto-restart протестирован: kill -9 → NRestarts=1, новый PID через 3 сек
+- Голосовой канал восстановлен и защищён от будущих ребутов
+- **Подсветка:** логи voice_asterisk говорят "Whisper STT", CLAUDE.md
+  говорит "Yandex SpeechKit" — требует проверки что реально используется
+
+### 6. Зафиксировано на будущее (см. ниже — в CLAUDE.md как правила)
 - Правило: любой прямой коммит в PROD должен немедленно портироваться
   в DEV или явно фиксироваться в SESSION_LOG
 - Нужна регулярная git-sanity проверка расхождений prod vs dev по всем
@@ -60,19 +83,24 @@
 
 **Коммиты:**
 - 75b779a5 (DEV) — merge: bot_server.py — Observer portback из PROD
+- 8b504869 (DEV) — feat(radist): Telegram-username → Bitrix
 
 **Файлы:**
 - docs/AUDIT_ATLANTIS_2026-04-10.md (новый)
-- bot_server.py (DEV, +86 строк)
+- bot_server.py (DEV, +86 строк Observer portback)
+- sofia_radist_gateway.py (DEV, +76 строк username)
+- core/bitrix.py (DEV, +12 строк telegram_url)
+- /etc/systemd/system/sofia-voice.service (VPS, новый)
 - SESSION_LOG.md, BACKLOG.md, CLAUDE.md (этот апдейт)
 
 **Открыто для следующих спринтов:**
-- Спринт 2: username из Radist в Bitrix (10-15 мин, быстрая победа)
 - Спринт 3: возврат виджета в новом формате (slide-out side tab), ждёт
   verification 20-минутного робота Bitrix
 - source_objects.py prompt_addon (DEV-only, не закоммичен) — требует
   разделения логики запроса контактов по каналам (виджет vs Telegram)
 - git-sanity полный scan prod vs dev — можно выполнить отдельным мини-спринтом
+- Деплой Radist username → Bitrix в PROD — отдельный шаг после визуальной
+  проверки Сергеем
 
 ---
 
