@@ -2,10 +2,9 @@
 
 ## P0 — Срочно
 
-- [ ] **Ударения ElevenLabs** — Flash v2.5 ~80% точность на русском. Варианты: (a) pronunciation dictionary (нужен Scale план $99/мес), (b) предобработка текста через RUAccent/silero-stress, (c) Yandex SpeechKit gRPC v3 как TTS (99% ударений, но нет voice cloning)
-- [ ] **Паузы между фразами** — `add_ssml_breaks()` работает, но `<break>` в больших количествах вызывает артефакты. Нужен тюнинг: оптимальное время паузы, максимум breaks, может ли быть лучше через post-processing аудио
-- [ ] **B1: Filler звуки** — записать через ElevenLabs Nastya: "Угу...", "Так...", "Секундочку...". Кешировать как PCM, проигрывать сразу после VAD trigger. Даёт ~500ms «бесплатной» маскировки латентности
-- [ ] **A3: Sentence-level TTS streaming** — Groq стримит → по предложениям → ElevenLabs. Ожидаемый gain: -100-200ms
+- [ ] **B1: Filler звуки** — записать через ElevenLabs v3 Nastya: "Угу", "Так", "Понятно", "Хорошо". Кешировать как 8kHz PCM, проигрывать сразу после VAD trigger. Маскировка ~200-250ms латентности v3. Sprint Contract готов.
+- [ ] **A3: Sentence-level TTS streaming** — Groq стримит → первое предложение → ElevenLabs v3 сразу. Gain: -100-200ms. Делать ПОСЛЕ fillers.
+- [ ] **Ударения: ручной словарь** — STRESS_DICT с фонетическими заменами для проблемных слов (Белокуриха, РИЗАЛТА, эскроу). Research завершён: ruaccent отклонён (388ms, 75%), U+0301 не документирован в ElevenLabs.
 - [ ] **Фаза 4: systemd + health check** — sofia-voice-asterisk.service, Restart=always
 - [ ] **Proxy monitoring** — алерт если 8095 упал
 
@@ -40,11 +39,18 @@
 - [ ] **core/channel.py, core/observer.py** — рефакторинг каналов
 - [ ] **BUG-004 EN-раскладка** — обработка латиницы в сообщениях
 
+## Завершено (10.04.2026)
+
+- [x] **TTS A/B тест: v3 locked** — live A/B: v3 > MLv2 > Flash v2.5. Eleven v3 = production TTS (10.04)
+- [x] **Stress Research** — ruaccent 75%/388ms отклонён, U+0301 не документирован → ручной словарь (10.04)
+- [x] **ElevenLabs v3 Research** — model_id, streaming, TTFB, PVC compatibility, pricing (10.04)
+- [x] **Sync DEV от VPS** — voice_asterisk.py + core/pipeline.py синхронизированы, коммиты 8d468477 + 04d9a710 (10.04)
+
 ## Завершено (09.04.2026)
 
 - [x] **Radist dedup fix** — save_message+notify_observer вынесены из цикла queue, одна запись на пачку сообщений (DEV+PROD)
 - [x] **Voice Research Sprint** — 54 аудиосемпла, 9 LLM, 16 TTS, 7 STT, отчёт RESEARCH_REPORT_VOICE_AGENT_v1.md
-- [x] **Voice Stack Tuning v2** — kimi-k2 LLM, Flash v2.5 TTS, новые VoiceSettings, VAD 300ms, SSML breaks
+- [x] **Voice Stack Tuning v2** — kimi-k2 LLM, Flash v2.5 → v3 TTS, новые VoiceSettings, VAD 300ms, SSML breaks
 - [x] **RIZALTA Prompt v2** — канонический питч, «всегда вопрос», Софья→София, 6 примеров диалогов
 - [x] **Groq платный план** — решено через kimi-k2 (throttling не наблюдается)
 
