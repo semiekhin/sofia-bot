@@ -1,5 +1,27 @@
 # SESSION_LOG — Последние сессии
 
+## 11.04.2026 — Деплой Radist username→Bitrix в PROD
+
+**Сделано:**
+
+### Деплой Спринта 2 (RADIST_USERNAME_DEPLOY_PROD_v1)
+- Фича из коммита 8b504869 (DEV) выведена в production
+- Файлы: sofia_radist_gateway.py (+76 строк), core/bitrix.py (+12 строк)
+- Pre-deploy: diff показал только username-изменения, ничего постороннего
+- Снапшоты PROD сохранены: `/tmp/radist_gw.prod.before_deploy`, `/tmp/bitrix.prod.before_deploy`
+- ast.parse обоих файлов OK
+- `sudo systemctl restart sofia-radist.service` → active (running), PID 2460093
+- Логи чистые: БД init, каналы active (max, telegram), 0 ошибок
+- Git commit в PROD: `1146ea2c` (без push — by design)
+- Функциональная проверка отложена до первого реального ATL-клиента
+
+**Коммиты:**
+- 1146ea2c (PROD) — feat(radist): deploy username→Bitrix from dev (8b504869)
+
+**Файлы (PROD):** sofia_radist_gateway.py, core/bitrix.py
+
+---
+
 ## 10.04.2026 — Аудит Атлантис + merge bot_server.py (Observer portback)
 
 **Сделано:**

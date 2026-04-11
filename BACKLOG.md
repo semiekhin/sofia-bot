@@ -47,11 +47,15 @@
 - [ ] **core/channel.py, core/observer.py** — рефакторинг каналов
 - [ ] **BUG-004 EN-раскладка** — обработка латиницы в сообщениях
 
+## Завершено (11.04.2026)
+
+- [x] **Деплой Radist username→Bitrix в PROD** — sofia_radist_gateway.py + core/bitrix.py скопированы в PROD, sofia-radist.service перезапущен, логи чистые. PROD коммит 1146ea2c. (11.04)
+
 ## Завершено (10.04.2026)
 
 - [x] **Аудит Атлантиса** — docs/AUDIT_ATLANTIS_2026-04-10.md, 8 секций, зафиксирован переход на @SofiaOazis, 5 открытых проблем с приоритетами
 - [x] **Спринт 1: merge bot_server.py** — Observer portback из PROD в DEV (6 блоков, 86 строк), единственное различие осталось — env-default OBSERVER_CHAT_ID. DEV стал deploy-ready. Коммит 75b779a5.
-- [x] **Спринт 2: Radist username → Bitrix** — chat.username из webhook → UF_CRM_TELEGRAM + COMMENTS. Коммит 8b504869. Ждёт деплой в PROD.
+- [x] **Спринт 2: Radist username → Bitrix** — chat.username из webhook → UF_CRM_TELEGRAM + COMMENTS. DEV коммит 8b504869, PROD деплой 11.04 коммит 1146ea2c.
 - [x] **Фаза 4: systemd + health check** — sofia-voice.service на VPS, Restart=on-failure, auto-restart протестирован. Голосовой канал защищён от ребутов.
 - [x] **TTS A/B тест: v3 locked** — live A/B: v3 > MLv2 > Flash v2.5. Eleven v3 = production TTS (10.04)
 - [x] **Stress Research** — ruaccent 75%/388ms отклонён, U+0301 не документирован → ручной словарь (10.04)
