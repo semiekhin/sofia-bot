@@ -27,8 +27,17 @@
 - В CLAUDE.md добавлена ссылка на новый документ
 - Поводом стали ошибки сегодняшней сессии: захардкоженный systemd-unit без знания файлов (10.04), длинные ответы на простые вопросы (15.04), отсутствие прохода "что забыл" перед отдачей контракта (15.04)
 
+### 4. Gitpull-гигиена (UPDATE_GITPULL_DOCS)
+- Найдено: `start-session.sh` (на локалке Сергея) копирует только CLAUDE.md / SESSION_LOG.md / BACKLOG.md, новый `docs/ORCHESTRATOR_RULES.md` в контекст Claude.ai не попадал. Без этого правила оркестратора, записанные сегодня, при следующем `start-session.sh sofia` оркестратор бы не увидел.
+- Блок «Gitpull» в CLAUDE.md дополнен: `mkdir -p ~/projects_claude/Sofia/docs` + 4-я scp-команда для `docs/ORCHESTRATOR_RULES.md`
+- Блок «Session End» дополнен: новый пункт 3 «при изменении правил оркестратора — обновить ORCHESTRATOR_RULES.md», файл добавлен в `git add`-команду
+- Сергей синхронно обновил локальный `start-session.sh` — проверено на следующем запуске
+- Урок: любой новый файл, который должен попадать в контекст Claude.ai, требует **парной** правки: и CLAUDE.md, и локального скрипта, иначе документация и реальный flow расходятся
+
 **Коммиты в DEV:**
-- (этот спринт) — обновление документации
+- `923f229c` — docs: session 15.04 close — DISK_RESCUE + orchestrator rules
+- `5fee930c` — docs: добавить ORCHESTRATOR_RULES.md в Gitpull блок CLAUDE.md
+- (этот session_close) — финальное обновление docs + memory
 
 **Файлы:** SESSION_LOG.md, BACKLOG.md, CLAUDE.md, docs/ORCHESTRATOR_RULES.md (новый)
 

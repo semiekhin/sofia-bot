@@ -53,6 +53,7 @@
 - [x] **CONTEXT_RECONCILIATION_v1** — сверка модели Claude Code с реальностью по 7 пунктам. Sprint 2 verified в production (лид 265712, @pordiregrwe → UF_CRM_TELEGRAM заполнен, БП 152 отработал)
 - [x] **ORCHESTRATOR_RULES.md** — отдельный документ с правилами работы оркестратора, зафиксированы уроки 10-15.04
 - [x] **logrotate для Asterisk** — починен корневой баг конфига (был в P1 как "настроить logrotate")
+- [x] **UPDATE_GITPULL_DOCS** — блок «Gitpull» в CLAUDE.md дополнен 4-й scp-командой для `docs/ORCHESTRATOR_RULES.md` + `mkdir docs/`. Блок «Session End» обновлён. Локальный `start-session.sh` Сергей обновил синхронно. Коммит 5fee930c.
 
 ## Завершено (11.04.2026)
 
