@@ -299,21 +299,25 @@ ssh sofia-voice "journalctl -u sofia-voice -n 50 --no-pager"
 ### Gitpull (скачать на локалку для Claude.ai)
 
 ```bash
+# Один раз создать папку docs если её нет
+mkdir -p ~/projects_claude/Sofia/docs
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/BACKLOG.md ~/projects_claude/Sofia/
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/SESSION_LOG.md ~/projects_claude/Sofia/
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/CLAUDE.md ~/projects_claude/Sofia/
+scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/ORCHESTRATOR_RULES.md ~/projects_claude/Sofia/docs/
 ```
 
 ### Session End (обязательно в конце каждой сессии)
 
 1. Обновить **SESSION_LOG.md** — что сделано, коммиты, файлы, ключевые метрики
 2. Обновить **BACKLOG.md** — новые задачи в P0, перенести завершённые в "Завершено"
-3. Обновить **memory** файлы Claude Code (`/root/.claude/projects/-opt-sofia-gpt-dev/memory/`):
+3. При изменении правил оркестратора — обновить **`docs/ORCHESTRATOR_RULES.md`** (этот файл попадает в контекст Claude.ai через Gitpull, см. блок выше)
+4. Обновить **memory** файлы Claude Code (`/root/.claude/projects/-opt-sofia-gpt-dev/memory/`):
    - `project_voice_sprint_next.md` — текущий контекст спринта, что делать дальше
    - `project_voice_vps.md` — VPS архитектура, proxy, SIP данные
    - `user_sergey.md` — профиль пользователя
    - `MEMORY.md` — индекс всех memory файлов
-4. Закоммитить и запушить: `git add SESSION_LOG.md BACKLOG.md CLAUDE.md && git commit && git push`
+5. Закоммитить и запушить: `git add SESSION_LOG.md BACKLOG.md CLAUDE.md docs/ORCHESTRATOR_RULES.md && git commit && git push`
 
 ```bash
 # Скачать memory файлы (для Claude.ai контекста)
