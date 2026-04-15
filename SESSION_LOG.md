@@ -34,18 +34,79 @@
 - Сергей синхронно обновил локальный `start-session.sh` — проверено на следующем запуске
 - Урок: любой новый файл, который должен попадать в контекст Claude.ai, требует **парной** правки: и CLAUDE.md, и локального скрипта, иначе документация и реальный flow расходятся
 
-**Коммиты в DEV:**
-- `923f229c` — docs: session 15.04 close — DISK_RESCUE + orchestrator rules
-- `5fee930c` — docs: добавить ORCHESTRATOR_RULES.md в Gitpull блок CLAUDE.md
-- (этот session_close) — финальное обновление docs + memory
+### 5. ATLANTIS_CHAT_WIDGET_v1
+- Создан `widgets/atlantis_chat_widget.html` (15.9 KB) — самодостаточный HTML-блок для Tilda T123
+- Десктоп: фиксированный круг 72×72 справа по центру, золотой градиент, два concentric pulse-ring через `::before/::after`, hover scale 1.08
+- Мобильный: фиксированная плашка снизу с base64-аватаркой Софии, зелёной точкой онлайн, двумя строками текста, slide-up анимацией, iOS `env(safe-area-inset-bottom)`
+- Все CSS-классы `atl-chat-*`, z-index 99999, никакого JS, никаких внешних ресурсов
+- Ведёт в @SofiaOazis через Telegram Business Link `https://t.me/m/Fiw3ldhkN2My` (вторая ссылка, не основной QinKZEsTNmRi)
+- Правка по фидбеку Сергея: круг зелёный `#4ade80 → #16a34a` вместо золота (точечная замена одной строки CSS)
+- Коммит `3de1fbf9`
 
-**Файлы:** SESSION_LOG.md, BACKLOG.md, CLAUDE.md, docs/ORCHESTRATOR_RULES.md (новый)
+### 6. SPRINT_TEMPLATE_v2 + wiring
+- Создан `docs/SPRINT_TEMPLATE_v2.md` (13.3 KB) — универсальный шаблон Sprint Contract на XML-структуре по гайду Anthropic
+- 9 обязательных секций (role/context/task/investigate_first/acceptance_criteria/do_not/rollback/build_report_format/done_when) + 4 опциональных (subagents/stop_for_confirmation/edge_cases/external_artifacts)
+- Два встроенных блока: `<anti_overengineering>` и `<investigate_before_answering>` — копируются в каждый контракт дословно. Filling example в конце с эталоном заполнения
+- Коммит `057b6811`
+- TEMPLATE_V2_WIRING (`71103849`) — добавил правило в ORCHESTRATOR_RULES.md п.4 «новые контракты строить по SPRINT_TEMPLATE_v2.md», добавил scp-строку в Gitpull блок CLAUDE.md, обновил git add в Session End
+- Урок закрепился: шаблон без проводки в Gitpull — остаётся сиротой. Парная правка (репо + локальный скрипт) обязательна
 
-**Открытые задачи:**
-- Кнопка «Чат с менеджером» на сайте Атлантиса (Сергей создаёт вторую Telegram Business Link)
+### 7. SAFETY_RULES_v1 — промпт-правила (DEV)
+- В `sofia_prompt_v2.py` добавлен блок «ЧЕГО SOFIA НЕ ДЕЛАЕТ» (+18 строк) между «ПРИНЦИПЫ ОБЩЕНИЯ» (строка 321) и «ТЕХНИКИ ПРОДАЖ» — универсальные запреты для всех каналов: не запрашивать паспорт/реквизиты/коды, не давать юр. гарантий, не обещать доходность, не заключать сделки, не подтверждать бронь окончательно
+- В `config/source_objects.py` `prompt_addon` Атлантиса расширен с 1 строки до triple-quoted multi-line с блоком «ПЕРЕДАЁТ ДИАЛОГ МЕНЕДЖЕРУ» — триггеры: политическое мнение (с уточнением про отличие от возражения по безопасности региона), юр/фин о компании, СВО, дискриминация, незаконные схемы, мошеннические запросы
+- Stop-point после разведки: обнаружен конфликт старого возражения «В Крыму опасно / политика / нападения» со новым триггером, решён переформулировкой первого триггера
+- Коммит `772cbe6e` с `--no-verify` (pre-existing долг в `format_state_summary` по `black`, не связан со scope; явное разрешение оркестратора)
+- DEV Smoke #1 (Атлантис + СВО): Sofia НЕ применила новое правило — выяснилось что web_api.py вообще не устанавливает `source_object` в state, поэтому Atlantis-addon никогда не склеивается в промпт через web. Плюс Analyzer классифицировал СВО как OBJECTION → RAG затянул примеры возражений
+- DEV Smoke #2 (банковские реквизиты + СМС-код через общий web): Sofia **корректно** применила все три правила общего блока — явно предупредила не присылать СМС-код, отказалась выдавать реквизиты, сослалась на менеджера, не выдала внутреннюю инфу
+
+### 8. SAFETY_RULES_DEPLOY_PROD — split-deploy в PROD
+- Задача: port коммита 772cbe6e в PROD. Получилось только наполовину — по очень хорошей причине
+- Разведка PROD показала: `sofia_prompt_v2.py` PROD vs DEV — чистый diff (только +18 моих строк). `config/source_objects.py` — есть pre-existing косметический drift (black на `detect_source`/`load_object_context`, backport не делался)
+- Первая попытка — `git cherry-pick 772cbe6e` в PROD — упала с `fatal: bad revision`: PROD и DEV **разные git-репо**, SHA одного недоступен в другом. Мой пропуск в рекомендации
+- Вторая попытка — `git format-patch | git am` — упала с `patch does not apply at config/source_objects.py:18`
+- Анализ конфликта открыл **большую находку**: в PROD `config/source_objects.py` **вообще нет** ключа `prompt_addon` в Атлантисе, а в PROD `core/pipeline.py` **нет** ветки `if obj_config.get("prompt_addon")` — весь Atlantis-addon-механизм DEV-only, никогда не был в PROD. Это подтверждает давний пункт BACKLOG про «prompt_addon только в dev, не закоммичен», но масштаб больше: там **400+ строк** разницы в `core/pipeline.py` DEV vs PROD
+- Решение (вариант D, split): применить **только** `sofia_prompt_v2.py` часть через `git show 772cbe6e -- sofia_prompt_v2.py | git apply --index -`, Atlantis-часть отложить до отдельного спринта `ATLANTIS_ADDON_INFRA_PORTBACK`
+- PROD коммит `d60e9b0b` feat(prompts): safety rules (core only) — port from dev 772cbe6e (atlantis-addon deferred). Локальный, без push
+- Рестарт всех трёх PROD-сервисов (sofia-gpt / sofia-web-api / sofia-radist) — все active running, 0 ERROR в логах за 5-минутный мониторинг
+- PROD smoke с тем же СМС-триггером — Sofia PROD применила все 3 правила общего блока, буквальный ответ зафиксирован в Build Report
+
+**Коммиты DEV (15.04, полный список):**
+- `923f229c` docs: session 15.04 close — DISK_RESCUE + orchestrator rules
+- `5fee930c` docs: добавить ORCHESTRATOR_RULES.md в Gitpull блок CLAUDE.md
+- `b5eb6822` docs: финализация session 15.04 — UPDATE_GITPULL_DOCS зафиксирован
+- `3de1fbf9` feat(widget): atlantis chat widget for tilda T123
+- `057b6811` feat(docs): sprint contract template v2 with xml structure
+- `71103849` docs: wire SPRINT_TEMPLATE_v2 into orchestrator rules and gitpull
+- `772cbe6e` feat(prompts): safety rules + manager handoff triggers (atlantis)
+
+**Коммит PROD:**
+- `d60e9b0b` feat(prompts): safety rules (core only) — port from dev 772cbe6e (sofia_prompt_v2.py only, atlantis-addon deferred)
+
+**Уроки сессии (зафиксированы в CLAUDE.md + ORCHESTRATOR_RULES.md):**
+- `git cherry-pick` **не работает** между отдельными git-репозиториями (PROD/DEV — отдельные репо, а не ветки одного). Нужно `git format-patch | git am` или `git fetch <path> && git cherry-pick FETCH_HEAD`
+- При деплое DEV→PROD в investigate_first обязательно сравнивать не только целевые файлы, но и **файлы-потребители** целевых изменений (pipeline.py когда трогаем config/*.py, bot_server.py когда трогаем core/bitrix.py и т.д.)
+- PROD может содержать не «DEV минус целевой коммит», а «DEV минус целая фича». Сегодня: Atlantis-addon как механизм отсутствует в PROD целиком (данные + код-потребитель), 400+ строк разницы в pipeline.py
+- Правило «ловить нестыковки контракта ДО выполнения» работает: 3 stop-point'а сегодня (A→A'→A'', A'→конфликт, D→split) сэкономили откатов и ошибок
+
+**Файлы сессии (DEV):**
+- sofia_prompt_v2.py (+18)
+- config/source_objects.py (+16/-1)
+- widgets/atlantis_chat_widget.html (новый, 15.9 KB, круг зелёный)
+- docs/SPRINT_TEMPLATE_v2.md (новый, 13.3 KB)
+- docs/ORCHESTRATOR_RULES.md (новый + дополнения)
+- CLAUDE.md (Gitpull блок, Session End блок, Docs ссылки, 5+ новых уроков)
+- SESSION_LOG.md, BACKLOG.md
+
+**Файлы сессии (PROD):**
+- sofia_prompt_v2.py (+18, через git apply, коммит d60e9b0b)
+
+**Открытые задачи после сессии:**
+- 🔴 **ATLANTIS_ADDON_INFRA_PORTBACK (P0)** — полный аудит pipeline.py PROD vs DEV (400+ строк разницы), план порта Atlantis-addon-механизма в PROD. Блокер для работы Atlantis-specific safety-триггеров в production
+- Кнопка «Чат с менеджером» на сайте — Сергей использует готовый виджет из widgets/
 - 20-минутный робот Bitrix у админа (ждём)
-- SIP-сканеры на VPS (P2, fail2ban или UFW)
-- voice_asterisk pipeline log line "Whisper STT" vs CLAUDE.md "Yandex SpeechKit" — несоответствие требует проверки (P2)
+- SIP-сканеры на VPS (P2)
+- Whisper STT vs Yandex SpeechKit несоответствие (P2)
+- chore(format): run black on prompt files (sofia_prompt_v2.py + source_objects.py backport в PROD)
 
 ---
 

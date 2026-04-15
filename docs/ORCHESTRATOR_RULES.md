@@ -63,6 +63,16 @@
 - Rollback план
 - "Готово когда" с проверяемыми критериями
 
+С 15.04 все новые контракты строить по `docs/SPRINT_TEMPLATE_v2.md` — XML-структура, обязательные/опциональные секции, два встроенных блока (anti_overengineering + investigate_before_answering), filling example.
+
+## Деплой DEV → PROD
+
+1. **В `<investigate_first>` обязательно сравнивать файлы-потребители**, не только целевые. Если меняем `config/source_objects.py` — смотрим как его читает `core/pipeline.py`. Если меняем `core/bitrix.py` — смотрим `bot_server.py`/`web_api.py`/`sofia_radist_gateway.py`. Иначе можно задеплоить «данные есть, код-потребителя нет» — мёртвый текст.
+2. **PROD и DEV — отдельные git-репозитории**, не ветки одного. `git cherry-pick <sha>` между ними **не работает** (`fatal: bad revision`). Рабочий способ — `cd DEV && git format-patch -1 <sha> --stdout | (cd PROD && git am --no-verify -)`. Прецедент в PROD history: `3892c648 (cherry-pick 7f4c96a2)` сделан именно так, метка «cherry-pick» только в commit message.
+3. **Если `git am` падает с `patch does not apply`** — это сигнал **о расхождении базы**, не о merge-конфликте. НЕ разруливать руками, НЕ делать `git am --abort` без согласования. Остановиться, показать оркестратору текущее состояние, ждать решения.
+4. **Split-deploy как норма при расходящихся DEV↔PROD.** Если деплой обнаруживает что в PROD отсутствует инфраструктура для части изменений — **не** делать слепой cp всей фичи. Правильно: применить только ту часть где diff чистый и код-потребитель готов (через `git show <sha> -- <file> | git apply --index -`), остальное отложить отдельным спринтом с полной разведкой. Прецедент 15.04: `d60e9b0b` (safety rules core only в PROD), Atlantis-addon отложен в `ATLANTIS_ADDON_INFRA_PORTBACK`.
+5. **Снапшоты PROD-файлов в `/tmp` — всегда перед модификацией**, с понятными именами типа `<file>.prod.before_deploy_<sprint>`. Rollback должен быть одной командой.
+
 ## Ограничения которые соблюдать всегда
 
 - **Asterisk не перезапускать** без явного разрешения (это боевой сервис телефонии).

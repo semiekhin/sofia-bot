@@ -2,7 +2,8 @@
 
 ## P0 — Срочно
 
-- [ ] **Git-sanity scan prod vs dev** — пройтись по всем логическим файлам (core/, config/, *_server.py, *_gateway.py), сравнить md5 HEAD в prod и dev, найти расхождения. Известные уже сейчас: source_objects.py (prompt_addon только в dev, не закоммичен). Могут быть другие. Мини-спринт на 15-20 мин.
+- [ ] **ATLANTIS_ADDON_INFRA_PORTBACK** — в PROD отсутствует механизм чтения `prompt_addon`: в `config/source_objects.py` Атлантис-объект закрывается сразу после `greeting` (ключа `prompt_addon` нет), в `core/pipeline.py` нет ветки `if obj_config.get("prompt_addon")`. Весь Atlantis-addon-механизм — DEV-only фича, никогда не был в PROD. Sofia в PROD Atlantis-flow не получает специальных правил, включая давнее «не запрашивай контакты, клиент уже из формы» и новые safety-триггеры (СВО/политика/дискриминация/мошенничество). 400+ строк разницы между PROD и DEV `core/pipeline.py`. Требуется отдельный спринт: полный diff pipeline.py PROD vs DEV, классификация расхождений, план порта по частям, контролируемый деплой с разведкой. Блокер для работы всех Atlantis-specific правил в production.
+- [ ] **Git-sanity scan prod vs dev** — пройтись по всем логическим файлам (core/, config/, *_server.py, *_gateway.py), сравнить md5 HEAD в prod и dev, найти расхождения. Уже известно: `core/pipeline.py` (400+ строк разницы, см. ATLANTIS_ADDON_INFRA_PORTBACK), `config/source_objects.py` (black-drift на `detect_source`/`load_object_context` + отсутствие `prompt_addon`). Могут быть другие. Мини-спринт на 15-20 мин после ATLANTIS_ADDON_INFRA_PORTBACK.
 - [ ] **B1: Filler звуки** — записать через ElevenLabs v3 Nastya: "Угу", "Так", "Понятно", "Хорошо". Кешировать как 8kHz PCM, проигрывать сразу после VAD trigger. Маскировка ~200-250ms латентности v3. Sprint Contract готов.
 - [ ] **A3: Sentence-level TTS streaming** — Groq стримит → первое предложение → ElevenLabs v3 сразу. Gain: -100-200ms. Делать ПОСЛЕ fillers.
 - [ ] **Ударения: ручной словарь** — STRESS_DICT с фонетическими заменами для проблемных слов (Белокуриха, РИЗАЛТА, эскроу). Research завершён: ruaccent отклонён (388ms, 75%), U+0301 не документирован в ElevenLabs.
@@ -36,6 +37,10 @@
 - [ ] **WebRTC кнопка в веб-виджете** — голосовой звонок в браузере
 - [ ] **OpenAI Realtime API** — Voice V3, нативный voice-to-voice
 - [ ] **journalctl --vacuum-time vs --vacuum-size** — на disk-rescue 15.04 использовали `--vacuum-size=200M`, что снесло логи sofia-voice целиком. На будущее предпочтительнее `--vacuum-time=Nd` для предсказуемого окна (хранить всё за последние N дней)
+- [ ] **chore(format): run black on prompt files** — `sofia_prompt_v2.py` содержит pre-existing долг в `format_state_summary` (несжатые словари, trailing whitespace, mixed quotes), `black --check` не проходит и в DEV, и в PROD после split-deploy 15.04. Запустить black одним проходом, снять явное разрешение на `--no-verify` для будущих правок этого файла
+- [ ] **chore(format): backport black on source_objects.py from dev to prod** — DEV имеет black-форматирование `detect_source()` и `load_object_context()` (multi-line re.sub, double quotes), PROD — старый single-line single-quoted формат. Ожидает отдельного коммита-портбэка в PROD, не блокер
+- [ ] **Sofia в PROD web-канале не устанавливает source_object** — grep по web_api.py даёт 0 совпадений по `source_object`/`detect_source`. Значит даже после ATLANTIS_ADDON_INFRA_PORTBACK web-канал не будет активировать Atlantis-addon, пока не добавить вызов `detect_source()` + `state.source_object = 'atlantis'` при создании сессии с page_url содержащим `/atlantis` или при первом сообщении с ключевыми словами. Блокер для Sprint 3 «возврат виджета»
+- [ ] **Analyzer классифицирует СВО как OBJECTION** — в DEV smoke 15.04 Analyzer отнёс СВО к stage=OBJECTION и затянул 10 RAG-примеров возражений, LLM пошёл по паттерну contrarg+next question вместо передачи менеджеру. Даже если Atlantis-addon попадёт в промпт (после ATLANTIS_ADDON_INFRA_PORTBACK) — новый триггер проиграет RAG-примерам в приоритете. Решение: либо hard-gate в pipeline по regex до Analyzer, либо перенести блок запретов из хвоста промпта в начало (CLAUDE.md «V6 прoмпт» пункт 1 — «жёсткие запреты в начале»)
 
 ## P3 — Техдолг / Стратегия
 
@@ -54,6 +59,11 @@
 - [x] **ORCHESTRATOR_RULES.md** — отдельный документ с правилами работы оркестратора, зафиксированы уроки 10-15.04
 - [x] **logrotate для Asterisk** — починен корневой баг конфига (был в P1 как "настроить logrotate")
 - [x] **UPDATE_GITPULL_DOCS** — блок «Gitpull» в CLAUDE.md дополнен 4-й scp-командой для `docs/ORCHESTRATOR_RULES.md` + `mkdir docs/`. Блок «Session End» обновлён. Локальный `start-session.sh` Сергей обновил синхронно. Коммит 5fee930c.
+- [x] **ATLANTIS_CHAT_WIDGET_v1** — `widgets/atlantis_chat_widget.html` (15.9 KB), самодостаточный HTML-блок для Tilda T123. Десктоп: круг 72×72 с pulse-ring. Мобильный: плашка снизу с аватаркой. Ведёт в @SofiaOazis через вторую Telegram Business Link. Круг зелёный по фидбеку Сергея. Коммит 3de1fbf9.
+- [x] **SPRINT_TEMPLATE_v2** — `docs/SPRINT_TEMPLATE_v2.md` (13.3 KB) на XML-структуре по гайду Anthropic. 9 обязательных секций + 4 опциональных + 2 встроенных блока (anti_overengineering, investigate_before_answering) + filling example. Коммит 057b6811.
+- [x] **TEMPLATE_V2_WIRING** — шаблон проведён в ORCHESTRATOR_RULES.md (правило «новые контракты строить по SPRINT_TEMPLATE_v2.md») и в Gitpull блок CLAUDE.md. Коммит 71103849.
+- [x] **SAFETY_RULES_v1 (DEV)** — блок «ЧЕГО SOFIA НЕ ДЕЛАЕТ» в `sofia_prompt_v2.py` (универсальные запреты: паспорт/реквизиты/коды/гарантии/доходность/бронь) и блок «ПЕРЕДАЁТ ДИАЛОГ МЕНЕДЖЕРУ» в Atlantis-addon (политика/юр-фин компании/СВО/дискриминация/незаконные схемы/мошенничество). DEV smoke #2 подтвердил работу общего ядра. Коммит 772cbe6e `--no-verify` (pre-existing долг в format_state_summary).
+- [x] **SAFETY_RULES_DEPLOY_PROD (split, core only)** — портировано в PROD **только** `sofia_prompt_v2.py` (блок «ЧЕГО SOFIA НЕ ДЕЛАЕТ», работает во всех трёх PROD-каналах). Atlantis-addon часть отложена до ATLANTIS_ADDON_INFRA_PORTBACK (в PROD отсутствует механизм чтения prompt_addon целиком). PROD smoke с СМС-триггером подтвердил работу. Все три сервиса active, 0 ошибок за 5-мин мониторинг. PROD коммит d60e9b0b, без push.
 
 ## Завершено (11.04.2026)
 
