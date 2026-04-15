@@ -305,6 +305,7 @@ scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/BACKLOG.md ~/projects_claude/Sof
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/SESSION_LOG.md ~/projects_claude/Sofia/
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/CLAUDE.md ~/projects_claude/Sofia/
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/ORCHESTRATOR_RULES.md ~/projects_claude/Sofia/docs/
+scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/SPRINT_TEMPLATE_v2.md ~/projects_claude/Sofia/docs/
 ```
 
 ### Session End (обязательно в конце каждой сессии)
@@ -317,7 +318,7 @@ scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/ORCHESTRATOR_RULES.md ~/pro
    - `project_voice_vps.md` — VPS архитектура, proxy, SIP данные
    - `user_sergey.md` — профиль пользователя
    - `MEMORY.md` — индекс всех memory файлов
-5. Закоммитить и запушить: `git add SESSION_LOG.md BACKLOG.md CLAUDE.md docs/ORCHESTRATOR_RULES.md && git commit && git push`
+5. Закоммитить и запушить: `git add SESSION_LOG.md BACKLOG.md CLAUDE.md docs/ORCHESTRATOR_RULES.md docs/SPRINT_TEMPLATE_v2.md && git commit && git push`
 
 ```bash
 # Скачать memory файлы (для Claude.ai контекста)
