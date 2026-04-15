@@ -302,13 +302,17 @@ ssh sofia-voice "journalctl -u sofia-voice -n 50 --no-pager"
 ### Gitpull (скачать на локалку для Claude.ai)
 
 ```bash
-# Один раз создать папку docs если её нет
-mkdir -p ~/projects_claude/Sofia/docs
+# Один раз создать папки docs и memory если их нет
+mkdir -p ~/projects_claude/Sofia/docs ~/projects_claude/Sofia/memory
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/BACKLOG.md ~/projects_claude/Sofia/
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/SESSION_LOG.md ~/projects_claude/Sofia/
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/CLAUDE.md ~/projects_claude/Sofia/
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/ORCHESTRATOR_RULES.md ~/projects_claude/Sofia/docs/
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/SPRINT_TEMPLATE_v2.md ~/projects_claude/Sofia/docs/
+scp -P 2222 root@72.56.64.91:/root/.claude/projects/-opt-sofia-gpt-dev/memory/project_prod_dev_drift.md ~/projects_claude/Sofia/memory/
+scp -P 2222 root@72.56.64.91:/root/.claude/projects/-opt-sofia-gpt-dev/memory/user_sergey.md ~/projects_claude/Sofia/memory/
+scp -P 2222 root@72.56.64.91:/root/.claude/projects/-opt-sofia-gpt-dev/memory/project_voice_sprint_next.md ~/projects_claude/Sofia/memory/
+scp -P 2222 root@72.56.64.91:/root/.claude/projects/-opt-sofia-gpt-dev/memory/project_voice_vps.md ~/projects_claude/Sofia/memory/
 ```
 
 ### Session End (обязательно в конце каждой сессии)
