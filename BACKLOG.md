@@ -65,6 +65,7 @@
 - [x] **TEMPLATE_V2_WIRING** — шаблон проведён в ORCHESTRATOR_RULES.md (правило «новые контракты строить по SPRINT_TEMPLATE_v2.md») и в Gitpull блок CLAUDE.md. Коммит 71103849.
 - [x] **SAFETY_RULES_v1 (DEV)** — блок «ЧЕГО SOFIA НЕ ДЕЛАЕТ» в `sofia_prompt_v2.py` (универсальные запреты: паспорт/реквизиты/коды/гарантии/доходность/бронь) и блок «ПЕРЕДАЁТ ДИАЛОГ МЕНЕДЖЕРУ» в Atlantis-addon (политика/юр-фин компании/СВО/дискриминация/незаконные схемы/мошенничество). DEV smoke #2 подтвердил работу общего ядра. Коммит 772cbe6e `--no-verify` (pre-existing долг в format_state_summary).
 - [x] **SAFETY_RULES_DEPLOY_PROD (split, core only)** — портировано в PROD **только** `sofia_prompt_v2.py` (блок «ЧЕГО SOFIA НЕ ДЕЛАЕТ», работает во всех трёх PROD-каналах). Atlantis-addon часть отложена до ATLANTIS_ADDON_INFRA_PORTBACK (в PROD отсутствует механизм чтения prompt_addon целиком). PROD smoke с СМС-триггером подтвердил работу. Все три сервиса active, 0 ошибок за 5-мин мониторинг. PROD коммит d60e9b0b, без push.
+- [x] **GAPS_CLOSE_BEFORE_NEXT_SESSION** — закрыты 3 пробела перед следующей сессией: (1) стилистические правила Сергея («lf»=да, запрет ритуальных оборотов, короткое признание ошибок, один шаг=одно сообщение, «человеческим языком») добавлены пунктами 6-10 в ORCHESTRATOR_RULES.md «Стиль ответов»; (2) 4 критичных memory-файла добавлены в Gitpull блок CLAUDE.md (project_prod_dev_drift, user_sergey, project_voice_sprint_next, project_voice_vps); (3) в P3 заведён пункт на обновление userMemories оркестратора. Коммит 3081ea0e.
 
 ## Завершено (11.04.2026)
 

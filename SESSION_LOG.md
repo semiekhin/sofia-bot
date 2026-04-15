@@ -70,6 +70,13 @@
 - Рестарт всех трёх PROD-сервисов (sofia-gpt / sofia-web-api / sofia-radist) — все active running, 0 ERROR в логах за 5-минутный мониторинг
 - PROD smoke с тем же СМС-триггером — Sofia PROD применила все 3 правила общего блока, буквальный ответ зафиксирован в Build Report
 
+### 9. GAPS_CLOSE_BEFORE_NEXT_SESSION
+- Перед закрытием сессии зафиксированы 3 пробела:
+- `docs/ORCHESTRATOR_RULES.md` «Стиль ответов» расширен пунктами 6-10: «lf» = «да», запрет ритуальных оборотов, короткое признание ошибок без самозащиты, «по шагам» = один шаг/сообщение, «человеческим языком» как сигнал усталости Сергея
+- `CLAUDE.md` Gitpull блок дополнен scp-командами для 4 критичных memory-файлов: `project_prod_dev_drift.md`, `user_sergey.md`, `project_voice_sprint_next.md`, `project_voice_vps.md`. `mkdir` объединён (`docs` + `memory`). Без этого оркестратор Claude.ai в новой сессии не увидит каталог PROD↔DEV drift и свежие наблюдения про Сергея
+- `BACKLOG.md` P3: добавлен пункт «Обновить userMemories оркестратора» — устарели на сутки, оркестратор сам обновит через memory_user_edits в начале следующей сессии
+- Коммит `3081ea0e`
+
 **Коммиты DEV (15.04, полный список):**
 - `923f229c` docs: session 15.04 close — DISK_RESCUE + orchestrator rules
 - `5fee930c` docs: добавить ORCHESTRATOR_RULES.md в Gitpull блок CLAUDE.md
@@ -78,6 +85,8 @@
 - `057b6811` feat(docs): sprint contract template v2 with xml structure
 - `71103849` docs: wire SPRINT_TEMPLATE_v2 into orchestrator rules and gitpull
 - `772cbe6e` feat(prompts): safety rules + manager handoff triggers (atlantis)
+- `d3d20d9e` docs: session 15.04 close (часть 2) — widget + template + safety rules + prod deploy
+- `3081ea0e` docs: close 3 pre-session gaps (style rules, memory gitpull, userMemories backlog)
 
 **Коммит PROD:**
 - `d60e9b0b` feat(prompts): safety rules (core only) — port from dev 772cbe6e (sofia_prompt_v2.py only, atlantis-addon deferred)
