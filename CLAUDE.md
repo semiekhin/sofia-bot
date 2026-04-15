@@ -250,6 +250,11 @@ ssh sofia-voice "journalctl -u sofia-voice -n 50 --no-pager"
 - **Observer portback (08.04 → 10.04):** при git recovery 08.04 коммит 49659ffb был сделан напрямую в PROD. Не попал в DEV. 2 дня мина лежала — любой деплой DEV→PROD молча удалил бы Observer. Нашли через аудит. Урок: прямые prod-коммиты = источник расхождения, требуют немедленного backport или явной фиксации в SESSION_LOG.
 - **Аудит должен сверять git и диск (10.04):** первая версия аудита AUDIT_ATLANTIS заявила "prod и dev разошлись по bot_server.py, prod новее по Observer". При детальной проверке оказалось что коммит 49659ffb есть только в prod-git, в dev его вообще нет. Аудит смотрел только на файлы на диске. Урок: при сравнении веток проверять `git log --oneline`, `md5 git HEAD:file`, `md5 on-disk file` — все три показателя, и явно различать "расхождение в git" vs "расхождение между git и диском".
 - **Claude Code и cwd при git-операциях (10.04):** при проверке коммита 49659ffb Claude Code дважды запустил `git log` с неправильным cwd (из /opt/sofia-gpt когда ожидался /opt/sofia-gpt-dev), получил ложный вывод "коммит есть в обеих ветках". Исправлено явным `cd` перед каждой git-командой. Урок: в multi-repo окружении всегда явный `cd /opt/sofia-gpt` или `cd /opt/sofia-gpt-dev` перед git-вызовами, не полагаться на текущую cwd.
+- **logrotate-конфиг Asterisk сломан с 2022 (15.04):** glob-паттерны `messages`/`full`/`*_log` в `/etc/logrotate.d/asterisk` не матчили реальные файлы `messages.log`/`full.log`. logrotate каждую неделю молча проходил мимо. Файлы росли 4 года. Урок: при первой установке любого пакета — проверять что его logrotate-конфиг реально матчит файлы которые сервис создаёт. Простой способ: `logrotate --debug /etc/logrotate.d/<package>` — должен показать "considering log <file>" для каждого ожидаемого файла.
+- **Длинные ответы оркестратора на простые вопросы (15.04):** на вопросы вида "есть ли N в твоём промпте" Claude.ai давал эссе с ходом рассуждений вместо списка из N пунктов. Урок зафиксирован в ORCHESTRATOR_RULES.md.
+- **Отсутствие прохода "что забыл" перед отдачей контракта (15.04):** Claude.ai отдавал спринт-контракт с 10 пропусками, которые нашёл только ретроспективно после вопроса Сергея. Урок: обязательная финальная проверка контракта на полноту перед отдачей. Зафиксировано в ORCHESTRATOR_RULES.md.
+- **--vacuum-size vs --vacuum-time для journalctl (15.04):** на disk-rescue `journalctl --vacuum-size=200M` снёс логи тихих сервисов целиком. Для тихих сервисов (sofia-voice пишет редко) `--vacuum-time=7d` предсказуемее.
+- **Bitrix-фильтр TITLE LIKE для ATL даёт ложноотрицательный результат (15.04):** Sofia в ATL-flow обновляет существующий Tilda-лид (TITLE "Клиент #Планировки Атлантис"), а не создаёт свой "AI-бот: ...". Фильтр по TITLE никогда не найдёт ATL-клиентов. Правильный фильтр — `SOURCE_ID=397 + DATE_MODIFY`, кросс-проверка с `radist_leads`/`radist_messages`. Общее правило: вывод "пусто → значит нет" подозрителен и требует второй независимой проверки.
 
 ## .env ключи
 
@@ -278,6 +283,7 @@ ssh sofia-voice "journalctl -u sofia-voice -n 50 --no-pager"
 - `docs/STRESS_RESEARCH.md` — research ударений: ruaccent, U+0301, ElevenLabs (10.04)
 - `docs/ELEVENLABS_V3_RESEARCH.md` — research v3 vs MLv2 vs Flash, API, PVC, pricing (10.04)
 - `docs/AUDIT_ATLANTIS_2026-04-10.md` — полный аудит Атлантиса на 10.04: виджет, Telegram-бот + Тильда (ATL-flow), Radist (@SofiaOazis), Bitrix, контент, git-состояние, переход на @SofiaOazis
+- `docs/ORCHESTRATOR_RULES.md` — правила работы Claude.ai как оркестратора (роль, стиль ответов, перед спринт-контрактами, доверие к Claude Code)
 - `SESSION_LOG.md` — последние 10 сессий (компактно)
 - `BACKLOG.md` — невыполненные задачи по приоритетам
 

@@ -1,5 +1,45 @@
 # SESSION_LOG — Последние сессии
 
+## 15.04.2026 — Аудит расхождений + DISK_RESCUE + правила оркестратора
+
+**Сделано:**
+
+### 1. Context reconciliation (CONTEXT_RECONCILIATION_v1)
+- Сверка модели Claude Code с реальностью по 7 пунктам
+- Найдено критичное: VPS sofia-voice диск снова 100% (4 дня после прошлой чистки вместо прогноза 4-6 недель)
+- Sprint 2 (Radist username→Bitrix) verified в production: лид 265712 (Arkadiy, @pordiregrwe) прошёл полный цикл — UF_CRM_TELEGRAM заполнен, ASSIGNED восстановлен на менеджера 14708, БП 152 отработал
+- Edge-case клиент без публичного username (лид 265590) обработан корректно — поле не заполнено, не затёрто пустотой
+- Тильда: единственная ссылка `https://t.me/m/QinKZEsTNmRi` стабильно отдаётся для всех User-Agent
+- Урок: фильтр Bitrix `TITLE LIKE "AI-бот"` не работает для ATL (Sofia обновляет существующий Tilda-лид, не создаёт). Правильный фильтр — `SOURCE_ID=397 + DATE_MODIFY` + кросс-проверка с `radist_leads`
+
+### 2. DISK_RESCUE_v2 (пятиэтапный спринт)
+- **Диагностика:** на 185.207.66.201 диск 100% (29 GB / 29 GB)
+- **Корневая причина найдена:** `/etc/logrotate.d/asterisk` (поставленный с пакетом в 2022) имел сломанные glob-паттерны — `messages` вместо `messages.log`, `full` вместо `full.log`, `*_log` вместо `*.log`. logrotate каждую неделю отрабатывал, ничего не находил, тихо завершался. Файлы росли неограниченно 4 года. Это баг сборки Asterisk-пакета для Debian/Ubuntu — старые версии писали без расширения, новые с .log, конфиг logrotate в пакете не обновили.
+- **Очистка диска:** освобождено 25 GB
+  - Этап 3: `rm` архивных `full.log.0` + `messages.log.0` (по 9.9 GB) + `journalctl --vacuum-size=200M` + `truncate` btmp = +21 GB
+  - Этап 4: `asterisk -rx 'logger rotate'` (родная команда, корректно переоткрывает fd через inode change) + `rm` ротированных = +3 GB
+- **logrotate починен:** новый `/etc/logrotate.d/asterisk` с явными `full.log`, `messages.log`, `queue_log`, `daily rotate 7 compress`, postrotate через `asterisk -rx 'logger rotate'`. Бэкап старого в `/etc/logrotate.d/asterisk.broken.20260415`
+- **Финальное состояние:** диск 15% used / 85% free, asterisk + sofia-voice оба active, голосовой канал ожил после очистки, mtime `/etc/asterisk/logger.conf` не изменился (доказательство неприкосновенности)
+- **Усиление методологии:** Claude Code применил inode-check вместо опасного size-check для подтверждения ротации (поправка в Этапе 4)
+
+### 3. Правила оркестратора зафиксированы в отдельном документе
+- Создан `docs/ORCHESTRATOR_RULES.md` с правилами работы Claude.ai как оркестратора
+- В CLAUDE.md добавлена ссылка на новый документ
+- Поводом стали ошибки сегодняшней сессии: захардкоженный systemd-unit без знания файлов (10.04), длинные ответы на простые вопросы (15.04), отсутствие прохода "что забыл" перед отдачей контракта (15.04)
+
+**Коммиты в DEV:**
+- (этот спринт) — обновление документации
+
+**Файлы:** SESSION_LOG.md, BACKLOG.md, CLAUDE.md, docs/ORCHESTRATOR_RULES.md (новый)
+
+**Открытые задачи:**
+- Кнопка «Чат с менеджером» на сайте Атлантиса (Сергей создаёт вторую Telegram Business Link)
+- 20-минутный робот Bitrix у админа (ждём)
+- SIP-сканеры на VPS (P2, fail2ban или UFW)
+- voice_asterisk pipeline log line "Whisper STT" vs CLAUDE.md "Yandex SpeechKit" — несоответствие требует проверки (P2)
+
+---
+
 ## 11.04.2026 — Деплой Radist username→Bitrix в PROD
 
 **Сделано:**

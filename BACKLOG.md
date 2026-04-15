@@ -20,7 +20,6 @@
 - [x] ~~**Битрикс в radist_gateway.py**~~ — выполнено 08.04: radist_leads таблица, привязка ATL-лидов, таймауты 15/60/15
 - [ ] **Groq платный план** — бесплатный throttled 70% запросов в A/B тесте
 - [ ] **Retell begin_message** — убрать или настроить тот же голос что в ответах
-- [ ] **logrotate для Asterisk логов** — /var/log/asterisk/full.log и messages.log по 4.5 GB каждый. Без ротации сервер повторно упрётся в 100% диска через 4-6 недель
 - [ ] **Retell Transcription Mode** — accuracy vs speed тест
 - [ ] **Post-Call Data Extraction** — goal, budget, payment_type, meeting_agreed
 - [ ] **deploy.sh** — скрипт деплоя (сейчас ручной cp + restart)
@@ -36,6 +35,7 @@
 - [ ] **Architecture B: Pre-recorded Bank** — 60 WAV-фраз покрывают 70% реплик, LLM-роутер выбирает код фразы. Gain: 350ms на 70% ходов
 - [ ] **WebRTC кнопка в веб-виджете** — голосовой звонок в браузере
 - [ ] **OpenAI Realtime API** — Voice V3, нативный voice-to-voice
+- [ ] **journalctl --vacuum-time vs --vacuum-size** — на disk-rescue 15.04 использовали `--vacuum-size=200M`, что снесло логи sofia-voice целиком. На будущее предпочтительнее `--vacuum-time=Nd` для предсказуемого окна (хранить всё за последние N дней)
 
 ## P3 — Техдолг / Стратегия
 
@@ -46,6 +46,13 @@
 - [ ] **Чистка мусора в prod** — лишние файлы
 - [ ] **core/channel.py, core/observer.py** — рефакторинг каналов
 - [ ] **BUG-004 EN-раскладка** — обработка латиницы в сообщениях
+
+## Завершено (15.04.2026)
+
+- [x] **DISK_RESCUE_v2** — VPS 185.207.66.201 диск 100% → 15%, корневая причина (сломанный с 2022 logrotate-конфиг) найдена и починена. Освобождено 25 GB. Asterisk + sofia-voice не пострадали, mtime configs не изменился. Бэкап старого конфига в `/etc/logrotate.d/asterisk.broken.20260415`
+- [x] **CONTEXT_RECONCILIATION_v1** — сверка модели Claude Code с реальностью по 7 пунктам. Sprint 2 verified в production (лид 265712, @pordiregrwe → UF_CRM_TELEGRAM заполнен, БП 152 отработал)
+- [x] **ORCHESTRATOR_RULES.md** — отдельный документ с правилами работы оркестратора, зафиксированы уроки 10-15.04
+- [x] **logrotate для Asterisk** — починен корневой баг конфига (был в P1 как "настроить logrotate")
 
 ## Завершено (11.04.2026)
 
