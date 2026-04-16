@@ -1,5 +1,34 @@
 # SESSION_LOG — Последние сессии
 
+## 16.04.2026 — Диагностика голосового канала (VOICE_INCOMING_DIAG_v1)
+
+**Сделано:**
+
+### Диагностика: Sofia не реагирует на речь клиента при звонке
+- Сергей позвонил на +79310091644, симптом: София говорит greeting, но на речь клиента не реагирует
+- **Корневая причина найдена:** Groq убрал модель `moonshotai/kimi-k2-instruct` (HTTP 404 `model_not_found`). Модель полностью отсутствует в `/v1/models` — ни одной kimi/moonshot не осталось
+- **Вторичная причина:** OpenAI fallback (`gpt-5.4-mini`) идёт напрямую на api.openai.com с российского VPS → HTTP 403 GeoIP block. В .env нет `OPENAI_BASE_URL` для proxy. Pre-existing баг, не проявлялся пока Groq primary работал
+- **Что работает:** AudioSocket ✅, Greeting TTS ✅, VAD ✅ (детектирует speech), STT ✅ (транскрипт "Да удобно" за 158ms), TTS ✅ (ElevenLabs v3 Nastya, 913ms TTFB). **Только LLM сломан.**
+- Масштаб: 5 звонков сегодня от 4 разных клиентов + Сергей, ВСЕ получили только "Простите, связь подвисла. Повторите?"
+- Состояние VPS: sofia-voice active 5 дней (с 10.04), диск 45% (вырос с 15% за сутки — SIP-сканер fill rate ~8G/день, logrotate ещё не запускался первый раз). Код voice_asterisk.py mtime 10.04 — не менялся
+- Groq доступные модели: `meta-llama/llama-4-scout-17b-16e-instruct` (использовали до kimi-k2), `qwen/qwen3-32b`, `llama-3.3-70b-versatile`, `llama-3.1-8b-instant` и др. Ни одной kimi/moonshot
+
+**План починки (не выполнялся):**
+1. Заменить VOICE_MODEL_GROQ в .env на `meta-llama/llama-4-scout-17b-16e-instruct` (немедленный fix, проверенная модель)
+2. Добавить `OPENAI_BASE_URL=http://72.56.64.91:8095/openai/v1` в .env (fix fallback GeoIP)
+3. Проверить что voice_asterisk.py использует OPENAI_BASE_URL
+4. Restart sofia-voice + тестовый звонок
+5. Опционально: A/B тест llama-4-scout vs qwen3-32b
+
+**Побочные находки:**
+- 4 клиента RIZALTA пострадали — Сергей должен решить нужно ли перезвонить
+- Диск VPS растёт ~8G/сутки из-за SIP-сканеров → fail2ban/UFW переводится из P2 в P0
+- SIP-сканеры: 193.46.255.104 + 172.110.223.135 — сотни строк/секунду в full.log
+
+**Файлы:** только read-only разведка, никаких файлов не менялось
+
+---
+
 ## 15.04.2026 — Аудит расхождений + DISK_RESCUE + правила оркестратора
 
 **Сделано:**
