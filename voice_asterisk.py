@@ -63,6 +63,12 @@ VOICE_USER_ID_OFFSET = 9_500_000
 VAD_SILENCE_THRESHOLD = 0.3  # seconds of silence to trigger end-of-speech
 VAD_MIN_SPEECH_DURATION = 0.3  # minimum speech duration to process
 VAD_ENERGY_THRESHOLD = 200  # RMS energy threshold for speech detection
+BARGE_IN_COOLDOWN = (
+    0.5  # ignore VAD for N seconds after TTS cancel (suppress echo cascade)
+)
+MIN_SPEECH_BYTES_FOR_STT = (
+    10240  # 0.64s @ 8kHz 16-bit; shorter → likely noise, skip STT
+)
 
 # API Proxy (for Groq/OpenAI/ElevenLabs from Russian VPS)
 LLM_PROXY_BASE = os.getenv("LLM_PROXY_BASE", "http://72.56.64.91:8095")
@@ -411,6 +417,9 @@ class AudioSocketCall:
         self._barge_in_detected = False  # Client started speaking during response
         self._last_user_text: str = ""  # Last processed user text (for combining)
         self._cancel_playback = False  # Signal to stop current TTS playback
+        self._barge_in_cooldown_until: float = (
+            0.0  # monotonic ts; drop VAD frames until then
+        )
 
         # Timings for current turn
         self._turn_timings: dict = {}
@@ -462,6 +471,11 @@ class AudioSocketCall:
             self.audio_bytes_received += len(payload)
             self._audio_type = msg_type
 
+            # Drop frames from VAD/STT during post-barge-in cooldown
+            # (echo bleed-through from cancelled TTS otherwise retriggers VAD in a cascade)
+            if time.monotonic() < self._barge_in_cooldown_until:
+                return
+
             # Process audio through VAD
             if not self._is_responding:
                 await self._process_audio_vad(payload)
@@ -496,8 +510,10 @@ class AudioSocketCall:
         logger.info(f"Sending greeting... [prompt mode: {voice_prompt_mode}]")
         if voice_prompt_mode == "rizalta":
             greeting = (
-                "Здравствуйте! Это София, агентство Оазис. "
-                "Вам удобно сейчас разговаривать?"
+                "Алло, здравствуйте! У меня для вас важная новость. "
+                "Стартовали продажи апартаментов на Алтае с доходностью "
+                "от двух с половиной миллионов и окупаемостью от семи лет. "
+                "Хотите узнать подробности?"
             )
             cache_file = os.path.join(SOFIA_PATH, "greeting_rizalta.pcm")
         else:
@@ -542,6 +558,17 @@ class AudioSocketCall:
                 # Enough silence — process the speech
                 speech_duration = now - (self._speech_start or now)
                 if speech_duration >= VAD_MIN_SPEECH_DURATION:
+                    buf_len = len(self._speech_buffer)
+                    if buf_len < MIN_SPEECH_BYTES_FOR_STT:
+                        logger.debug(
+                            f"Audio too short ({buf_len} bytes "
+                            f"< {MIN_SPEECH_BYTES_FOR_STT}), skipping STT"
+                        )
+                        self._speech_buffer.clear()
+                        self._is_speaking = False
+                        self._silence_start = None
+                        self._speech_start = None
+                        return
                     speech_data = bytes(self._speech_buffer)
                     self._speech_buffer.clear()
                     self._is_speaking = False
@@ -571,8 +598,10 @@ class AudioSocketCall:
                 if speech_frames >= 5:  # ~100ms of sustained speech
                     self._barge_in_detected = True
                     self._cancel_playback = True
+                    self._barge_in_cooldown_until = time.monotonic() + BARGE_IN_COOLDOWN
                     logger.info(
-                        f"🔇 BARGE-IN confirmed — stopping TTS "
+                        f"🔇 BARGE-IN confirmed — stopping TTS, "
+                        f"cooldown {int(BARGE_IN_COOLDOWN * 1000)}ms "
                         f"({len(self._barge_in_buffer)} bytes accumulated)"
                     )
         elif self._barge_in_detected:
