@@ -680,21 +680,17 @@ class AudioSocketCall:
         finally:
             self._is_responding = False
 
-            # Check for barge-in: client spoke during our response
+            # After TTS cancel: discard barge-in buffer, let VAD listen fresh.
+            # Re-feeding the accumulated buffer lets polluted fragments
+            # (echo + speech mix) slip past MIN_SPEECH_BYTES_FOR_STT threshold —
+            # live call 16.04 UUID 21b96626 cascaded into "плохо слышно" fallback.
             if self._barge_in_detected and self._barge_in_buffer:
-                barge_audio = bytes(self._barge_in_buffer)
-                self._barge_in_buffer.clear()
-                self._barge_in_detected = False
-                logger.info(f"🔇 Processing barge-in audio: {len(barge_audio)} bytes")
-                # Feed barge-in audio through normal VAD pipeline
-                # Reset VAD state and process accumulated audio
-                self._speech_buffer = bytearray(barge_audio)
-                self._is_speaking = True
-                self._speech_start = time.time()
-                self._silence_start = time.time()  # Start silence timer
-            else:
-                self._barge_in_buffer.clear()
-                self._barge_in_detected = False
+                logger.debug(
+                    f"barge-in buffer cleared after cooldown "
+                    f"({len(self._barge_in_buffer)} bytes discarded)"
+                )
+            self._barge_in_buffer.clear()
+            self._barge_in_detected = False
 
     async def _speak_pcm(self, pcm_file: str):
         """Send pre-generated PCM file to Asterisk. Used for cached greetings."""
