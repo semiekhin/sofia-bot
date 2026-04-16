@@ -80,6 +80,7 @@ SILERO_VAD_THRESHOLD = 0.5  # speech probability threshold (normal VAD)
 SILERO_VAD_THRESHOLD_BARGE_IN = 0.5  # same as normal: TTS-echo mix on SIP line
 # depresses speech prob below 0.6 → barge-in silently failed on call 2852fd23.
 # Defense-in-depth kept: 5-frame consecutive confirm + 500ms cooldown + MIN_BYTES.
+BARGE_IN_SILENCE_RESET = 0.3  # sec of sustained silence before clearing barge-in buffer
 
 # API Proxy (for Groq/OpenAI/ElevenLabs from Russian VPS)
 LLM_PROXY_BASE = os.getenv("LLM_PROXY_BASE", "http://72.56.64.91:8095")
@@ -514,6 +515,9 @@ class AudioSocketCall:
         self._barge_in_cooldown_until: float = (
             0.0  # monotonic ts; drop VAD frames until then
         )
+        self._last_barge_in_speech_ts: float | None = (
+            None  # monotonic ts of last is_speech=True in _detect_barge_in
+        )
 
         # Timings for current turn
         self._turn_timings: dict = {}
@@ -692,6 +696,7 @@ class AudioSocketCall:
             is_speech = compute_rms(audio_bytes) > VAD_ENERGY_THRESHOLD * 1.5
         if is_speech:  # Higher threshold during playback
             self._barge_in_buffer.extend(audio_bytes)
+            self._last_barge_in_speech_ts = time.monotonic()
             if not self._barge_in_detected:
                 # Count consecutive speech frames before confirming barge-in
                 speech_frames = len(self._barge_in_buffer) // 320
@@ -708,8 +713,21 @@ class AudioSocketCall:
             # Silence after confirmed barge-in — keep accumulating
             self._barge_in_buffer.extend(audio_bytes)
         else:
-            # Noise spike, not sustained — reset
-            self._barge_in_buffer.clear()
+            if self._vad is not None:
+                # Silero: chunking mismatch (512B chunk vs 320B frame) causes
+                # True/False alternation on continuous speech. Clear only after
+                # sustained silence, not on every False. See call bcf67956.
+                if (
+                    self._last_barge_in_speech_ts is None
+                    or time.monotonic() - self._last_barge_in_speech_ts
+                    > BARGE_IN_SILENCE_RESET
+                ):
+                    self._barge_in_buffer.clear()
+                    self._last_barge_in_speech_ts = None
+            else:
+                # Energy: 1:1 frame→RMS, no alternation. Keep original instant
+                # clear for VOICE_VAD_PROVIDER=energy rollback fidelity.
+                self._barge_in_buffer.clear()
 
     async def _process_turn(self, audio_pcm: bytes):
         """Full turn: STT → LLM → TTS → send audio. Handles barge-in."""
@@ -719,6 +737,7 @@ class AudioSocketCall:
         self._cancel_playback = False
         self._barge_in_detected = False
         self._barge_in_buffer.clear()
+        self._last_barge_in_speech_ts = None
         turn_start = time.monotonic()
         self._turn_timings = {}
 
@@ -791,6 +810,7 @@ class AudioSocketCall:
                 )
             self._barge_in_buffer.clear()
             self._barge_in_detected = False
+            self._last_barge_in_speech_ts = None
 
     async def _speak_pcm(self, pcm_file: str):
         """Send pre-generated PCM file to Asterisk. Used for cached greetings."""
