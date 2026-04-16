@@ -62,7 +62,9 @@ CHANNELS = 1
 VOICE_USER_ID_OFFSET = 9_500_000
 
 # VAD settings
-VAD_SILENCE_THRESHOLD = 0.3  # seconds of silence to trigger end-of-speech
+VAD_SILENCE_THRESHOLD = 0.5  # seconds of silence to trigger end-of-speech
+# Raised from 0.3s (call e177d7ad: 300ms endpoint cut "цена и <срок>" mid-sentence
+# on natural speech pause). Temporary until Yandex STT v3 gRPC streaming (server EOU).
 VAD_MIN_SPEECH_DURATION = 0.3  # minimum speech duration to process
 VAD_ENERGY_THRESHOLD = (
     200  # RMS energy threshold for speech detection (energy dead branch)
@@ -702,9 +704,14 @@ class AudioSocketCall:
             self._barge_in_buffer.extend(audio_bytes)
             self._last_barge_in_speech_ts = time.monotonic()
             if not self._barge_in_detected:
-                # Count consecutive speech frames before confirming barge-in
+                # Count consecutive speech frames before confirming barge-in.
+                # Silero: 10 frames — chunking mismatch gives ~200ms real speech
+                # (call e177d7ad: 5 frames confirmed on a single "ээ"/breath).
+                # Energy: 5 frames (100ms, 1:1 frame→RMS) — kept for rollback fidelity
+                # via VOICE_VAD_PROVIDER=energy.
                 speech_frames = len(self._barge_in_buffer) // 320
-                if speech_frames >= 5:  # ~100ms of sustained speech
+                confirm_frames = 10 if self._vad is not None else 5
+                if speech_frames >= confirm_frames:
                     self._barge_in_detected = True
                     self._cancel_playback = True
                     self._barge_in_cooldown_until = time.monotonic() + BARGE_IN_COOLDOWN
