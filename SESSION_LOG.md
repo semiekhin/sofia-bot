@@ -47,6 +47,56 @@
 **Побочные находки:**
 - SIP-сканеры (193.46.255.104 + 172.110.223.135) раздувают Asterisk full.log ~8G/сутки, диск рос 15%→45% за сутки → fail2ban/UFW переведён в P0
 
+### Sprint 1 продолжение: Barge-in fix + RIZALTA v3 + voice research
+
+**Barge-in cascade fix:**
+- После миграции на Yandex Alena TTS (быстрее ElevenLabs) barge-in стал заметнее — 50% пустых STT на звонках с перебиванием, каскад ложных VAD после cancel TTS
+- Добавлено в `voice_asterisk.py`: константы `BARGE_IN_COOLDOWN=0.5`, `MIN_SPEECH_BYTES_FOR_STT=10240`, поле `_barge_in_cooldown_until`
+- Гейт в `_handle_packet` AUDIO-ветке: `time.monotonic() < _barge_in_cooldown_until` → дропать фрейм
+- Cooldown активируется в `_detect_barge_in` при подтверждении barge-in (вместе с `_cancel_playback=True`)
+- MIN_BYTES проверка в `_process_audio_vad` перед созданием `_process_turn` task → debug-лог `Audio too short (N bytes < 10240), skipping STT`
+- Проверено в живом звонке 16.04 18:40 (UUID 21b96626): cooldown сработал 2×, MIN_BYTES 3×
+
+**RIZALTA промпт v3 (коммит `ef2888ae`):**
+- **Без представления** («Алло, здравствуйте! У меня для вас важная новость...» сразу в greeting)
+- **Двухчастный питч:** часть 1 — крючок с доходностью (greeting); часть 2 — регион/спрос/Сибирь (после согласия)
+- **Логика мессенджеров:** Ватсап/Макс = номер уже знаем, прощаемся; Телеграм = уточняем ник; иначе — спрашиваем «Куда удобнее?»
+- **Вход повышен** 10 млн → 15 млн рублей (по факту проекта)
+- Добавлены: Совкомбанк ипотека, траншевая ипотека Сбербанка, сравнение с депозитом, минимальный гарантированный платёж
+- Запрещены фразы «скину пакет» / «в Телеграм пакет» (неестественно)
+- Cached greeting `greeting_rizalta.pcm` регенерирован через Yandex Alena (190 chars → 198318 bytes PCM, 12.4s аудио, 346ms синтез)
+- Hardcoded greeting в `voice_asterisk.py:506-511` обновлён на питч-часть-1
+
+**Тестовый звонок с перебиванием (UUID 21b96626, 81.8s):**
+- Greeting проиграл целиком (1ms TTFB, 12.4s без прерываний)
+- Turn 1 barge-in через 10с игры TTS → cooldown 500ms сработал
+- **Проблема:** 13120-байтовый barge-in buffer (0.82с, порог 10240 прошёл) отправился в STT → garbled «Со стороны» → LLM-ответ «Простите, плохо слышно» из блока «Не расслышала» промпта
+- Логика мессенджеров дошла: «Куда отправить? Телеграм, ватсап или макс?» на «Да давайте» ✅
+
+### Исследование voice stack (отчёт `docs/VOICE_RESEARCH_2026_04_16.md`)
+
+- 20 идей улучшения, каждая с gain/effort/risk/priority/источниками
+- Сравнение 5 мировых платформ (Vapi, Retell, LiveKit, Pipecat, 11L Conversational)
+- Обзор 6 отечественных стеков (Yandex, Sber SaluteSpeech, Tinkoff VoiceKit, T-one OSS, GigaAM v3, Silero TTS v5)
+- **Топ-5 по gain/effort:** Silero VAD (0.5д, −150ms), Yandex STT v3 gRPC streaming (1-2д, −300ms), sentence-level LLM→TTS (2д, −350ms), TTS cache + fillers (1.5д, перцептивно→0ms), per-turn JSON metrics (1д, observability)
+- **Целевая метрика:** 860ms median user-perceived pause → **300-400ms** + субъективно <100ms через filler маскирование
+- Эффорт top-5 ≈ 7 дней чистой работы
+
+### Следующая сессия — P0
+
+1. **Barge-in buffer reset** вместо re-feed в VAD (сейчас `_process_turn` finally копирует barge-in buffer в `_speech_buffer` → 13120-байтный polluted fragment попал в STT). Вариант: после cooldown просто очищать buffer, ждать свежую речь
+2. **Silero VAD** замена energy-based RMS (0.5 дня, drop-in замена, +90% precision)
+3. **Yandex STT v3 gRPC streaming** — убрать REST TLS handshake + VAD 300ms timeout (−150-300ms)
+4. **Sentence-level LLM streaming → TTS pipelining** (−200-350ms на репликах >1 предложения)
+
+**Коммиты 16.04:**
+- `3edc908f` docs: session 16.04 — voice diag (Groq model removed)
+- `a7f45612` feat(voice): migrate LLM+TTS to Yandex stack (VOICE_YANDEX_MIGRATION_v1)
+- `ae61ed8d` docs: session 16.04 — voice yandex migration + 4-way A/B
+- `ef2888ae` feat(voice): RIZALTA v3 prompt + voice research report
+
+**Файлы:** voice_asterisk.py, core/pipeline.py, docs/VOICE_RESEARCH_2026_04_16.md, greeting_rizalta.pcm (VPS)
+
 ---
 
 ## 15.04.2026 — Аудит расхождений + DISK_RESCUE + правила оркестратора
