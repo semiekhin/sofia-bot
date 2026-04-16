@@ -27,6 +27,8 @@ import time
 import uuid as uuid_mod
 
 import httpx
+import numpy as np
+import onnxruntime as ort
 from dotenv import load_dotenv
 from loguru import logger
 
@@ -62,13 +64,22 @@ VOICE_USER_ID_OFFSET = 9_500_000
 # VAD settings
 VAD_SILENCE_THRESHOLD = 0.3  # seconds of silence to trigger end-of-speech
 VAD_MIN_SPEECH_DURATION = 0.3  # minimum speech duration to process
-VAD_ENERGY_THRESHOLD = 200  # RMS energy threshold for speech detection
+VAD_ENERGY_THRESHOLD = (
+    200  # RMS energy threshold for speech detection (energy dead branch)
+)
 BARGE_IN_COOLDOWN = (
     0.5  # ignore VAD for N seconds after TTS cancel (suppress echo cascade)
 )
 MIN_SPEECH_BYTES_FOR_STT = (
     10240  # 0.64s @ 8kHz 16-bit; shorter → likely noise, skip STT
 )
+
+# Silero VAD (neural) — default provider since 16.04
+VOICE_VAD_PROVIDER = os.getenv("VOICE_VAD_PROVIDER", "silero")  # silero | energy
+SILERO_VAD_THRESHOLD = 0.5  # speech probability threshold (normal VAD)
+SILERO_VAD_THRESHOLD_BARGE_IN = 0.5  # same as normal: TTS-echo mix on SIP line
+# depresses speech prob below 0.6 → barge-in silently failed on call 2852fd23.
+# Defense-in-depth kept: 5-frame consecutive confirm + 500ms cooldown + MIN_BYTES.
 
 # API Proxy (for Groq/OpenAI/ElevenLabs from Russian VPS)
 LLM_PROXY_BASE = os.getenv("LLM_PROXY_BASE", "http://72.56.64.91:8095")
@@ -119,6 +130,84 @@ def compute_rms(audio_bytes: bytes) -> float:
     if not samples:
         return 0.0
     return (sum(s * s for s in samples) / len(samples)) ** 0.5
+
+
+# ============================================================
+# Silero VAD (neural) — module-level singleton + per-call instance
+# Model: Silero VAD v4 ONNX (1.8MB, md5 03da8de2fec4108a089b39f1b4abefef).
+# v5 underperforms at 8kHz (benchmark 13% recall vs v4's 73%); v5 kept as
+# silero_vad_v5.onnx.legacy for future re-test when upstream improves 8kHz.
+# ============================================================
+
+SILERO_VAD_MODEL_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "silero_vad.onnx"
+)
+SILERO_CHUNK_SAMPLES_8K = 256  # Silero expects 256 samples @ 8kHz (32ms)
+SILERO_CHUNK_BYTES_8K = SILERO_CHUNK_SAMPLES_8K * 2  # 512 bytes int16
+SILERO_LSTM_DIM = 64  # v4 LSTM state dim (v5 used 128)
+
+_silero_session: ort.InferenceSession | None = None
+
+
+def _get_silero_session() -> ort.InferenceSession:
+    """Lazy singleton ONNX session. One model instance shared across calls."""
+    global _silero_session
+    if _silero_session is None:
+        opts = ort.SessionOptions()
+        opts.intra_op_num_threads = 1
+        opts.inter_op_num_threads = 1
+        _silero_session = ort.InferenceSession(
+            SILERO_VAD_MODEL_PATH,
+            sess_options=opts,
+            providers=["CPUExecutionProvider"],
+        )
+        with open(SILERO_VAD_MODEL_PATH, "rb") as _f:
+            _md5 = hashlib.md5(_f.read()).hexdigest()
+        logger.info(
+            f"Silero VAD loaded: {SILERO_VAD_MODEL_PATH} " f"(v4, 8kHz, md5={_md5})"
+        )
+    return _silero_session
+
+
+class SileroVAD:
+    """Per-call Silero VAD v4: buffers AudioSocket frames into 512-byte chunks,
+    keeps LSTM (h, c) state between chunks, returns True if any processed
+    chunk exceeded the given speech-probability threshold.
+    """
+
+    def __init__(self, sample_rate: int = 8000):
+        self._session = _get_silero_session()
+        self._buffer = bytearray()
+        self._h = np.zeros((2, 1, SILERO_LSTM_DIM), dtype=np.float32)
+        self._c = np.zeros((2, 1, SILERO_LSTM_DIM), dtype=np.float32)
+        self._sr = np.array(sample_rate, dtype=np.int64)
+        self._chunk_bytes = SILERO_CHUNK_BYTES_8K
+
+    def is_speech(self, pcm_bytes: bytes, threshold: float) -> bool:
+        """Accumulate bytes, run Silero on each complete 512-byte chunk.
+        Returns True if ANY chunk produced probability > threshold.
+        """
+        self._buffer.extend(pcm_bytes)
+        speech = False
+        while len(self._buffer) >= self._chunk_bytes:
+            chunk = bytes(self._buffer[: self._chunk_bytes])
+            del self._buffer[: self._chunk_bytes]
+            audio_int16 = np.frombuffer(chunk, dtype=np.int16)
+            audio_float = audio_int16.astype(np.float32) / 32768.0
+            prob, new_h, new_c = self._session.run(
+                None,
+                {
+                    "input": audio_float.reshape(1, -1),
+                    "sr": self._sr,
+                    "h": self._h,
+                    "c": self._c,
+                },
+            )
+            self._h = new_h
+            self._c = new_c
+            if float(prob[0][0]) > threshold:
+                speech = True
+        return speech
 
 
 # ============================================================
@@ -404,6 +493,11 @@ class AudioSocketCall:
         self._silence_start: float | None = None
         self._is_speaking = False
         self._speech_start: float | None = None
+        self._vad: SileroVAD | None = (
+            SileroVAD(sample_rate=SAMPLE_RATE_IN)
+            if VOICE_VAD_PROVIDER == "silero"
+            else None
+        )
 
         # Pipeline state
         self._user_id: int = 0
@@ -535,11 +629,14 @@ class AudioSocketCall:
             await self._speak(greeting)
 
     async def _process_audio_vad(self, audio_bytes: bytes):
-        """Simple energy-based VAD: detect speech end, trigger STT."""
-        rms = compute_rms(audio_bytes)
+        """VAD dispatch (silero | energy): detect speech end, trigger STT."""
         now = time.time()
+        if self._vad is not None:
+            is_speech = self._vad.is_speech(audio_bytes, SILERO_VAD_THRESHOLD)
+        else:
+            is_speech = compute_rms(audio_bytes) > VAD_ENERGY_THRESHOLD
 
-        if rms > VAD_ENERGY_THRESHOLD:
+        if is_speech:
             # Speech detected
             if not self._is_speaking:
                 self._is_speaking = True
@@ -589,8 +686,11 @@ class AudioSocketCall:
         Requires 5+ consecutive speech frames (~100ms) to avoid false triggers
         from noise or echo. Once confirmed, stops TTS and accumulates audio.
         """
-        rms = compute_rms(audio_bytes)
-        if rms > VAD_ENERGY_THRESHOLD * 1.5:  # Higher threshold during playback
+        if self._vad is not None:
+            is_speech = self._vad.is_speech(audio_bytes, SILERO_VAD_THRESHOLD_BARGE_IN)
+        else:
+            is_speech = compute_rms(audio_bytes) > VAD_ENERGY_THRESHOLD * 1.5
+        if is_speech:  # Higher threshold during playback
             self._barge_in_buffer.extend(audio_bytes)
             if not self._barge_in_detected:
                 # Count consecutive speech frames before confirming barge-in
@@ -854,6 +954,11 @@ async def handle_connection(reader: asyncio.StreamReader, writer: asyncio.Stream
 async def main():
     # Ensure database tables exist
     _ensure_tables(DB_PATH)
+
+    # Eager-load Silero VAD (if enabled) so "loaded" log appears at startup,
+    # not on first call — also moves ~200ms init out of first-call latency.
+    if VOICE_VAD_PROVIDER == "silero":
+        _get_silero_session()
 
     server = await asyncio.start_server(
         handle_connection,
