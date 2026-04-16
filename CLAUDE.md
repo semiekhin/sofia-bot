@@ -40,10 +40,12 @@ Python 3.12, FastAPI, SQLite, OpenAI gpt-5.2 (Responses API), ChromaDB (RAG, tex
 6. **Object context:** при `source_object` → инъекция карточки объекта + presentation_url в system prompt
 
 **stream_voice_response()** — голосовой pipeline (используется в voice_asterisk.py и voice_api.py):
-- Модель: Groq `kimi-k2-instruct` (primary, переключено 09.04 с llama-4-scout), OpenAI `gpt-5.4-mini` (fallback)
+- Модель (с 16.04): **YandexGPT 5 Pro** (`yandexgpt/latest` через AI Studio OpenAI-compatible endpoint)
+- Env переключатель `VOICE_PROVIDER`: `yandex` (default) / `groq` / `openai` — dead branches сохранены для rollback
 - `max_tokens=400`, **без RAG** (скорость), без Analyzer
 - Rule-based state extraction ДО LLM: goal, budget, payment_type, meeting_agreed
 - VOICE_SYSTEM_PROMPT: компактный промпт со скриптом продаж и примерами
+- Anti-hallucination regex post-filter в stream_voice_response() — обрезает на маркерах `Пользователь:`/`Клиент:`/`Ассистент:` (YandexGPT иногда генерирует продолжение диалога)
 - `sanitize_for_tts()`: убирает латиницу, URL, email, @mentions
 
 ### Голосовой стек Asterisk (voice_asterisk.py)
@@ -62,38 +64,41 @@ Python 3.12, FastAPI, SQLite, OpenAI gpt-5.2 (Responses API), ChromaDB (RAG, tex
 │    │                                                                 │
 │    ▼ AudioSocket (TCP localhost:9090)                                │
 │ voice_asterisk.py:                                                   │
-│    ├─ VAD (energy-based, 0.4s silence threshold)                    │
+│    ├─ VAD (energy-based RMS, 0.3s silence threshold)                │
 │    ├─ Barge-in detection (5+ frames, cancel TTS)                    │
-│    ├─ STT: Yandex SpeechKit REST v1 (~300ms) ──── напрямую         │
-│    ├─ LLM: Groq kimi-k2 (~300ms) ───────────────── через proxy ──┐  │
-│    └─ TTS: ElevenLabs Nastya streaming (~500ms) ── через proxy ─┤  │
-└─────────────────────────────────────────────────────────────────┘  │
-                                                                      │
-┌─────────────── Основной сервер 72.56.64.91 ────────────────────────┤
-│ nginx proxy :8095 (UFW: only 185.207.66.201)                       │
-│    ├─ /groq/     → https://api.groq.com/                           │
-│    ├─ /openai/   → https://api.openai.com/                         │
-│    └─ /elevenlabs/ → https://api.elevenlabs.io/                    │
+│    ├─ Barge-in cooldown 500ms + MIN_SPEECH_BYTES 10240 (16.04)      │
+│    ├─ STT: Yandex SpeechKit REST v1 (~200ms) ──── напрямую          │
+│    ├─ LLM: YandexGPT 5 Pro (~638ms) ─────────────── напрямую        │
+│    └─ TTS: Yandex SpeechKit Alena v1 LPCM (~177ms) напрямую         │
+└─────────────────────────────────────────────────────────────────────┘
+
+┌─────────────── Основной сервер 72.56.64.91 ────────────────────────┐
+│ nginx proxy :8095 (UFW: only 185.207.66.201) — только для ТЕКСТА   │
+│    ├─ /openai/   → https://api.openai.com/  (text: gpt-5.2)        │
+│    └─ (legacy: /groq/, /elevenlabs/ — мёртвые ветки голоса)        │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-**Архитектурное решение (08.04.2026):** Двухсерверная архитектура — **постоянная**, не временная. Телфин не меняет GeoIP настройки, задача переноса Asterisk на NL-сервер закрыта как невыполнимая. Proxy на 72.56.64.91 = production-компонент, не костыль. +20-30ms на API запрос — приемлемо.
-- Телфин блокирует SIP по IP (403 Forbidden Ip) — VPS в белом списке
-- Groq/OpenAI/ElevenLabs блокируют Россию — proxy через нидерландский сервер
+**Архитектурное решение (16.04.2026):** После миграции голосового стека на Yandex Cloud (все API доступны из России напрямую) — proxy на 72.56.64.91 **больше не участвует в голосовом пути**. Остаётся для текстового стека (OpenAI gpt-5.2). Двухсерверная архитектура сохраняется: Телфин блокирует SIP по IP (403 Forbidden Ip) — VPS в белом списке.
 
 **AudioSocket протокол (TCP):**
 - Пакет: `[1 byte type][2 bytes length BE][payload]`
 - UUID=0x01 (16 bytes binary), Audio=0x10 (slin 8kHz), Hangup=0x00, Error=0xFF
 - Телфин отправляет INVITE на extension 's'
 
-**Тайминги (конец речи → первый звук ответа, обновлено 09.04):**
-- VAD silence: 300ms (снижено с 400ms, 09.04)
-- STT (Yandex): ~300ms
-- LLM (Groq kimi-k2 via proxy): ~300ms (было ~500ms с llama-4-scout)
-- TTS first byte (ElevenLabs v3 via proxy): ~700-900ms (было ~300ms с Flash v2.5)
-- **Итого: ~900-1100ms ощущаемая пауза** (было ~600-700ms с Flash, качество v3 значительно лучше)
+**Тайминги (конец речи → первый звук ответа, обновлено 16.04):**
+- VAD silence: 300ms
+- STT (Yandex REST v1): ~200ms
+- LLM (YandexGPT 5 Pro напрямую): ~638ms медиана
+- TTS first byte (Yandex Alena v1 LPCM напрямую): ~177ms
+- **Итого: ~860ms ощущаемая пауза** (было ~900-1100ms с ElevenLabs+Groq через proxy)
+- Greeting TTFB: **0ms** (cached PCM), 1ms до первого фрейма
 
-**TTS streaming:** ElevenLabs `/stream` endpoint + `optimize_streaming_latency=4` → MP3 stream → ffmpeg pipe → 8kHz PCM → AudioSocket фреймы (320 bytes = 20ms)
+**Barge-in суппрессия echo (16.04):**
+- Константы в `voice_asterisk.py`: `BARGE_IN_COOLDOWN = 0.5` (сек), `MIN_SPEECH_BYTES_FOR_STT = 10240` (0.64с @ 8kHz 16-bit)
+- После подтверждения barge-in (`_cancel_playback=True`) — в `_handle_packet` AUDIO-ветке фреймы дропаются через `time.monotonic() < self._barge_in_cooldown_until` (защита от echo cascade)
+- В `_process_audio_vad` перед созданием `_process_turn` task проверяется `len(speech_buffer) >= MIN_SPEECH_BYTES_FOR_STT` — короткие шумовые фрагменты скипаются с debug-логом
+- **Известная дыра (на фикс в следующей сессии):** в `_process_turn` finally barge-in buffer копируется в `_speech_buffer` и скармливается VAD после cooldown. На звонке 16.04 (UUID 21b96626) 13120-байтовый polluted fragment прошёл MIN_BYTES порог → STT дал garbled «Со стороны» → LLM-ответ «плохо слышно». Правильный фикс: **очищать buffer, не re-feed'ить**
 
 **SIP данные Телфин:**
 - Сервер: sipproxy.telphin.ru:5068
@@ -128,19 +133,24 @@ ssh sofia-voice "journalctl -u sofia-voice -n 50 --no-pager"
 - Переключает greeting в `voice_asterisk.py` (`_send_greeting()`) и system prompt в `core/pipeline.py` (`stream_voice_response()`)
 - На VPS `.env`: `VOICE_PROMPT_MODE=rizalta`
 - `VOICE_SYSTEM_PROMPT` — Atlantis (входящая квалификация), НЕ ТРОГАТЬ
-- `VOICE_SYSTEM_PROMPT_RIZALTA` — RIZALTA goal-oriented промпт (исходящий обзвон)
+- `VOICE_SYSTEM_PROMPT_RIZALTA` — RIZALTA v3 (16.04): без представления, двухчастный каноничный питч, логика мессенджеров (Ватсап/Макс = номер уже знаем, Телеграм = уточняем ник), вход 15 млн, Совкомбанк/Сбер ипотека, запрет «скину пакет»
 
-**ElevenLabs TTS (обновлено 10.04, v3 locked):**
-- Nastya — Professional Voice Clone (PVC), voice_id=YjESejviApN7SHrbfnA2
-- Модель: `eleven_v3` (переключено 10.04 после A/B теста v3 vs MLv2 vs Flash v2.5)
-- v3 TTFB ~700-900ms (медленнее Flash, но значительно лучше просодия и ударения)
-- v3 НЕ поддерживает optimize_streaming_latency
-- v3 стоимость 1x кредит/символ (Flash = 0.5x)
-- Настройки (09.04): stability=0.50, similarity_boost=0.85, speed=1.10
-- SSML: `<break time="0.3s"/>` поддерживается (inline, без `<speak>` обёртки). Max 2 breaks на реплику
-- Pronunciation dictionaries: alias-правила доступны, но требуют Scale план ($99/мес) — не используем
-- Ударения: ~80% точность на русском (все модели ElevenLabs одинаково). Yandex SpeechKit лучше (99%), но нет voice cloning
+**Yandex TTS Alena (текущий провайдер с 16.04):**
+- Голос: `alena`, формат `lpcm` 8kHz 16-bit mono (готовый для AudioSocket, без ffmpeg)
+- Модель: Yandex SpeechKit v1 REST, endpoint `tts.api.cloud.yandex.net/speech/v1/tts:synthesize`
+- TTFB ~150-185ms медиана (single REST POST, весь PCM одним ответом)
+- Настройки: emotion=neutral, speed=1.1
+- SSML: `<break time="300ms"/>` (Yandex требует integer ms, не дробные секунды как 0.3s)
+- Cached greetings (0ms TTFB): `greeting_rizalta.pcm` (198318 bytes, 12.4s аудио, регенерирован 16.04 под RIZALTA v3), `greeting_atlantis.pcm`
+- Регенерация cached PCM: inline Python через `synthesize_tts_yandex()` → запись файла
+- Ударения: ~99% на русском (лучше ElevenLabs), voice cloning отсутствует
 - `add_ssml_breaks()` — функция в voice_asterisk.py, автоматически вставляет breaks между предложениями
+- Env VPS: `YC_API_KEY`, `YC_FOLDER_ID`, `YANDEX_TTS_VOICE=alena`, `YANDEX_TTS_EMOTION=neutral`, `YANDEX_TTS_SPEED=1.1`, `VOICE_TTS_PROVIDER=yandex`
+
+**ElevenLabs legacy (dead branch, rollback-only):**
+- Переключается через `VOICE_TTS_PROVIDER=elevenlabs` в .env
+- Nastya PVC, voice_id=YjESejviApN7SHrbfnA2, модель `eleven_v3`, через proxy 72.56.64.91:8095 → ffmpeg MP3→PCM
+- Код сохранён для экстренного rollback
 
 **Стадии (RAG stages):** GREETING → ACTUALIZATION → QUALIFICATION → PRESENTATION → OBJECTION → MEETING → CLOSING
 
@@ -258,6 +268,7 @@ ssh sofia-voice "journalctl -u sofia-voice -n 50 --no-pager"
 - **git cherry-pick не работает между отдельными git-репо (15.04):** PROD `/opt/sofia-gpt/.git` и DEV `/opt/sofia-gpt-dev/.git` — **разные репозитории**, не ветки одного. `git cherry-pick <sha>` в PROD падает с `fatal: bad revision` потому что SHA существует только в DEV-objects. Рабочий способ — `cd /opt/sofia-gpt-dev && git format-patch -1 <sha> --stdout | (cd /opt/sofia-gpt && git am --no-verify -)`. Альтернатива — `cd /opt/sofia-gpt && git fetch /opt/sofia-gpt-dev main && git cherry-pick FETCH_HEAD` (оставляет dangling objects до gc). Прецедент `3892c648 (cherry-pick 7f4c96a2)` в PROD сделан именно через format-patch+am, метка «cherry-pick» — лишь в commit message.
 - **DEV→PROD деплой: учитывать файлы-потребители, не только целевые (15.04):** при деплое `config/source_objects.py` с расширенным `prompt_addon` в PROD выяснилось что PROD `core/pipeline.py` вообще **не читает** `prompt_addon` (нет ветки `if obj_config.get("prompt_addon")`), и в `source_objects.py` PROD этого ключа никогда не было. Atlantis-addon — DEV-only фича целиком, 400+ строк разницы в pipeline.py PROD vs DEV. Урок: в investigate_first обязательно сравнивать не только целевые файлы, но и файлы-потребители (pipeline.py когда трогаем config/*.py, bot_server.py когда трогаем core/bitrix.py). Иначе деплой превращается в «данные есть, код-потребителя нет → мёртвый текст в словаре».
 - **Groq может убрать модель без предупреждения (16.04):** `moonshotai/kimi-k2-instruct` полностью исчезла из Groq `/v1/models` между 10-16.04. Все 5 звонков 16.04 получили 404, голос мёртв. Урок: (1) мониторить доступность модели периодически (curl models endpoint), (2) fallback-модель должна РЕАЛЬНО работать (OpenAI fallback без proxy = pre-existing мёртвый код), (3) не полагаться на одну модель одного провайдера для production без запасного пути.
+- **Barge-in buffer re-feed пропустил echo через MIN_BYTES порог (16.04):** на звонке UUID 21b96626 после cancel TTS `_process_turn` finally переместил 13120-байтовый barge-in buffer (0.82с) в `_speech_buffer` и скормил VAD после cooldown. Буфер оказался **чуть выше** порога `MIN_SPEECH_BYTES_FOR_STT=10240` → прошёл фильтр → STT получил смесь echo+обрывка речи → вернул garbled «Со стороны» → LLM интерпретировал как невнятное и выдал фолбэк «плохо слышно» из блока «Не расслышала» RIZALTA-промпта. Правильный фикс: **не re-feed'ить** barge-in buffer в VAD, просто очищать после cooldown и ждать свежую речь клиента. Урок: MIN_BYTES порог — только первая линия защиты; любой источник «накопленного накануне» буфера (barge-in, начало захвата до cooldown) может протечь выше порога. Второй слой защиты должен быть в местах, откуда поступают эти источники.
 - **Split-deploy как честное решение при разошедшихся DEV↔PROD (15.04):** когда деплой одного коммита обнаруживает что в PROD отсутствует инфраструктура, **не** делать слепой cp всей фичи из DEV. Правильно: применить **только** те файлы, где diff чистый и инфраструктура готова, остальное отложить в backlog как `ATLANTIS_ADDON_INFRA_PORTBACK`-подобный спринт с полной разведкой и планом порта. Сегодняшний `d60e9b0b` — прецедент: `sofia_prompt_v2.py` в PROD применён через `git show <sha> -- <file> | git apply --index -`, Atlantis-addon часть отложена.
 
 ## .env ключи
