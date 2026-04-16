@@ -1,31 +1,35 @@
 # SESSION_LOG — Последние сессии
 
-## 16.04.2026 — Диагностика голосового канала (VOICE_INCOMING_DIAG_v1)
+## 16.04.2026 — VOICE_YANDEX_MIGRATION_v1: полная миграция голосового стека на Yandex
 
 **Сделано:**
 
-### Диагностика: Sofia не реагирует на речь клиента при звонке
-- Сергей позвонил на +79310091644, симптом: София говорит greeting, но на речь клиента не реагирует
-- **Корневая причина найдена:** Groq убрал модель `moonshotai/kimi-k2-instruct` (HTTP 404 `model_not_found`). Модель полностью отсутствует в `/v1/models` — ни одной kimi/moonshot не осталось
-- **Вторичная причина:** OpenAI fallback (`gpt-5.4-mini`) идёт напрямую на api.openai.com с российского VPS → HTTP 403 GeoIP block. В .env нет `OPENAI_BASE_URL` для proxy. Pre-existing баг, не проявлялся пока Groq primary работал
-- **Что работает:** AudioSocket ✅, Greeting TTS ✅, VAD ✅ (детектирует speech), STT ✅ (транскрипт "Да удобно" за 158ms), TTS ✅ (ElevenLabs v3 Nastya, 913ms TTFB). **Только LLM сломан.**
-- Масштаб: 5 звонков сегодня от 4 разных клиентов + Сергей, ВСЕ получили только "Простите, связь подвисла. Повторите?"
-- Состояние VPS: sofia-voice active 5 дней (с 10.04), диск 45% (вырос с 15% за сутки — SIP-сканер fill rate ~8G/день, logrotate ещё не запускался первый раз). Код voice_asterisk.py mtime 10.04 — не менялся
-- Groq доступные модели: `meta-llama/llama-4-scout-17b-16e-instruct` (использовали до kimi-k2), `qwen/qwen3-32b`, `llama-3.3-70b-versatile`, `llama-3.1-8b-instant` и др. Ни одной kimi/moonshot
+### Диагностика (начало сессии)
+- Groq убрал модель `moonshotai/kimi-k2-instruct` без предупреждения (HTTP 404)
+- OpenAI fallback мёртв (GeoIP 403 с VPS). Голосовой канал полностью неработоспособен
 
-**План починки (не выполнялся):**
-1. Заменить VOICE_MODEL_GROQ в .env на `meta-llama/llama-4-scout-17b-16e-instruct` (немедленный fix, проверенная модель)
-2. Добавить `OPENAI_BASE_URL=http://72.56.64.91:8095/openai/v1` в .env (fix fallback GeoIP)
-3. Проверить что voice_asterisk.py использует OPENAI_BASE_URL
-4. Restart sofia-voice + тестовый звонок
-5. Опционально: A/B тест llama-4-scout vs qwen3-32b
+### Sprint 1: миграция LLM + TTS на Yandex (VOICE_YANDEX_MIGRATION_v1)
+- **LLM:** Groq kimi-k2-instruct → YandexGPT Lite через OpenAI-compatible endpoint (`llm.api.cloud.yandex.net/v1/chat/completions`), openai SDK 2.30.0, модель `gpt://b1giu7d61rvmondibc51/yandexgpt-lite/latest`
+- **TTS:** ElevenLabs eleven_v3 Nastya (через proxy) → Yandex SpeechKit Alena v1 REST (напрямую), format=lpcm 8kHz, emotion=neutral, speed=1.1. ffmpeg убран из hot path
+- **Cached greeting:** greeting_rizalta.pcm (83KB, 5.2s) и greeting_atlantis.pcm (95KB) предгенерированы через Yandex TTS, TTFB=0ms
+- **Anti-hallucination:** YandexGPT Lite генерировал fake-диалоги (маркеры "Пользователь:", "Ассистент:"). Фикс: (1) CRITICAL-инструкция в начало VOICE_SYSTEM_PROMPT_RIZALTA и VOICE_SYSTEM_PROMPT, (2) regex post-filter в stream_voice_response() обрезает на маркерах
+- **SSML break fix:** Yandex отвергает `<break time="0.3s"/>` (дробные секунды). Заменено на `<break time="300ms"/>`
+- **Dead branches:** legacy Groq/ElevenLabs код сохранён под `VOICE_PROVIDER=groq` и `VOICE_TTS_PROVIDER=elevenlabs`
+- **5 тестовых звонков Сергея:** 2 на этапе B (ElevenLabs TTS), 2 на этапе C (SSML баг), 1 финальный (полный успех, 4 turns, 66.9s)
 
-**Побочные находки:**
-- 4 клиента RIZALTA пострадали — Сергей должен решить нужно ли перезвонить
-- Диск VPS растёт ~8G/сутки из-за SIP-сканеров → fail2ban/UFW переводится из P2 в P0
-- SIP-сканеры: 193.46.255.104 + 172.110.223.135 — сотни строк/секунду в full.log
+### Финальные метрики (звонок d3e92e56, после всех фиксов)
+| Метрика | Старый стек (ElevenLabs+Groq) | Новый стек (Yandex) | Delta |
+|---------|------|------|-------|
+| TTS TTFB | 1100ms медиана | **177ms медиана** | -84% |
+| LLM latency | 379-1677ms | 411-1398ms | ~same |
+| STT latency | 201-247ms | 158-239ms | ~same |
+| Greeting TTFB | 1106-1818ms | **0ms** (cached) | -100% |
+| Proxy dependency | Да | Нет | eliminated |
 
-**Файлы:** только read-only разведка, никаких файлов не менялось
+**Коммиты:** `feat(voice): migrate LLM+TTS to Yandex stack`
+**Файлы:** voice_asterisk.py, core/pipeline.py, .env (VPS)
+**Env добавлены (VPS):** YC_API_KEY, YC_FOLDER_ID, VOICE_MODEL_YANDEX, VOICE_TTS_PROVIDER, YANDEX_TTS_VOICE, YANDEX_TTS_EMOTION
+**Env изменены (VPS):** VOICE_PROVIDER=yandex (было groq)
 
 ---
 

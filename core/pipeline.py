@@ -28,14 +28,36 @@ vd.setLevel(logging.DEBUG)
 
 RAG_EXAMPLES_COUNT = 10
 
-# Voice LLM config — Groq primary, OpenAI fallback
-VOICE_PROVIDER = os.getenv("VOICE_PROVIDER", "groq")
+# Voice LLM config — Yandex primary, Groq/OpenAI legacy
+VOICE_PROVIDER = os.getenv("VOICE_PROVIDER", "yandex")
+VOICE_MODEL_YANDEX = os.getenv(
+    "VOICE_MODEL_YANDEX", "gpt://b1giu7d61rvmondibc51/yandexgpt-lite/latest"
+)
+# Legacy providers (for rollback via env)
 VOICE_MODEL_GROQ = os.getenv(
     "VOICE_MODEL_GROQ", "meta-llama/llama-4-scout-17b-16e-instruct"
 )
 VOICE_MODEL_OPENAI = os.getenv("VOICE_MODEL_OPENAI", "gpt-5.4-mini")
 
-# Groq client (OpenAI-compatible)
+# Yandex AI Studio client (OpenAI-compatible)
+_yandex_client: Optional[OpenAI] = None
+
+
+def _get_yandex_client() -> Optional[OpenAI]:
+    global _yandex_client
+    if _yandex_client is None:
+        api_key = os.getenv("YC_API_KEY")
+        folder_id = os.getenv("YC_FOLDER_ID")
+        if api_key:
+            _yandex_client = OpenAI(
+                api_key=api_key,
+                base_url="https://llm.api.cloud.yandex.net/v1",
+                default_headers={"X-Folder-Id": folder_id} if folder_id else {},
+            )
+    return _yandex_client
+
+
+# Groq client — legacy (OpenAI-compatible)
 _groq_client: Optional[OpenAI] = None
 
 
@@ -555,7 +577,11 @@ def _extract_state_from_context(user_message, history, current_state):
     return updates
 
 
-VOICE_SYSTEM_PROMPT = """Ты — София, менеджер компании Оазис Эстэйт, курортная недвижимость. Ты уверенная, дружелюбная, с юмором и говоришь кратко — это телефонный звонок. Твоя цель — узнать что нужно клиенту и предложить пятнадцатиминутный созвон с экспертом. Если клиент не готов к созвону, то допускается договоренность на отправку подборки Говори в женском роде.
+VOICE_SYSTEM_PROMPT = """CRITICAL: Отвечай ТОЛЬКО одной своей репликой. \
+Никогда не пиши маркеры Пользователь:, Клиент:, Ассистент:, User:, Assistant:. \
+Не продолжай диалог за собеседника. Остановись после своего ответа.
+
+Ты — София, менеджер компании Оазис Эстэйт, курортная недвижимость. Ты уверенная, дружелюбная, с юмором и говоришь кратко — это телефонный звонок. Твоя цель — узнать что нужно клиенту и предложить пятнадцатиминутный созвон с экспертом. Если клиент не готов к созвону, то допускается договоренность на отправку подборки Говори в женском роде.
 
 ЭТАП: {stage}
 КЛИЕНТ: {state_summary}
@@ -617,7 +643,11 @@ VOICE_SYSTEM_PROMPT = """Ты — София, менеджер компании 
 {object_context}"""
 
 
-VOICE_SYSTEM_PROMPT_RIZALTA = """Ты София. Звонишь по телефону клиенту, который тебя не ждёт. Ты живой человек:
+VOICE_SYSTEM_PROMPT_RIZALTA = """CRITICAL: Отвечай ТОЛЬКО одной своей репликой. \
+Никогда не пиши маркеры Пользователь:, Клиент:, Ассистент:, User:, Assistant:. \
+Не продолжай диалог за собеседника. Остановись после своего ответа.
+
+Ты София. Звонишь по телефону клиенту, который тебя не ждёт. Ты живой человек:
 тёплая, доброжелательная, говоришь как опытный продажник по холодным звонкам —
 коротко, по делу, с энергией.
 
@@ -730,10 +760,17 @@ async def stream_voice_response(
     State: rule-based извлечение из сообщения клиента.
     Ответ: целиком одним yield — Retell TTS получает полную фразу.
     """
-    # Выбор провайдера: Groq primary, OpenAI fallback
-    groq = _get_groq_client()
+    # Выбор провайдера: Yandex primary, Groq/OpenAI legacy
+    if VOICE_PROVIDER == "yandex":
+        yandex = _get_yandex_client()
+        voice_model = VOICE_MODEL_YANDEX
+    else:
+        yandex = None
+    groq = _get_groq_client() if VOICE_PROVIDER == "groq" else None
     use_groq = VOICE_PROVIDER == "groq" and groq is not None
-    voice_model = VOICE_MODEL_GROQ if use_groq else VOICE_MODEL_OPENAI
+    use_yandex = VOICE_PROVIDER == "yandex" and yandex is not None
+    if not use_yandex:
+        voice_model = VOICE_MODEL_GROQ if use_groq else VOICE_MODEL_OPENAI
     openai_client = _get_client()
     tag = channel.upper()
     cid = call_id or "no_id"
@@ -816,23 +853,35 @@ async def stream_voice_response(
         f"| est_tokens={est_tokens} | messages={len(messages)}"
     )
 
-    # 4. Вызов LLM — Groq primary, OpenAI fallback
-    provider_used = "groq" if use_groq else "openai"
+    # 4. Вызов LLM — Yandex primary, Groq/OpenAI legacy
+    provider_used = "yandex" if use_yandex else ("groq" if use_groq else "openai")
     t_llm_start = time.monotonic()
     vd.info(
         f"[{cid}] LLM_REQUEST_START | provider={provider_used} "
         f"| model={voice_model} | messages={len(messages)}"
     )
     log.info(
-        f"🔄 [{tag}] Generator запрос для {user_name} "
+        f"\U0001f504 [{tag}] Generator \u0437\u0430\u043f\u0440\u043e\u0441 \u0434\u043b\u044f {user_name} "
         f"(provider={provider_used}, model={voice_model}, stage={stage})..."
     )
 
     full_text = None
     finish_reason = None
     try:
-        if use_groq:
-            # Groq — Chat Completions API (OpenAI-compatible)
+        if use_yandex:
+            # YandexGPT — Chat Completions API (OpenAI-compatible)
+            yandex_messages = [{"role": "system", "content": system_prompt}] + messages
+            resp = await asyncio.to_thread(
+                yandex.chat.completions.create,
+                model=voice_model,
+                messages=yandex_messages,
+                max_tokens=150,
+                temperature=0.7,
+            )
+            full_text = resp.choices[0].message.content or ""
+            finish_reason = resp.choices[0].finish_reason
+        elif use_groq:
+            # Groq — legacy Chat Completions API (OpenAI-compatible)
             groq_messages = [{"role": "system", "content": system_prompt}] + messages
             resp = await asyncio.to_thread(
                 groq.chat.completions.create,
@@ -844,7 +893,7 @@ async def stream_voice_response(
             full_text = resp.choices[0].message.content or ""
             finish_reason = resp.choices[0].finish_reason
         else:
-            # OpenAI — Responses API
+            # OpenAI — legacy Responses API
             resp = await asyncio.to_thread(
                 openai_client.responses.create,
                 model=voice_model,
@@ -856,26 +905,30 @@ async def stream_voice_response(
             finish_reason = resp.status
 
     except Exception as e:
-        log.error(f"❌ [{tag}] {provider_used} error: {e}")
+        log.error(f"\u274c [{tag}] {provider_used} error: {e}")
         vd.error(f"[{cid}] LLM_ERROR | provider={provider_used} | error={e}")
 
-        # Fallback на OpenAI если Groq сломался
-        if use_groq:
-            provider_used = "openai_fallback"
-            log.info(f"🔄 [{tag}] Fallback → OpenAI {VOICE_MODEL_OPENAI}")
-            vd.info(f"[{cid}] LLM_FALLBACK | to=openai")
+        # Fallback: Yandex -> Groq -> OpenAI
+        if use_yandex and _get_groq_client():
+            provider_used = "groq_fallback"
+            log.info(f"\U0001f504 [{tag}] Fallback \u2192 Groq {VOICE_MODEL_GROQ}")
+            vd.info(f"[{cid}] LLM_FALLBACK | to=groq")
             try:
+                groq_fb = _get_groq_client()
+                groq_messages = [
+                    {"role": "system", "content": system_prompt}
+                ] + messages
                 resp = await asyncio.to_thread(
-                    openai_client.responses.create,
-                    model=VOICE_MODEL_OPENAI,
-                    instructions=system_prompt,
-                    input=messages,
-                    max_output_tokens=150,
+                    groq_fb.chat.completions.create,
+                    model=VOICE_MODEL_GROQ,
+                    messages=groq_messages,
+                    max_tokens=150,
+                    temperature=0.7,
                 )
-                full_text = resp.output_text or ""
-                finish_reason = resp.status
+                full_text = resp.choices[0].message.content or ""
+                finish_reason = resp.choices[0].finish_reason
             except Exception as e2:
-                log.error(f"❌ [{tag}] Fallback also failed: {e2}")
+                log.error(f"\u274c [{tag}] Groq fallback also failed: {e2}")
                 vd.error(f"[{cid}] LLM_FALLBACK_ERROR | error={e2}")
 
     if not full_text:
@@ -912,6 +965,28 @@ async def stream_voice_response(
             user_id, {"dialog_finished": True, "finish_type": "llm_end"}
         )
         log.info(f"🏁 [{tag}] Voice: диалог завершён [END]")
+
+    # 5b. Anti-hallucination filter: cut off fake dialog continuations
+    halluc_match = re.search(
+        r"(?im)^\s*(?:Пользователь|Клиент|Ассистент|User|Assistant|Client)\s*:",
+        answer_text,
+        re.MULTILINE,
+    )
+    if halluc_match:
+        cut_pos = halluc_match.start()
+        truncated_part = answer_text[cut_pos:]
+        answer_text = answer_text[:cut_pos].strip()
+        log.warning(
+            f"[{tag}] HALLUCINATION_FILTER: truncated at pos {halluc_match.start()}, "
+            f'removed: "{truncated_part[:120]}..."'
+        )
+        vd.warning(
+            f"[{cid}] HALLUC_TRUNCATED | pos={halluc_match.start()} "
+            f'| removed="{truncated_part[:80]}"'
+        )
+        if not answer_text:
+            log.error(f"[{tag}] HALLUCINATION_FILTER: entire response was hallucinated")
+            answer_text = "Секунду, повторите пожалуйста?"
 
     # 6. Sanitize for TTS
     answer_text = sanitize_for_tts(answer_text)

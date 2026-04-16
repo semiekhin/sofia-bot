@@ -76,6 +76,17 @@ ELEVENLABS_MODEL = "eleven_v3"
 YANDEX_STT_URL = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize"
 YANDEX_API_KEY = os.getenv("YANDEX_SPEECHKIT_API_KEY", "")
 
+# Yandex TTS settings
+YANDEX_TTS_URL = "https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize"
+YC_API_KEY = os.getenv("YC_API_KEY", "")
+YC_FOLDER_ID = os.getenv("YC_FOLDER_ID", "")
+YANDEX_TTS_VOICE = os.getenv("YANDEX_TTS_VOICE", "alena")
+YANDEX_TTS_EMOTION = os.getenv("YANDEX_TTS_EMOTION", "neutral")
+YANDEX_TTS_SPEED = float(os.getenv("YANDEX_TTS_SPEED", "1.1"))
+
+# TTS provider selection (yandex / elevenlabs)
+VOICE_TTS_PROVIDER = os.getenv("VOICE_TTS_PROVIDER", "yandex")
+
 # Database
 SOFIA_PATH = os.getenv("SOFIA_PATH", os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.getenv("DB_PATH", "sofia_voice.db")
@@ -167,11 +178,63 @@ def add_ssml_breaks(text: str) -> str:
     breaks_added = 0
     for s in sentences[1:]:
         if breaks_added < 2:
-            parts.append('<break time="0.3s"/>' + s)
+            parts.append('<break time="300ms"/>' + s)
             breaks_added += 1
         else:
             parts.append(s)
     return " ".join(parts)
+
+
+async def synthesize_tts_yandex(text: str) -> bytes:
+    """Synthesize speech via Yandex SpeechKit TTS v1 REST.
+
+    Returns raw LPCM 8kHz 16-bit mono -- ready for AudioSocket, no ffmpeg needed.
+    Uses ssml parameter when text contains <break> tags, otherwise plain text.
+    """
+    if not YC_API_KEY:
+        logger.error("YC_API_KEY not set for Yandex TTS")
+        return b""
+
+    headers = {
+        "Authorization": f"Api-Key {YC_API_KEY}",
+    }
+    data = {
+        "voice": YANDEX_TTS_VOICE,
+        "emotion": YANDEX_TTS_EMOTION,
+        "speed": str(YANDEX_TTS_SPEED),
+        "format": "lpcm",
+        "sampleRateHertz": "8000",
+        "folderId": YC_FOLDER_ID,
+    }
+    # Use ssml parameter if text contains SSML tags, otherwise plain text
+    if "<break" in text:
+        data["ssml"] = f"<speak>{text}</speak>"
+    else:
+        data["text"] = text
+
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                YANDEX_TTS_URL,
+                headers=headers,
+                data=data,
+            )
+            if resp.status_code != 200:
+                logger.error(
+                    f"Yandex TTS HTTP {resp.status_code}: " f"{resp.text[:200]}"
+                )
+                return b""
+            elapsed = (time.monotonic() - t0) * 1000
+            pcm_data = resp.content
+            logger.info(
+                f"Yandex TTS: {len(text)} chars -> {len(pcm_data)} bytes "
+                f"({elapsed:.0f}ms)"
+            )
+            return pcm_data
+    except Exception as e:
+        logger.error(f"Yandex TTS error: {e}")
+        return b""
 
 
 async def stream_tts_audio(text: str):
@@ -418,30 +481,42 @@ class AudioSocketCall:
             self._closed = True
 
     async def _send_greeting(self):
-        """Send initial greeting when call connects."""
+        """Send initial greeting when call connects.
+
+        Uses pre-generated PCM cache if available, otherwise synthesizes live.
+        Cache files: greeting_rizalta.pcm, greeting_atlantis.pcm
+        To regenerate: see comments in code or Build Report.
+        """
         await asyncio.sleep(0.3)  # Wait for audio stream to start
         if self._closed or self._greeting_sent:
             return
         self._greeting_sent = True
 
         voice_prompt_mode = os.getenv("VOICE_PROMPT_MODE", "atlantis")
-        logger.info(f"🎙️ Sending greeting... [prompt mode: {voice_prompt_mode}]")
+        logger.info(f"Sending greeting... [prompt mode: {voice_prompt_mode}]")
         if voice_prompt_mode == "rizalta":
             greeting = (
                 "Здравствуйте! Это София, агентство Оазис. "
                 "Вам удобно сейчас разговаривать?"
             )
+            cache_file = os.path.join(SOFIA_PATH, "greeting_rizalta.pcm")
         else:
             greeting = (
                 "Здравствуйте! Меня зовут София, "
                 "я консультант по курортной недвижимости. Чем могу помочь?"
             )
+            cache_file = os.path.join(SOFIA_PATH, "greeting_atlantis.pcm")
 
         # Save to DB
         save_message(self._chat_id, self._user_id, "assistant", greeting)
 
-        # Synthesize and send
-        await self._speak(greeting)
+        # Try cached PCM first (instant playback)
+        if os.path.exists(cache_file):
+            logger.info(f"Using cached greeting: {cache_file}")
+            await self._speak_pcm(cache_file)
+        else:
+            logger.info("No cached greeting, synthesizing live")
+            await self._speak(greeting)
 
     async def _process_audio_vad(self, audio_bytes: bytes):
         """Simple energy-based VAD: detect speech end, trigger STT."""
@@ -592,10 +667,50 @@ class AudioSocketCall:
                 self._barge_in_buffer.clear()
                 self._barge_in_detected = False
 
-    async def _speak(self, text: str):
-        """Stream-synthesize text and send audio to Asterisk in real-time.
+    async def _speak_pcm(self, pcm_file: str):
+        """Send pre-generated PCM file to Asterisk. Used for cached greetings."""
+        if self._closed:
+            return
+        frame_size = 320
+        t0 = time.monotonic()
+        total_bytes = 0
+        try:
+            with open(pcm_file, "rb") as f:
+                pcm_data = f.read()
+            total_bytes = len(pcm_data)
+            offset = 0
+            first_sent = False
+            while offset < len(pcm_data):
+                if self._closed or self._cancel_playback:
+                    break
+                end = min(offset + frame_size, len(pcm_data))
+                frame = pcm_data[offset:end]
+                if len(frame) < frame_size:
+                    frame = frame + b"\x00" * (frame_size - len(frame))
+                await self._send_audio(frame, self._audio_type)
+                if not first_sent:
+                    logger.info(
+                        f"TTS cached first frame: {(time.monotonic() - t0) * 1000:.0f}ms"
+                    )
+                    first_sent = True
+                offset += frame_size
+                await asyncio.sleep(0.018)
+        except Exception as e:
+            logger.error(f"Cached PCM playback error: {e}")
+        elapsed = (time.monotonic() - t0) * 1000
+        duration_sec = (
+            total_bytes / (SAMPLE_RATE_OUT * SAMPLE_WIDTH) if total_bytes else 0
+        )
+        logger.info(
+            f"TTS cached done: {total_bytes} bytes "
+            f"({duration_sec:.1f}s audio, total={elapsed:.0f}ms)"
+        )
 
-        Audio starts playing ~300-500ms after call, not 5-8s.
+    async def _speak(self, text: str):
+        """Synthesize text and send audio to Asterisk.
+
+        Yandex TTS (default): single request, returns full LPCM buffer, no ffmpeg.
+        ElevenLabs (legacy): streaming MP3 via ffmpeg resample.
         """
         if self._closed:
             return
@@ -605,41 +720,62 @@ class AudioSocketCall:
         if not clean_text:
             return
 
-        # Asterisk frame: 320 bytes = 20ms @ 8kHz slin16
-        frame_size = 320
+        frame_size = 320  # 20ms @ 8kHz slin16
         buffer = bytearray()
         total_bytes = 0
         first_audio_time = None
         t0 = time.monotonic()
 
-        async for pcm_chunk in stream_tts_audio(clean_text):
-            if self._closed or self._cancel_playback:
-                if self._cancel_playback:
-                    logger.info("🔇 TTS playback cancelled (barge-in)")
-                break
-
-            if first_audio_time is None:
-                first_audio_time = (time.monotonic() - t0) * 1000
-                logger.info(f"🔊 TTS first audio chunk: {first_audio_time:.0f}ms")
-
-            buffer.extend(pcm_chunk)
-            total_bytes += len(pcm_chunk)
-
-            # Send complete frames as they accumulate
-            while len(buffer) >= frame_size:
-                if self._cancel_playback:
+        if VOICE_TTS_PROVIDER == "yandex":
+            # Yandex TTS: single request, full LPCM buffer
+            pcm_data = await synthesize_tts_yandex(clean_text)
+            if not pcm_data:
+                return
+            first_audio_time = (time.monotonic() - t0) * 1000
+            logger.info(f"TTS first audio chunk: {first_audio_time:.0f}ms")
+            total_bytes = len(pcm_data)
+            offset = 0
+            while offset < len(pcm_data):
+                if self._closed or self._cancel_playback:
+                    if self._cancel_playback:
+                        logger.info("TTS playback cancelled (barge-in)")
                     break
-                frame = bytes(buffer[:frame_size])
-                del buffer[:frame_size]
+                end = min(offset + frame_size, len(pcm_data))
+                frame = pcm_data[offset:end]
+                if len(frame) < frame_size:
+                    frame = frame + b"\x00" * (frame_size - len(frame))
                 await self._send_audio(frame, self._audio_type)
+                offset += frame_size
                 await asyncio.sleep(0.018)
+        else:
+            # ElevenLabs legacy: streaming via ffmpeg
+            async for pcm_chunk in stream_tts_audio(clean_text):
+                if self._closed or self._cancel_playback:
+                    if self._cancel_playback:
+                        logger.info("TTS playback cancelled (barge-in)")
+                    break
 
-        # Send remaining buffer (pad to frame size) — unless cancelled
-        if buffer and not self._closed and not self._cancel_playback:
-            remaining = bytes(buffer)
-            if len(remaining) < frame_size:
-                remaining = remaining + b"\x00" * (frame_size - len(remaining))
-            await self._send_audio(remaining, self._audio_type)
+                if first_audio_time is None:
+                    first_audio_time = (time.monotonic() - t0) * 1000
+                    logger.info(f"TTS first audio chunk: {first_audio_time:.0f}ms")
+
+                buffer.extend(pcm_chunk)
+                total_bytes += len(pcm_chunk)
+
+                while len(buffer) >= frame_size:
+                    if self._cancel_playback:
+                        break
+                    frame = bytes(buffer[:frame_size])
+                    del buffer[:frame_size]
+                    await self._send_audio(frame, self._audio_type)
+                    await asyncio.sleep(0.018)
+
+            # Send remaining buffer
+            if buffer and not self._closed and not self._cancel_playback:
+                remaining = bytes(buffer)
+                if len(remaining) < frame_size:
+                    remaining = remaining + b"\x00" * (frame_size - len(remaining))
+                await self._send_audio(remaining, self._audio_type)
 
         elapsed = (time.monotonic() - t0) * 1000
         duration_sec = (
@@ -647,7 +783,7 @@ class AudioSocketCall:
         )
         first_ms = f"{first_audio_time:.0f}" if first_audio_time is not None else "N/A"
         logger.info(
-            f"🔊 TTS done: {len(clean_text)} chars → {total_bytes} bytes "
+            f"TTS done: {len(clean_text)} chars -> {total_bytes} bytes "
             f"({duration_sec:.1f}s audio, first={first_ms}ms, "
             f"total={elapsed:.0f}ms)"
         )
@@ -702,7 +838,7 @@ async def main():
 
     addrs = ", ".join(str(sock.getsockname()) for sock in server.sockets)
     logger.info(f"🚀 AudioSocket server listening on {addrs}")
-    logger.info("   Pipeline: Whisper STT → Groq LLM → ElevenLabs TTS")
+    logger.info(f"   Pipeline: Yandex STT -> {VOICE_TTS_PROVIDER.upper()} TTS")
     logger.info(f"   DB: {DB_PATH}")
     logger.info("   Waiting for Asterisk connections...")
 
