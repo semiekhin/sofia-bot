@@ -1,5 +1,124 @@
 # SESSION_LOG — Последние сессии
 
+## 17.04.2026 — VOICE_STACK_STABILIZATION_v1: barge-in fixes × 4 + Silero VAD + UFW
+
+**Сделано:**
+
+### 1. Barge-in buffer reset (утренний fix, коммит `5104a0cc`)
+
+**Trigger:** звонок 21b96626 (16.04 вечер). После cancel TTS `_process_turn` finally переносил barge-in buffer (~13KB) в `_speech_buffer` → garbled STT «Со стороны» → LLM-фолбэк «плохо слышно» из блока «Не расслышала» RIZALTA.
+
+**Fix:** в `_process_turn` finally **не** re-feed'ить barge-in buffer, а просто `.clear()`. VAD начинает слушать свежий поток после cooldown. Правка ~10 строк в voice_asterisk.py.
+
+### 2. Silero VAD миграция (коммиты `761ef1eb`, `97934f47`)
+
+**Research:** `docs/VOICE_RESEARCH_2026_04_16.md` идея #4 — energy-based VAD ловил мусор (кашель, шум) → STT вернул «Эротика», «Зависят облака». Silero ONNX модель 1.8MB, <1ms CPU, 8kHz natively.
+
+**v5 vs v4 discovery:**
+- Скачали v5 (2.3MB) → offline-тест дал 13% детектирования на чистой речи greeting_rizalta.pcm
+- Причина: v5 оптимизирован под 16kHz, 8kHz — деградация. Confirmed через debug probability distribution.
+- Скачали v4 (1.8MB, md5 `03da8de2fec4108a089b39f1b4abefef`) → 73% detection на том же файле, 86% на speech+noise
+- v5 сохранена как `silero_vad_v5.onnx.legacy` для будущих re-tests
+
+**Integration:**
+- `SileroVAD` класс per-call с LSTM state (`h`, `c`, [2,1,64])
+- Singleton ONNX session (loaded once at startup: «Silero VAD loaded: ... (v4, 8kHz, md5=...)»)
+- env `VOICE_VAD_PROVIDER=silero` (default) / `energy` (rollback)
+- Dispatch в `_process_audio_vad` и `_detect_barge_in` через `self._vad is not None`
+- Threshold 0.5 для normal VAD и barge-in (изначально пробовали 0.6 для barge-in — не пробивался)
+- Зависимости: `onnxruntime 1.24.4`, `numpy 2.4.4` (pulled by onnxruntime)
+
+**Коммит `761ef1eb`** — первый Silero live (threshold 0.5).
+
+**Sliding-silence reset (коммит `97934f47`):** звонок bcf67956 показал **0 BARGE-IN confirmed** за 6 turns (57с TTS). Root cause: AudioSocket frames 320B / Silero chunks 512B → `is_speech()` **альтернирует True/False** на каждом фрейме. Старая логика `_barge_in_buffer.clear()` при любом False сбрасывала counter — 5 consecutive никогда не набиралось. Fix: track `_last_barge_in_speech_ts`, clear buffer только после 300ms sustained silence.
+
+### 3. TTS race (коммит `830a5722`)
+
+**Trigger:** звонок 89dadd55. После sliding-silence fix barge-in стал срабатывать, но **2 turn'а с TTS played=0s** — Sofia сгенерировала ответ, клиент услышал тишину.
+
+**Root cause:** `_is_responding=True` с начала `_process_turn` (включая STT+LLM). Клиент договаривал свою реплику, Silero детектил → BARGE-IN confirmed → `_cancel_playback=True` ДО того как TTS начал играть. Первый же `_send_audio` видел cancel → break → total=first_chunk (0s audio).
+
+**Fix:** новый флаг `_tts_playing` (True только с первой реально отправленной фрейма). В `_handle_packet` barge-in dispatch только при `_tts_playing=True`. Во время STT/LLM фазы фреймы от клиента **игнорируются** (он договаривает свою же реплику).
+
+### 4. UFW firewall (нет коммита — VPS config)
+
+**Trigger:** рост `/var/log/asterisk/full.log` 8GB/сутки от SIP-сканеров (193.46.255.104 давал 99% трафика).
+
+**Разведка:**
+- Telfin IP: `46.229.221.93` (DNS sipproxy.telphin.ru, /32, подтверждено `pjsip show registrations` Active)
+- PJSIP bind: `UDP 5090` (из pjsip.conf)
+- RTP: 10000-20000 UDP (rtp.conf)
+- Открыты наружу также UDP 5060 (chan_sip legacy), UDP 4569 (IAX2) — только для сканеров, закрываем
+
+**Rules (порядок строгий):**
+```
+ufw allow 22/tcp                                            # SSH (ПЕРЕД enable!)
+ufw allow from 46.229.221.93 to any port 5090 proto udp     # Telfin SIP
+ufw allow 10000:20000/udp                                   # RTP media
+ufw default deny incoming
+ufw default allow outgoing
+ufw --force enable
+```
+
+**Результат:** baseline 43697 B/s (44 KB/s, 3.77 GB/день) → **0 B/s** (замер 60с после enable). SYN-пакеты сканеров блокируются до Asterisk, в лог не пишутся. `pjsip show registrations` — Active (Telfin trunk не затронут).
+
+### 5. VAD_RELAX (коммит `95b4eeae`)
+
+**Trigger:** звонок e177d7ad. Клиент: «Скажите примерно минимальную цену **и** [срок]» — `VAD_SILENCE_THRESHOLD=300ms` сработал на паузе между «и» и «срок», обрезал фразу посреди. Затем одиночное «ээ» ~100ms (5 frames) триггернуло `BARGE-IN confirmed` → deadlock (Sofia молчит, клиент ждёт, 17с тишины → hangup).
+
+**Fix (bifurcate по провайдеру):**
+- `VAD_SILENCE_THRESHOLD` 0.3 → **0.5 сек** (глобально, любой провайдер)
+- barge-in confirm: `confirm_frames = 10 if self._vad is not None else 5` — Silero 10 frames (~200ms real speech с учётом chunking), energy 5 frames (kept for rollback fidelity через `VOICE_VAD_PROVIDER=energy`)
+
+**Временная заплатка** до Yandex STT v3 gRPC streaming (server-side EOU определяет конец фразы, убирает silence threshold вообще).
+
+### Финальный тест (звонок UUID `95e12e88-63dc-4ff8-bf03-fe91e4fb9d13`, 8 turns)
+
+| Метрика | e177d7ad (до VAD_RELAX) | **95e12e88 (итог)** |
+|---|---|---|
+| USER turns | 2 + deadlock | **8 полноценных** |
+| BARGE-IN confirmed | 1 (false на «ээ») | **1 (legit, 10-frame confirm)** |
+| TTS 0s played | 0 | **0** |
+| «плохо слышно» fallback | 0 | **0** |
+| Audio too short skips | 2 | **0** |
+| Deadlock 10+ сек | да | **нет** |
+| ERROR/WARNING/Exceptions | 0 | **0** |
+
+**Полный продажный flow:** питч → уточнение города → согласие → доходность/окупаемость → выбор Telegram → **диктовка ника «@сергей_7ид»** → прощание. Лид-конверсия через voice канал работает.
+
+**Turn 4 «А сколько окупаемости и сколько годовой доход примерно»** (4.10с, 65600 bytes, 13.2 chars/sec) — фраза с союзом «и» в середине, ровно такая структура сломала e177d7ad. Прошла целиком.
+
+**Turn 7 «Собака сергей нижнее подчеркивание 7 ид»** (4.76с) — клиент диктовал Telegram-ник с длинными паузами. Полная фраза.
+
+### Коммиты 17.04 (в порядке времени MSK)
+
+| SHA | Время | Сообщение |
+|---|---|---|
+| `5104a0cc` | 23:07 (16 → 17) | fix(voice): barge-in buffer reset instead of re-feed to VAD |
+| `761ef1eb` | 23:39 | fix(voice): lower Silero barge-in threshold 0.6 → 0.5 (initial Silero integration) |
+| `97934f47` | 23:59 | fix(voice): sliding-silence reset for Silero barge-in buffer |
+| `830a5722` | 00:45 | fix(voice): introduce _tts_playing flag, ignore pre-TTS barge-in race |
+| `95b4eeae` | 01:10 | fix(voice): relax VAD silence 0.3→0.5s, barge-in confirm 5→10 (Silero only) |
+
+Плюс VPS config: UFW enabled, Silero VAD v4 model file `/opt/sofia-voice/silero_vad.onnx`.
+
+### Текущее состояние voice pipeline
+
+- **VAD**: Silero VAD v4 ONNX, threshold 0.5 normal+barge-in, `VAD_SILENCE_THRESHOLD=500ms`, `VAD_MIN_SPEECH_DURATION=300ms`, `MIN_SPEECH_BYTES_FOR_STT=10240`
+- **Barge-in suppression**: `BARGE_IN_COOLDOWN=0.5s`, `BARGE_IN_SILENCE_RESET=0.3s`, 10-frame confirm Silero / 5-frame energy, `_tts_playing` флаг для STT/LLM phase-gate
+- **STT**: Yandex SpeechKit v1 REST, ~200ms медиана
+- **LLM**: YandexGPT 5 Pro, ~620ms медиана, promo RIZALTA v3 prompt
+- **TTS**: Yandex Alena v1 REST lpcm 8kHz, TTFB ~155ms
+- **Firewall**: UFW whitelist (22/tcp, 46.229.221.93:5090/udp, 10000-20000/udp), default deny incoming
+- **Service**: sofia-voice.service active, PID 107061, память ~54M
+
+### Следующая сессия — P0
+
+1. **fail2ban deploy** (контракт готов в истории чата — два jail для sshd и asterisk, `banaction=ufw`, `ignoreip=46.229.221.93`). UFW закрывает ~100% трафика, fail2ban = multi-layered defense. Не срочно — можно в утренние часы.
+2. **Yandex STT v3 gRPC streaming** (docs/VOICE_RESEARCH_2026_04_16.md идея #1, 1-2 дня) — архитектурное упрощение: server-side EOU уберёт нашу VAD+silence-threshold кастомную логику целиком.
+
+---
+
 ## 16.04.2026 — VOICE_YANDEX_MIGRATION_v1: полная миграция голосового стека на Yandex
 
 **Сделано:**
