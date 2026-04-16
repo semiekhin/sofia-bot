@@ -64,13 +64,18 @@ Python 3.12, FastAPI, SQLite, OpenAI gpt-5.2 (Responses API), ChromaDB (RAG, tex
 │    │                                                                 │
 │    ▼ AudioSocket (TCP localhost:9090)                                │
 │ voice_asterisk.py:                                                   │
-│    ├─ VAD (energy-based RMS, 0.3s silence threshold)                │
-│    ├─ Barge-in detection (5+ frames, cancel TTS)                    │
-│    ├─ Barge-in cooldown 500ms + MIN_SPEECH_BYTES 10240 (16.04)      │
-│    ├─ STT: Yandex SpeechKit REST v1 (~200ms) ──── напрямую          │
-│    ├─ LLM: YandexGPT 5 Pro (~638ms) ─────────────── напрямую        │
-│    └─ TTS: Yandex SpeechKit Alena v1 LPCM (~177ms) напрямую         │
+│    ├─ VAD: Silero VAD v4 ONNX (0.5s silence threshold, 17.04)       │
+│    ├─ Barge-in: 10-frame confirm Silero / 5-frame energy            │
+│    ├─ Cooldown 500ms + sliding-silence reset 300ms                  │
+│    ├─ _tts_playing флаг (barge-in только при active TTS)            │
+│    ├─ STT: Yandex SpeechKit REST v1 (~290ms) ──── напрямую          │
+│    ├─ LLM: YandexGPT 5 Pro (~620ms) ─────────────── напрямую        │
+│    └─ TTS: Yandex SpeechKit Alena v1 LPCM (~155ms) напрямую         │
 └─────────────────────────────────────────────────────────────────────┘
+                  ▲
+          UFW firewall (17.04):
+          22/tcp + 46.229.221.93:5090/udp + 10000-20000/udp
+          default deny incoming — SIP-сканеры отрезаны на SYN
 
 ┌─────────────── Основной сервер 72.56.64.91 ────────────────────────┐
 │ nginx proxy :8095 (UFW: only 185.207.66.201) — только для ТЕКСТА   │
@@ -83,22 +88,45 @@ Python 3.12, FastAPI, SQLite, OpenAI gpt-5.2 (Responses API), ChromaDB (RAG, tex
 
 **AudioSocket протокол (TCP):**
 - Пакет: `[1 byte type][2 bytes length BE][payload]`
-- UUID=0x01 (16 bytes binary), Audio=0x10 (slin 8kHz), Hangup=0x00, Error=0xFF
+- UUID=0x01 (16 bytes binary), Audio=0x10 (slin 8kHz, 320 bytes/20ms), Hangup=0x00, Error=0xFF
 - Телфин отправляет INVITE на extension 's'
 
-**Тайминги (конец речи → первый звук ответа, обновлено 16.04):**
-- VAD silence: 300ms
-- STT (Yandex REST v1): ~200ms
-- LLM (YandexGPT 5 Pro напрямую): ~638ms медиана
-- TTS first byte (Yandex Alena v1 LPCM напрямую): ~177ms
-- **Итого: ~860ms ощущаемая пауза** (было ~900-1100ms с ElevenLabs+Groq через proxy)
+**Тайминги (конец речи → первый звук ответа, обновлено 17.04):**
+- VAD silence: 500ms (поднято с 300ms на звонке e177d7ad — резало фразы на микропаузах)
+- STT (Yandex REST v1): ~290ms
+- LLM (YandexGPT 5 Pro напрямую): ~620ms медиана
+- TTS first byte (Yandex Alena v1 LPCM напрямую): ~155ms
+- **Итого: ~1.0с ощущаемая пауза** (чуть выше чем 860ms после 16.04 из-за более длинного silence threshold — цена за целые фразы)
 - Greeting TTFB: **0ms** (cached PCM), 1ms до первого фрейма
 
-**Barge-in суппрессия echo (16.04):**
-- Константы в `voice_asterisk.py`: `BARGE_IN_COOLDOWN = 0.5` (сек), `MIN_SPEECH_BYTES_FOR_STT = 10240` (0.64с @ 8kHz 16-bit)
-- После подтверждения barge-in (`_cancel_playback=True`) — в `_handle_packet` AUDIO-ветке фреймы дропаются через `time.monotonic() < self._barge_in_cooldown_until` (защита от echo cascade)
-- В `_process_audio_vad` перед созданием `_process_turn` task проверяется `len(speech_buffer) >= MIN_SPEECH_BYTES_FOR_STT` — короткие шумовые фрагменты скипаются с debug-логом
-- **Известная дыра (на фикс в следующей сессии):** в `_process_turn` finally barge-in buffer копируется в `_speech_buffer` и скармливается VAD после cooldown. На звонке 16.04 (UUID 21b96626) 13120-байтовый polluted fragment прошёл MIN_BYTES порог → STT дал garbled «Со стороны» → LLM-ответ «плохо слышно». Правильный фикс: **очищать buffer, не re-feed'ить**
+**Silero VAD v4 (17.04):**
+- Модель: `/opt/sofia-voice/silero_vad.onnx`, 1.8MB, md5 `03da8de2fec4108a089b39f1b4abefef`
+- Singleton ONNX session (eager-load в `main()`, лог «Silero VAD loaded: ... (v4, 8kHz, md5=...)»)
+- Per-call `SileroVAD` instance: `_h`, `_c` LSTM states `[2, 1, 64]`, buffer до 512B chunks (256 samples @ 8kHz = 32ms)
+- Threshold 0.5 одинаково для normal VAD и barge-in (было 0.6 для barge-in — не пробивалось)
+- Inputs: `input` float32 [1, N], `sr` int64 scalar, `h`/`c` state tensors
+- **v5 не подошла для 8kHz** (13% detection на чистой речи, оптимизирована под 16kHz). v5 сохранена как `silero_vad_v5.onnx.legacy`
+- Python deps: `onnxruntime 1.24.4`, `numpy 2.4.4` (numpy подтянулся с onnxruntime)
+
+**Barge-in логика (17.04, итоговая):**
+- Константы: `BARGE_IN_COOLDOWN=0.5` (отбрасывание VAD-фреймов после TTS cancel против echo cascade), `MIN_SPEECH_BYTES_FOR_STT=10240` (0.64с), `BARGE_IN_SILENCE_RESET=0.3`
+- Флаги: `_is_responding` (весь STT→LLM→TTS) vs `_tts_playing` (только реальное TTS output). Barge-in detection **только** при `_tts_playing=True` — иначе pre-TTS race (клиент договаривает свою реплику в фазе LLM → cancel_playback=True до первого chunk → 0s played)
+- Confirm frames: 10 для Silero (~200ms sustained speech с учётом chunking), 5 для energy (100ms, 1:1 frame→RMS). Bifurcate через `confirm_frames = 10 if self._vad is not None else 5` — energy-ветка сохраняет rollback fidelity для `VOICE_VAD_PROVIDER=energy`
+- Sliding-silence reset: `_last_barge_in_speech_ts` отслеживает последний is_speech=True; buffer clear только после 300ms sustained silence (защита от Silero chunking альтернации True/False)
+- После cancel TTS `_process_turn` finally **очищает** barge-in buffer (без re-feed в VAD — иначе cascade на polluted fragment >MIN_BYTES)
+- Dispatch `_handle_packet`:
+  ```
+  if not _is_responding:  → _process_audio_vad (normal turn)
+  elif _tts_playing:      → _detect_barge_in
+  else:                   → ignore (STT/LLM фаза, клиент договаривает свою реплику)
+  ```
+
+**UFW firewall (17.04):**
+- Whitelist: 22/tcp (SSH), 46.229.221.93:5090/udp (Telfin SIP /32), 10000-20000/udp (RTP media)
+- Default deny incoming / allow outgoing
+- Закрыты наружу: UDP 5060 (chan_sip legacy), UDP 4569 (IAX2) — только сканеры ими пользовались
+- Эффект: рост `/var/log/asterisk/full.log` **44 KB/s → 0 B/s** (SIP-сканеры блокируются на SYN, Asterisk их не видит)
+- fail2ban: P1 backlog, не развёрнут (UFW даёт 100%). Контракт для fail2ban готов
 
 **SIP данные Телфин:**
 - Сервер: sipproxy.telphin.ru:5068
@@ -269,6 +297,12 @@ ssh sofia-voice "journalctl -u sofia-voice -n 50 --no-pager"
 - **DEV→PROD деплой: учитывать файлы-потребители, не только целевые (15.04):** при деплое `config/source_objects.py` с расширенным `prompt_addon` в PROD выяснилось что PROD `core/pipeline.py` вообще **не читает** `prompt_addon` (нет ветки `if obj_config.get("prompt_addon")`), и в `source_objects.py` PROD этого ключа никогда не было. Atlantis-addon — DEV-only фича целиком, 400+ строк разницы в pipeline.py PROD vs DEV. Урок: в investigate_first обязательно сравнивать не только целевые файлы, но и файлы-потребители (pipeline.py когда трогаем config/*.py, bot_server.py когда трогаем core/bitrix.py). Иначе деплой превращается в «данные есть, код-потребителя нет → мёртвый текст в словаре».
 - **Groq может убрать модель без предупреждения (16.04):** `moonshotai/kimi-k2-instruct` полностью исчезла из Groq `/v1/models` между 10-16.04. Все 5 звонков 16.04 получили 404, голос мёртв. Урок: (1) мониторить доступность модели периодически (curl models endpoint), (2) fallback-модель должна РЕАЛЬНО работать (OpenAI fallback без proxy = pre-existing мёртвый код), (3) не полагаться на одну модель одного провайдера для production без запасного пути.
 - **Barge-in buffer re-feed пропустил echo через MIN_BYTES порог (16.04):** на звонке UUID 21b96626 после cancel TTS `_process_turn` finally переместил 13120-байтовый barge-in buffer (0.82с) в `_speech_buffer` и скормил VAD после cooldown. Буфер оказался **чуть выше** порога `MIN_SPEECH_BYTES_FOR_STT=10240` → прошёл фильтр → STT получил смесь echo+обрывка речи → вернул garbled «Со стороны» → LLM интерпретировал как невнятное и выдал фолбэк «плохо слышно» из блока «Не расслышала» RIZALTA-промпта. Правильный фикс: **не re-feed'ить** barge-in buffer в VAD, просто очищать после cooldown и ждать свежую речь клиента. Урок: MIN_BYTES порог — только первая линия защиты; любой источник «накопленного накануне» буфера (barge-in, начало захвата до cooldown) может протечь выше порога. Второй слой защиты должен быть в местах, откуда поступают эти источники.
+- **Silero VAD v5 vs v4 на 8kHz (17.04):** v5 (2.3MB, latest release на apr 2026) даёт ~13% speech detection на чистой русской речи 8kHz lpcm (проверено на `greeting_rizalta.pcm`). v4 (1.8MB, md5 `03da8de2fec4108a089b39f1b4abefef`) на тех же данных даёт 73% (86% на speech+noise). Причина: v5 тренирована преимущественно на 16kHz, деградация на 8kHz — документированная проблема в GitHub issues репо. Вывод: **для телефонии 8kHz — v4 mandatory**. v5 сохранена как `silero_vad_v5.onnx.legacy` для re-test когда upstream улучшит 8kHz support.
+- **AudioSocket / Silero chunking mismatch (17.04):** AudioSocket шлёт 320-byte фреймы (20мс @ 8kHz), Silero требует 512-byte chunks (32мс = 256 samples @ 8kHz). Внутренний буфер `SileroVAD.is_speech()` копит фреймы до 512B chunks и обрабатывает. Результат: **`is_speech()` альтернирует True/False** на каждом AudioSocket-фрейме даже при непрерывной речи (обрабатывается каждый ~1.6-й фрейм). Любая логика «5 consecutive speech frames» на булевом выходе ломается — counter сбрасывается при любом False. Симптом: `BARGE-IN confirmed = 0` за весь звонок (bcf67956, 17.04). Фикс: **sliding-silence pattern** — track `_last_barge_in_speech_ts`, clear buffer только после 300ms sustained silence. Урок: любой VAD с внутренней буферизацией под чанк не 1:1 с входным фреймом требует временно́го окна, а не consecutive-counter.
+- **Pre-TTS race (17.04):** `_is_responding=True` устанавливался в начале `_process_turn` (ещё до STT). `_detect_barge_in` вызывался всё это время. Клиент договаривал свою же реплику после VAD endpoint → Silero детектил → BARGE-IN confirmed → `_cancel_playback=True` **до того** как TTS начал играть → первый `_send_audio` видел cancel → break → `total=first_chunk_time` (0s audio). Звонок 89dadd55: Sofia сгенерировала корректный ответ 2 раза, клиент услышал тишину. Фикс: отдельный флаг `_tts_playing` (True только между первой реально отправленной frame и завершением TTS). Barge-in detection только при `_tts_playing=True`. Во время STT/LLM фреймы клиента **игнорируются**. Урок: `_is_responding` (широкая фаза pipeline) ≠ `_tts_playing` (узкая фаза активного output) — разные флаги для разных целей.
+- **Energy-ветка = L1 rollback, не просто dead branch (17.04):** дважды в одной сессии Сергей настоял на bifurcate по `self._vad is not None` для sliding-silence (коммит 97934f47) и для confirm_frames (коммит 95b4eeae) — чтобы поведение при `VOICE_VAD_PROVIDER=energy` осталось дословно тем же как было. Мотивация: energy — это rollback на случай внезапной проблемы с Silero (одной env-переменной). Если «по пути» менять семантику energy-ветки — через месяц при срочном rollback получим сюрприз. Паттерн: всегда `if self._vad is not None: <new>  else: <original>` с комментарием `kept for rollback fidelity`.
+- **VAD_SILENCE 300ms резал фразы на микропаузах (17.04):** клиент говорит «Скажите примерно минимальную цену **и** [срок]» — Silero endpoint сработал на паузе между «и» и «срок» (300ms silence). STT вернул оборванную фразу, Sofia ответила только на «цену», клиент пытался продолжить → deadlock (UUID e177d7ad). Фикс: поднять `VAD_SILENCE_THRESHOLD` до 0.5s. Параллельно поднят barge-in confirm с 5 до 10 frames (было 100ms, стало 200ms) — одиночный «ээ»/вдох больше не убивает TTS. Временная заплатка до Yandex STT v3 gRPC streaming (server-side EOU определяет конец фразы, убирает silence threshold целиком).
+- **Late-night session через полночь UTC/MSK (17.04):** одна непрерывная рабочая сессия может начаться 16.04 вечером и продолжиться после полуночи как 17.04 утром. Git log timestamps показывают реальную последовательность. Не полагаться на mental-date, проверять `git log --since`. Коммит `5104a0cc` сделан 23:07 MSK 16.04 — в SESSION_LOG зафиксирован как «утренний fix 17.04» поскольку является первым действием сессии.
 - **Split-deploy как честное решение при разошедшихся DEV↔PROD (15.04):** когда деплой одного коммита обнаруживает что в PROD отсутствует инфраструктура, **не** делать слепой cp всей фичи из DEV. Правильно: применить **только** те файлы, где diff чистый и инфраструктура готова, остальное отложить в backlog как `ATLANTIS_ADDON_INFRA_PORTBACK`-подобный спринт с полной разведкой и планом порта. Сегодняшний `d60e9b0b` — прецедент: `sofia_prompt_v2.py` в PROD применён через `git show <sha> -- <file> | git apply --index -`, Atlantis-addon часть отложена.
 
 ## .env ключи
