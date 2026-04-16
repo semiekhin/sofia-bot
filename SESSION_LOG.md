@@ -7,29 +7,45 @@
 ### Диагностика (начало сессии)
 - Groq убрал модель `moonshotai/kimi-k2-instruct` без предупреждения (HTTP 404)
 - OpenAI fallback мёртв (GeoIP 403 с VPS). Голосовой канал полностью неработоспособен
+- 4 клиента RIZALTA получили "подвисла" утром до фикса
 
 ### Sprint 1: миграция LLM + TTS на Yandex (VOICE_YANDEX_MIGRATION_v1)
-- **LLM:** Groq kimi-k2-instruct → YandexGPT Lite через OpenAI-compatible endpoint (`llm.api.cloud.yandex.net/v1/chat/completions`), openai SDK 2.30.0, модель `gpt://b1giu7d61rvmondibc51/yandexgpt-lite/latest`
+- **LLM:** Groq kimi-k2-instruct → YandexGPT через OpenAI-compatible endpoint (`llm.api.cloud.yandex.net/v1/chat/completions`), openai SDK 2.30.0
 - **TTS:** ElevenLabs eleven_v3 Nastya (через proxy) → Yandex SpeechKit Alena v1 REST (напрямую), format=lpcm 8kHz, emotion=neutral, speed=1.1. ffmpeg убран из hot path
 - **Cached greeting:** greeting_rizalta.pcm (83KB, 5.2s) и greeting_atlantis.pcm (95KB) предгенерированы через Yandex TTS, TTFB=0ms
-- **Anti-hallucination:** YandexGPT Lite генерировал fake-диалоги (маркеры "Пользователь:", "Ассистент:"). Фикс: (1) CRITICAL-инструкция в начало VOICE_SYSTEM_PROMPT_RIZALTA и VOICE_SYSTEM_PROMPT, (2) regex post-filter в stream_voice_response() обрезает на маркерах
+- **Anti-hallucination:** YandexGPT генерировал fake-диалоги (маркеры "Пользователь:", "Ассистент:"). Фикс: (1) CRITICAL-инструкция в начало VOICE_SYSTEM_PROMPT_RIZALTA и VOICE_SYSTEM_PROMPT, (2) regex post-filter в stream_voice_response() обрезает на маркерах
 - **SSML break fix:** Yandex отвергает `<break time="0.3s"/>` (дробные секунды). Заменено на `<break time="300ms"/>`
 - **Dead branches:** legacy Groq/ElevenLabs код сохранён под `VOICE_PROVIDER=groq` и `VOICE_TTS_PROVIDER=elevenlabs`
 - **5 тестовых звонков Сергея:** 2 на этапе B (ElevenLabs TTS), 2 на этапе C (SSML баг), 1 финальный (полный успех, 4 turns, 66.9s)
 
-### Финальные метрики (звонок d3e92e56, после всех фиксов)
+### A/B тест 4 моделей YandexGPT (живые звонки, одинаковый скрипт RIZALTA)
+| Модель | LLM медиана | User pause | "Откуда данные" | Вердикт |
+|--------|------------|------------|-----------------|---------|
+| YandexGPT Lite | 815ms | ~1070ms | FAIL (сдалась) | быстро но тупо |
+| Qwen3-235B-A22B-FP8 | 2340ms | ~2726ms | OK (подробно) | умно но медленно |
+| **YandexGPT 5 Pro** | **638ms** | **~860ms** | OK (кратко) | **ЛУЧШИЙ БАЛАНС** |
+| Alice AI LLM | 1290ms | ~2160ms | OK (полный) | умнее всех но многословна |
+
+**Решение:** YandexGPT 5 Pro (`yandexgpt/latest`) для голоса. Переключено на VPS через .env.
+
+### Финальные метрики (звонок d3e92e56 + A/B серия)
 | Метрика | Старый стек (ElevenLabs+Groq) | Новый стек (Yandex) | Delta |
 |---------|------|------|-------|
 | TTS TTFB | 1100ms медиана | **177ms медиана** | -84% |
-| LLM latency | 379-1677ms | 411-1398ms | ~same |
+| LLM latency | 379-1677ms | **638ms медиана (Pro)** | улучшение |
 | STT latency | 201-247ms | 158-239ms | ~same |
+| User pause (end-to-end) | ~1300ms | **~860ms (Pro)** | -34% |
 | Greeting TTFB | 1106-1818ms | **0ms** (cached) | -100% |
 | Proxy dependency | Да | Нет | eliminated |
 
-**Коммиты:** `feat(voice): migrate LLM+TTS to Yandex stack`
+**Коммиты:** `a7f45612` feat(voice): migrate LLM+TTS to Yandex stack (VOICE_YANDEX_MIGRATION_v1)
 **Файлы:** voice_asterisk.py, core/pipeline.py, .env (VPS)
 **Env добавлены (VPS):** YC_API_KEY, YC_FOLDER_ID, VOICE_MODEL_YANDEX, VOICE_TTS_PROVIDER, YANDEX_TTS_VOICE, YANDEX_TTS_EMOTION
-**Env изменены (VPS):** VOICE_PROVIDER=yandex (было groq)
+**Env изменены (VPS):** VOICE_PROVIDER=yandex (было groq), VOICE_MODEL_YANDEX=yandexgpt/latest (Pro)
+**Rollback:** VOICE_PROVIDER=groq / VOICE_TTS_PROVIDER=elevenlabs в .env + systemctl restart sofia-voice
+
+**Побочные находки:**
+- SIP-сканеры (193.46.255.104 + 172.110.223.135) раздувают Asterisk full.log ~8G/сутки, диск рос 15%→45% за сутки → fail2ban/UFW переведён в P0
 
 ---
 

@@ -2,17 +2,18 @@
 
 ## P0 — Срочно
 
-- [x] ~~**VOICE_YANDEX_MIGRATION_v1**~~ — выполнено 16.04: LLM→YandexGPT Lite, TTS→Yandex Alena, cached greeting (0ms TTFB), anti-hallucination filter. TTS TTFB 177ms (было 1100ms). Dead branches сохранены для rollback.
+- [x] ~~**VOICE_YANDEX_MIGRATION_v1**~~ — выполнено 16.04: LLM→YandexGPT 5 Pro, TTS→Yandex Alena, cached greeting (0ms TTFB), anti-hallucination filter. A/B 4 моделей — Pro победил (LLM 638ms, user pause 860ms). TTS TTFB 177ms (было 1100ms). Dead branches сохранены для rollback.
 - [ ] **🔴 fail2ban/UFW на VPS 185.207.66.201** — SIP-сканеры (193.46.255.104 + 172.110.223.135) раздувают Asterisk full.log ~8G/сутки. Диск вырос с 15% до 45% за сутки после вчерашней чистки. logrotate починен (daily rotate 7), но при ~8G/день ротация не спасёт — нужна блокировка источника. Переведён из P2 в P0.
 - [ ] **ATLANTIS_ADDON_INFRA_PORTBACK** — в PROD отсутствует механизм чтения `prompt_addon`: в `config/source_objects.py` Атлантис-объект закрывается сразу после `greeting` (ключа `prompt_addon` нет), в `core/pipeline.py` нет ветки `if obj_config.get("prompt_addon")`. Весь Atlantis-addon-механизм — DEV-only фича, никогда не был в PROD. Sofia в PROD Atlantis-flow не получает специальных правил, включая давнее «не запрашивай контакты, клиент уже из формы» и новые safety-триггеры (СВО/политика/дискриминация/мошенничество). 400+ строк разницы между PROD и DEV `core/pipeline.py`. Требуется отдельный спринт: полный diff pipeline.py PROD vs DEV, классификация расхождений, план порта по частям, контролируемый деплой с разведкой. Блокер для работы всех Atlantis-specific правил в production.
 - [ ] **Git-sanity scan prod vs dev** — пройтись по всем логическим файлам (core/, config/, *_server.py, *_gateway.py), сравнить md5 HEAD в prod и dev, найти расхождения. Уже известно: `core/pipeline.py` (400+ строк разницы, см. ATLANTIS_ADDON_INFRA_PORTBACK), `config/source_objects.py` (black-drift на `detect_source`/`load_object_context` + отсутствие `prompt_addon`). Могут быть другие. Мини-спринт на 15-20 мин после ATLANTIS_ADDON_INFRA_PORTBACK.
-- [ ] **B1: Filler звуки** — записать через Yandex TTS Alena: "Угу", "Так", "Понятно", "Хорошо". Кешировать как 8kHz PCM, проигрывать сразу после VAD trigger. Маскировка ~200ms латентности. Sprint Contract нужен update под Yandex.
-- [ ] **A3: Sentence-level TTS streaming** — YandexGPT стримит → первое предложение → Yandex TTS сразу. Gain: -100-200ms. Делать ПОСЛЕ fillers. Yandex TTS v1 REST не streaming, рассмотреть v3 gRPC.
+- [x] ~~**B1: Filler звуки**~~ — закрыто 16.04: не актуально после миграции на Yandex. TTS TTFB 177ms (было 700-900ms ElevenLabs v3), fillers не нужны при такой латентности.
+- [x] ~~**A3: Sentence-level TTS streaming**~~ — закрыто 16.04: не актуально. Yandex TTS v1 REST TTFB 177ms быстрее чем ElevenLabs streaming был. Gain минимален.
 - [ ] **Ударения Yandex Alena** — проверить ударения на ключевых словах (Белокуриха, РИЗАЛТА, эскроу). Yandex SpeechKit лучше ElevenLabs на русском (~99% vs ~80%), но нужна проверка.
 - [ ] **Proxy monitoring** — алерт если 8095 упал (теперь менее критично — голос не использует proxy, только текстовые каналы)
 
 ## P1 — Следующая итерация
 
+- [ ] **Sprint 2: Sofia-GPT текстовый стек миграция на Yandex** — Extractor+Analyzer→YandexGPT Lite (дёшево, быстро для NLU), Generator→Qwen3-235B или Alice AI LLM (качество важнее скорости для текста), Embeddings→Yandex. A/B через promptfoo. Мотивация: после голосовой миграции 16.04 текстовый стек остался на OpenAI (gpt-5.2) — единая платформа снижает зависимости и стоимость.
 - [ ] **Рефакторинг find_recent_atlantis_lead()** → универсальный `find_recent_lead_by_source(source_id)` — сейчас хардкод на SOURCE_ID=397, блокер для масштабирования на новые ЖК
 - [ ] **Вынести хардкоды в env/config** — SOFIA_AI_USER_ID (428), BITRIX_ATLANTIS_SOURCE_ID (397) → в .env или source_objects.py
 - [ ] **Спринт 3: возврат виджета в новом формате** — slide-out side tab на invest-apartmens.online/atlantis (заменяет старый круглый bubble). Требует: новая вёрстка (side tab вместо bubble, брендинг Атлантиса сохранить), URL-based source_object detection (по page_url а не по ключевым словам в тексте), разделение prompt_addon по каналам: Telegram — не спрашивать контакты, виджет — обязательно спрашивать телефон, таймаут финализации для виджет-сессий (или покрытие Bitrix-роботом), Bitrix-интеграция: source_id, attention к ASSIGNED=428 flow. **БЛОКЕР:** ждёт verification что 20-минутный Bitrix-робот реально работает — без safety-net виджет утопит CRM зависшими лидами.
@@ -29,8 +30,9 @@
 
 ## P2 — Улучшения Voice
 
+- [ ] **Alice AI LLM для голоса** — попробовать Alice AI с max_tokens=80 и жёстким промптом "15 слов". В A/B 16.04 показала лучшее качество ответов, но многословна (user pause 2160ms). С ограничением длины может стать конкурентоспособной по скорости.
 - [x] ~~**Добавить IP 72.56.64.91 в белый список Телфин**~~ — закрыто 08.04: Телфин не меняет GeoIP, двухсерверная архитектура — постоянное решение
-- [ ] **fail2ban или UFW whitelist против SIP-сканеров** — 193.46.255.104 и подобные раздувают Asterisk-логи на VPS 185.207.66.201
+- [x] ~~**fail2ban или UFW whitelist против SIP-сканеров**~~ — переведено в P0 (16.04), см. выше
 - [ ] **UFW на VPS 185.207.66.201** — сейчас неактивен, SSH и Asterisk открыты в мир
 - [ ] **Проверить STT pipeline voice_asterisk.py** — логи говорят "Whisper STT", CLAUDE.md говорит "Yandex SpeechKit". Привести документацию в соответствие с реальным кодом
 - [ ] **Yandex STT gRPC v3 streaming** — вместо REST, параллельно с речью клиента (-200ms). Proto файлы уже в yandex_proto/. Gain: -150-200ms
