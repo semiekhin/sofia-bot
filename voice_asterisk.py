@@ -505,6 +505,7 @@ class AudioSocketCall:
         self._chat_id: str = ""
         self._state_manager: StateManager | None = None
         self._is_responding = False  # True while STT→LLM→TTS pipeline is active
+        self._tts_playing = False  # True only while TTS is actively streaming to client
         self._greeting_sent = False
 
         # Barge-in state
@@ -577,9 +578,12 @@ class AudioSocketCall:
             # Process audio through VAD
             if not self._is_responding:
                 await self._process_audio_vad(payload)
-            else:
-                # During response: detect barge-in (client speaking over Sofia)
+            elif self._tts_playing:
+                # TTS actively streaming — client voice is a barge-in candidate
                 await self._detect_barge_in(payload)
+            # else: _is_responding=True but TTS not yet streaming (STT/LLM phase).
+            # Client finishing own utterance — ignore frames.
+            # See call 89dadd55: pre-TTS barge-in killed TTS at 0s played.
 
         elif msg_type == AS_TYPE_HANGUP:
             logger.info(f"📞 Hangup (uuid={self.call_uuid})")
@@ -798,6 +802,7 @@ class AudioSocketCall:
             logger.error(f"❌ Turn processing error: {e}")
         finally:
             self._is_responding = False
+            self._tts_playing = False  # paranoid reset; _speak/_speak_pcm own it
 
             # After TTS cancel: discard barge-in buffer, let VAD listen fresh.
             # Re-feeding the accumulated buffer lets polluted fragments
@@ -832,6 +837,8 @@ class AudioSocketCall:
                 frame = pcm_data[offset:end]
                 if len(frame) < frame_size:
                     frame = frame + b"\x00" * (frame_size - len(frame))
+                if not first_sent:
+                    self._tts_playing = True
                 await self._send_audio(frame, self._audio_type)
                 if not first_sent:
                     logger.info(
@@ -842,6 +849,8 @@ class AudioSocketCall:
                 await asyncio.sleep(0.018)
         except Exception as e:
             logger.error(f"Cached PCM playback error: {e}")
+        finally:
+            self._tts_playing = False
         elapsed = (time.monotonic() - t0) * 1000
         duration_sec = (
             total_bytes / (SAMPLE_RATE_OUT * SAMPLE_WIDTH) if total_bytes else 0
@@ -871,56 +880,69 @@ class AudioSocketCall:
         first_audio_time = None
         t0 = time.monotonic()
 
-        if VOICE_TTS_PROVIDER == "yandex":
-            # Yandex TTS: single request, full LPCM buffer
-            pcm_data = await synthesize_tts_yandex(clean_text)
-            if not pcm_data:
-                return
-            first_audio_time = (time.monotonic() - t0) * 1000
-            logger.info(f"TTS first audio chunk: {first_audio_time:.0f}ms")
-            total_bytes = len(pcm_data)
-            offset = 0
-            while offset < len(pcm_data):
-                if self._closed or self._cancel_playback:
-                    if self._cancel_playback:
-                        logger.info("TTS playback cancelled (barge-in)")
-                    break
-                end = min(offset + frame_size, len(pcm_data))
-                frame = pcm_data[offset:end]
-                if len(frame) < frame_size:
-                    frame = frame + b"\x00" * (frame_size - len(frame))
-                await self._send_audio(frame, self._audio_type)
-                offset += frame_size
-                await asyncio.sleep(0.018)
-        else:
-            # ElevenLabs legacy: streaming via ffmpeg
-            async for pcm_chunk in stream_tts_audio(clean_text):
-                if self._closed or self._cancel_playback:
-                    if self._cancel_playback:
-                        logger.info("TTS playback cancelled (barge-in)")
-                    break
-
-                if first_audio_time is None:
-                    first_audio_time = (time.monotonic() - t0) * 1000
-                    logger.info(f"TTS first audio chunk: {first_audio_time:.0f}ms")
-
-                buffer.extend(pcm_chunk)
-                total_bytes += len(pcm_chunk)
-
-                while len(buffer) >= frame_size:
-                    if self._cancel_playback:
+        try:
+            if VOICE_TTS_PROVIDER == "yandex":
+                # Yandex TTS: single request, full LPCM buffer
+                pcm_data = await synthesize_tts_yandex(clean_text)
+                if not pcm_data:
+                    return
+                total_bytes = len(pcm_data)
+                offset = 0
+                while offset < len(pcm_data):
+                    if self._closed or self._cancel_playback:
+                        if self._cancel_playback:
+                            logger.info("TTS playback cancelled (barge-in)")
                         break
-                    frame = bytes(buffer[:frame_size])
-                    del buffer[:frame_size]
+                    end = min(offset + frame_size, len(pcm_data))
+                    frame = pcm_data[offset:end]
+                    if len(frame) < frame_size:
+                        frame = frame + b"\x00" * (frame_size - len(frame))
+                    if first_audio_time is None:
+                        self._tts_playing = True
                     await self._send_audio(frame, self._audio_type)
+                    if first_audio_time is None:
+                        first_audio_time = (time.monotonic() - t0) * 1000
+                        logger.info(f"TTS first audio chunk: {first_audio_time:.0f}ms")
+                    offset += frame_size
                     await asyncio.sleep(0.018)
+            else:
+                # ElevenLabs legacy: streaming via ffmpeg
+                async for pcm_chunk in stream_tts_audio(clean_text):
+                    if self._closed or self._cancel_playback:
+                        if self._cancel_playback:
+                            logger.info("TTS playback cancelled (barge-in)")
+                        break
 
-            # Send remaining buffer
-            if buffer and not self._closed and not self._cancel_playback:
-                remaining = bytes(buffer)
-                if len(remaining) < frame_size:
-                    remaining = remaining + b"\x00" * (frame_size - len(remaining))
-                await self._send_audio(remaining, self._audio_type)
+                    buffer.extend(pcm_chunk)
+                    total_bytes += len(pcm_chunk)
+
+                    while len(buffer) >= frame_size:
+                        if self._cancel_playback:
+                            break
+                        frame = bytes(buffer[:frame_size])
+                        del buffer[:frame_size]
+                        if first_audio_time is None:
+                            self._tts_playing = True
+                        await self._send_audio(frame, self._audio_type)
+                        if first_audio_time is None:
+                            first_audio_time = (time.monotonic() - t0) * 1000
+                            logger.info(
+                                f"TTS first audio chunk: {first_audio_time:.0f}ms"
+                            )
+                        await asyncio.sleep(0.018)
+
+                # Send remaining buffer
+                if buffer and not self._closed and not self._cancel_playback:
+                    remaining = bytes(buffer)
+                    if len(remaining) < frame_size:
+                        remaining = remaining + b"\x00" * (frame_size - len(remaining))
+                    if first_audio_time is None:
+                        self._tts_playing = True
+                    await self._send_audio(remaining, self._audio_type)
+                    if first_audio_time is None:
+                        first_audio_time = (time.monotonic() - t0) * 1000
+        finally:
+            self._tts_playing = False
 
         elapsed = (time.monotonic() - t0) * 1000
         duration_sec = (
