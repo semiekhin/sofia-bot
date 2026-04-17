@@ -1,5 +1,46 @@
 # SESSION_LOG — Последние сессии
 
+## 17.04.2026 — OUTBOUND_DIALER_v1: dial.py + [outbound-audiosocket] context
+
+**Сделано:**
+
+Добавлена возможность инициировать исходящий звонок через Asterisk — Sofia звонит клиенту, proigрывает RIZALTA-greeting, ведёт разговор. Первая версия — один звонок на вызов скрипта, stateless.
+
+### Компоненты
+
+- **Asterisk dialplan `[outbound-audiosocket]`** в `/etc/asterisk/extensions.conf` — extension `s` с `Set(CALL_UUID=...)` + `AudioSocket(${CALL_UUID},127.0.0.1:9090)` + `Hangup()`. Зеркало `[from-telphin]`. UUID через `${SHELL(cat /proc/sys/kernel/random/uuid)}` — AudioSocket app требует RFC-4122 формат, `${UNIQUEID}` (`<epoch>.<counter>`) не подходит.
+- **`/opt/sofia-voice/dial.py`** — нормализация телефона (+7/8/7/10-digit формы) → `channel originate PJSIP/<phone>@telphin-endpoint extension s@outbound-audiosocket` через `asterisk -rx` → capture uniqueid через `core show channels concise` → CDR polling (primary: по uniqueid; fallback: по timestamp+dcontext=outbound-audiosocket) → JSONL запись в `/var/log/sofia-voice/outbound_YYYY-MM-DD.jsonl` → exit code per disposition (0=ANSWERED billsec≥5, 1=NO ANSWER/BUSY/short-hangup, 2=invalid input, 3=FAILED). Таймаут 600с (покрывает 3-5 минут реального разговора).
+- **UFW** — добавлено правило `5090/udp ← 213.170.84.105` (второй Telphin IP из `pjsip show endpoints`).
+
+### Live test `98332baf-c2d8-4d0a-829a-b6bc598e4e4b` (CDR uniqueid `1776429384.330`, 119с)
+
+`python3 /opt/sofia-voice/dial.py 89181011091` → Сергей получил звонок с номера 79310091644 → услышал RIZALTA-greeting → 7 полноценных turns разговора → нормальный barge-in на turn 4.
+
+Per-turn тайминги Yandex EOU=high: EOU wait медиана ~1920мс, LLM 543-940мс, TTS first chunk 130-227мс. Phone AEC: 0 false partials во время TTS. Stream open TTFB: **1мс** (быстрее чем на inbound 4ad65942 где было 2мс). Длинная фраза на turn 7 (117 симв / 22 partials / одна EOU) склеена целиком.
+
+### Баги по пути и фиксы
+
+1. **Первый попыток v1:** `${UNIQUEID}` в AudioSocket → `ERROR: Failed to parse UUID '1776428982.328'` (AudioSocket требует 128-bit UUID, не Asterisk-шный `epoch.counter`). Канал мгновенно hangup'нулся billsec=0. **Фикс:** вернуть SHELL-генерацию UUID зеркально с inbound context'ом. Revert коммит не понадобился — правка в том же спринте.
+2. **dial.py не ловил uniqueid** на втором (успешном) live test'е: `find_new_telphin_uniqueid` polls 5 секунд после originate, но реальный channel setup занял ~24с (ring + answer). Window промазал, fallback по `phone in channel` не сработал потому что CDR outbound-row вообще не содержит номер (src=пусто, channel=endpoint-name без цифр). **Фикс:** fallback matcher теперь сравнивает CDR row start timestamp >= ts_start − 5s tolerance + dcontext=outbound-audiosocket. Ретроактивно проверено на тот же звонок — находит `1776429384.330` с disposition=ANSWERED billsec=119. Живой re-test не понадобился (правка только в matching-логике, hot path звонка не тронут).
+
+### Побочные наблюдения (в backlog)
+
+- **Turn 4 9.3с blocking** — в звонке 98332baf turn 4 между `🎤 USER` log и LLM t0 прошло ~9 секунд. LLM сам был 834мс (быстро), stream_voice_response нормальный. Подозрение — SQLite `save_message()` WAL checkpoint или file lock. **Одна точка данных, не воспроизводимо.** В P1 backlog: `save_message() timing instrumentation` — добавить per-call ms логирование, дождаться повторения на 5+ звонках перед слепым фиксом.
+- **Два Telphin IP'а в identify** — `46.229.221.93/32` (известный, уже в UFW) + `213.170.84.105/32` (новый, добавлен сегодня). В будущем мониторить `pjsip show endpoints` на появление третьего IP.
+
+### Коммиты (17.04 вечер)
+
+- FIX_DATE follow-ups + финализация сессии (`a64b3354`)
+- Outbound v1 (следующий коммит этого session-close) — `dial.py` + `asterisk/extensions.conf` + SESSION_LOG + BACKLOG
+
+### Следующее (P1)
+
+1. **Запись звонков + JSONL метрики** (блокирует ack-timer работу)
+2. **Post-barge-in ack timer** (отложено до сбора реальных RIZALTA данных)
+3. **Outbound v2** (batch + retry + Bitrix) — после v1 stabilization
+
+---
+
 ## 17.04.2026 — YANDEX_STT_V3_EOU_TUNING (Phase 2D): EouSensitivity=HIGH через env-switch
 
 **Сделано:**
