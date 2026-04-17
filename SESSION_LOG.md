@@ -1,5 +1,46 @@
 # SESSION_LOG — Последние сессии
 
+## 17.04.2026 — YANDEX_STT_V3_INFRA_v1 (Phase 2A): gRPC-инфра на VPS без интеграции
+
+**Сделано:**
+
+Подготовлена инфра + standalone-модуль STT v3 gRPC streaming на VPS sofia-voice **без** правки voice_asterisk.py. Интеграция (bifurcate в `_handle_packet`) — отдельный спринт Phase 2B.
+
+- **Reconnaissance (Phase 1 YANDEX_STT_V3_RECON_v1, read-only):** собрана полная карта — текущий REST v1 flow, proto-файлы v3 (есть в DEV, нет на VPS), auth Api-Key работает для gRPC, оценка VAD/barge-in logic ~240 строк (не 400+ как в userMemories), 8 open questions для Phase 2B.
+- **grpcio 1.80.0** установлен в `/opt/sofia-voice/venv` (protobuf 7.34.1 уже был, совместим).
+- **yandex_proto/** скопирован DEV → VPS (`scp -r`), 29 файлов 196K. `sys.path.insert` даёт `from yandex.cloud.ai.stt.v3 import stt_pb2, stt_service_pb2_grpc`.
+- **`/opt/sofia-voice/yandex_stt_grpc.py`** создан (185 строк) — `YandexSTTStream` per-call wrapper, callback-based (`on_partial/on_final/on_eou`), без Pipecat-фреймов, без auto-reconnect, `is_broken` property для caller-side fallback. Session config: LINEAR16_PCM / 8000 Hz / ru-RU / general:rc / REAL_TIME.
+- **`.env` на VPS:** добавлен `STT_MODE=rest` (default). Переключение в `grpc` — Phase 2B.
+- **voice_asterisk.py не изменён** (md5 `7dda8e9f161b21202655bdcd0c899ef6` до и после). sofia-voice.service не перезапускался, работает на REST v1 как прежде.
+
+**Smoke test (реальный API-key + один 320B silence chunk, VPS):**
+
+| Шаг | Результат |
+|---|---|
+| Импорт `yandex_stt_grpc` + инстанциация с dummy-ключом | ✅ `is_broken=False is_started=False` |
+| `start()` с реальным `YANDEX_SPEECHKIT_API_KEY` | ✅ `gRPC stream opened` за 4ms |
+| `send_audio(b'\x00' * 320)` + 3с ожидания | ✅ сервер молчит (ожидаемо для тишины) |
+| `close()` + событие `eou_update t=0ms` во время teardown | ✅ `is_broken=False` сохраняется — правка `if not self._closed` работает |
+
+Auth подтверждён (никаких UNAUTHENTICATED/PERMISSION_DENIED), TLS handshake + bidirectional stream + callbacks + clean shutdown end-to-end.
+
+**Побочные находки:**
+
+1. **Proto-generated stubs используют голый `from yandex.cloud.ai.stt.v3 import ...`** — требует `/opt/sofia-voice/yandex_proto` в `sys.path` целиком, не `yandex_proto.yandex.cloud...`. Первая попытка импорта через namespace-путь упала `ModuleNotFoundError: No module named 'yandex'` внутри самого stub'а. Фикс: `sys.path.insert(0, os.path.join(basedir, "yandex_proto"))` (как в orphan `yandex_stt.py` из DEV).
+2. **Race в `_receive_loop` при teardown:** Yandex прислал `eou_update t_ms=0` после нашего `close()` — recv-task ещё жил, ивент прошёл через callback. В первой версии любая ошибка в recv-loop ставила `_broken=True`, что ложно сломало бы Phase 2B fallback logic при нормальном закрытии. Правка: `if not self._closed: self._broken = True` в обоих except-ветках.
+3. **«400+ строк VAD/barge-in»** в userMemories — переоценка. Реально ~240 строк, из которых ~180-210 убирается при Phase 2B (полный список — в Build Report YANDEX_STT_V3_RECON_v1).
+4. **Orphan `/opt/sofia-gpt-dev/yandex_stt.py`** (Pipecat-специфичный, 26.03) остаётся — пригодится как референс до Phase 2B, потом можно удалить.
+
+**Следующее (Phase 2B — интеграция):**
+
+1. Bifurcate в `voice_asterisk.py::_handle_packet`: при `STT_MODE=grpc` открывать `YandexSTTStream` на UUID-пакете, стримить фреймы туда вместо накопления в `_speech_buffer`. При `STT_MODE=rest` — поведение дословно как сейчас (rollback fidelity).
+2. Barge-in: Silero остаётся как early-warning; EOU — с сервера Yandex.
+3. Fallback: при `stream.is_broken` → переключение на REST `transcribe_audio()` для остальных turn'ов звонка.
+4. A/B на живом звонке — `general:rc` на 8kHz vs REST v1 качество и латентность.
+5. Эффорт Phase 2B: 1-2 дня. Нужен план спринта от оркестратора.
+
+---
+
 ## 17.04.2026 — FAIL2BAN_DEPLOY_v1 (утро): второй слой защиты VPS sofia-voice
 
 **Сделано:**
