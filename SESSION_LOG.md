@@ -33,6 +33,18 @@ Per-turn тайминги Yandex EOU=high: EOU wait медиана ~1920мс, LL
 - FIX_DATE follow-ups + финализация сессии (`a64b3354`)
 - Outbound v1 (следующий коммит этого session-close) — `dial.py` + `asterisk/extensions.conf` + SESSION_LOG + BACKLOG
 
+### Последующие fix'ы (после коммита 96b68ae7)
+
+В ту же сессию выявлены и исправлены два баг-а в matching-логике dial.py:
+
+1. **`find_cdr_fallback` искал по `phone in channel`** — не работает для outbound (CDR row не содержит номер, только endpoint-имя). Fix: сверять по `CDR.start >= ts_start − 5s` + `dcontext=outbound-audiosocket`. Retroactively проверено на звонке `1776429384.330` — matcher находит корректно. Fallback запускается в `wait_for_cdr` ВСЕГДА (не только при uniqueid=None), чтобы компенсировать следующий баг.
+
+2. **`cdr_line_count` off-by-N** — считала `\n` байты в файле через `open("rb")`, но CDR rows могут содержать embedded newlines в quoted CallerID полях. На 17.04 18:00 UTC: 256 newlines vs **254 csv rows** — расхождение 2. `initial_lines = cdr_line_count()` → `rows[initial_lines:]` давал **пустой slice** → fallback scan window пустой → dial.py висел до timeout. Fix: `cdr_line_count` теперь делает `sum(1 for _ in csv.reader(f))`. Unit-tested 4 сценария (consistency, fresh-row match, empty slice when no new rows, reproduction of old bug).
+
+3. **`captured_uniqueid` в JSONL** — добавлено поле для post-mortem: что вернул concise parser. Сравнивается с `uuid` (реальный CDR uniqueid) — расхождение подтверждает P3 задачу «concise parser field index bug на Asterisk 20». Fallback sempre compensated.
+
+Test звонки в сессию: `98332baf` (19:15 live — нормальный UX, но dial.py висел → убит), `dfc4aee9` (17:15 retest первого fix — dial.py висел → убит), `86c53f97` (17:41 retest второго fix timestamp fallback — dial.py всё равно висел из-за cdr_line_count bug → убит). **Live re-test после csv-row-count fix не делаем** — `csv.reader` поведение детерминировано, unit-test achieves same confidence без лишних звонков Сергею.
+
 ### Следующее (P1)
 
 1. **Запись звонков + JSONL метрики** (блокирует ack-timer работу)

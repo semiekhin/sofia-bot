@@ -178,9 +178,13 @@ def find_cdr_fallback(initial_lines: int, ts_start: dt.datetime) -> dict | None:
 
 
 def cdr_line_count() -> int:
+    """Number of CSV rows (not newline count — CDR rows may contain
+    embedded newlines in quoted CallerID fields, which breaks byte-line
+    counting. Observed 17.04: 256 newlines vs 254 csv rows — off-by-2
+    made `rows[initial_lines:]` slice empty, fallback matcher saw nothing."""
     try:
-        with open(CDR_PATH, "rb") as f:
-            return sum(1 for _ in f)
+        with open(CDR_PATH, newline="", encoding="utf-8") as f:
+            return sum(1 for _ in csv.reader(f))
     except FileNotFoundError:
         return 0
 
@@ -188,8 +192,12 @@ def cdr_line_count() -> int:
 def wait_for_cdr(
     uniqueid: str | None, initial_lines: int, ts_start: dt.datetime, timeout_sec: int
 ) -> dict | None:
-    """Poll until CDR row appears. Primary: uniqueid match. Fallback:
-    timestamp+dcontext match (phone not usable — see find_cdr_fallback)."""
+    """Poll until CDR row appears. Primary: uniqueid match (fast short-circuit
+    when capture worked). Fallback: timestamp+dcontext match — ALWAYS tried
+    as safety net, because `core show channels concise` parsing can return
+    a wrong value on Asterisk 20 (observed on call 1776446150.338: uniqueid
+    was captured but didn't match CDR row). See P3 backlog `dial.py concise
+    parser — field index bug`."""
     deadline = time.monotonic() + timeout_sec
     while time.monotonic() < deadline:
         time.sleep(POLL_INTERVAL_SEC)
@@ -197,10 +205,9 @@ def wait_for_cdr(
             rec = find_cdr_by_uniqueid(uniqueid)
             if rec:
                 return rec
-        else:
-            rec = find_cdr_fallback(initial_lines, ts_start)
-            if rec:
-                return rec
+        rec = find_cdr_fallback(initial_lines, ts_start)
+        if rec:
+            return rec
     return None
 
 
@@ -241,6 +248,7 @@ def main() -> int:
     ts_start = dt.datetime.now(dt.timezone.utc)
     initial_lines = cdr_line_count()
     channels_before = snapshot_channel_uniqueids()
+    uniqueid: str | None = None  # what concise parser captured (may differ from CDR)
 
     originate_cmd = (
         f"channel originate PJSIP/{phone}@telphin-endpoint "
@@ -256,6 +264,7 @@ def main() -> int:
             "ts_end": dt.datetime.now(dt.timezone.utc).isoformat(),
             "phone": phone,
             "uuid": None,
+            "captured_uniqueid": uniqueid,
             "disposition": "FAILED",
             "duration": 0,
             "billsec": 0,
@@ -272,6 +281,7 @@ def main() -> int:
             "ts_end": dt.datetime.now(dt.timezone.utc).isoformat(),
             "phone": phone,
             "uuid": None,
+            "captured_uniqueid": uniqueid,
             "disposition": "FAILED",
             "duration": 0,
             "billsec": 0,
@@ -285,7 +295,9 @@ def main() -> int:
         )
         return 3
 
-    # Capture uniqueid of the newly created telphin-endpoint channel
+    # Capture uniqueid of the newly created telphin-endpoint channel.
+    # Known-unreliable on Asterisk 20 — value is persisted to JSONL as
+    # "captured_uniqueid" for post-mortem comparison with CDR.uniqueid.
     uniqueid = find_new_telphin_uniqueid(channels_before)
 
     # Poll CDR until row appears
@@ -297,7 +309,8 @@ def main() -> int:
             "ts_start": ts_start.isoformat(),
             "ts_end": ts_end.isoformat(),
             "phone": phone,
-            "uuid": uniqueid,
+            "uuid": None,
+            "captured_uniqueid": uniqueid,
             "disposition": "FAILED",
             "duration": 0,
             "billsec": 0,
@@ -321,6 +334,7 @@ def main() -> int:
         "ts_end": ts_end.isoformat(),
         "phone": phone,
         "uuid": rec["uniqueid"],
+        "captured_uniqueid": uniqueid,
         "disposition": disposition,
         "duration": duration,
         "billsec": billsec,
