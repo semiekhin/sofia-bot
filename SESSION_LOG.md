@@ -47,11 +47,15 @@ Per-turn тайминги Yandex EOU=high: EOU wait медиана ~1920мс, LL
 
 Test звонки в сессию: `98332baf` (19:15 live — нормальный UX, но dial.py висел → убит), `dfc4aee9` (17:15 retest первого fix — dial.py висел → убит), `86c53f97` (17:41 retest второго fix timestamp fallback — dial.py всё равно висел из-за cdr_line_count bug → убит). **Live re-test после csv-row-count fix не делаем** — `csv.reader` поведение детерминировано, unit-test achieves same confidence без лишних звонков Сергею.
 
-### Следующее (P1)
+### Следующее (P1) — уточнённые приоритеты к концу сессии (коммит `17470b15`)
 
-1. **Запись звонков + JSONL метрики** (блокирует ack-timer работу)
-2. **Post-barge-in ack timer** (отложено до сбора реальных RIZALTA данных)
-3. **Outbound v2** (batch + retry + Bitrix) — после v1 stabilization
+1. **🔴 SSH alias sofia-voice починить** — блокер для любых VPS-операций, первым делом
+2. **🔴 Запись звонков (MixMonitor WAV)** — дополнение к dialplan перед живой серией, без WAV нет post-mortem
+3. **🔴 Начать пилотную живую серию RIZALTA** — 10-20 реальных звонков для сбора UX-метрик
+4. **Structured turn_metrics JSONL** — инструментация `voice_asterisk.py` (события turn_start/stt_done/llm_done/tts_*/barge_in)
+5. **Post-barge-in ack timer** — отложено до данных #3
+6. **Outbound v2** (batch + retry + Bitrix) — после v1 stabilization
+7. **`save_message()` timing instrumentation** — диагностика 9.3с blocking'а (98332baf turn 4)
 
 ---
 
