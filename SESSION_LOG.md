@@ -1,5 +1,53 @@
 # SESSION_LOG — Последние сессии
 
+## 17.04.2026 — YANDEX_STT_V3_EOU_TUNING (Phase 2D): EouSensitivity=HIGH через env-switch
+
+**Сделано:**
+
+Один env-switch `YANDEX_STT_EOU_MODE=default|high` добавлен в `yandex_stt_grpc.py::YandexSTTStream` и `voice_asterisk.py`. При `high` — в `StreamingOptions` прокидывается `EouClassifierOptions(default_classifier=DefaultEouClassifier(type=EouSensitivity.HIGH))`. Live-тестирован звонком `4ad65942`.
+
+### Изменения
+
+- `yandex_stt_grpc.py` (+14 строк): параметр `eou_mode: str = "default"` в `__init__`, warning на unknown значение с fallback на default, `eou_classifier` в `_request_iterator` с HIGH/DEFAULT в зависимости от параметра.
+- `voice_asterisk.py` (+5 строк): env-const `YANDEX_STT_EOU_MODE`, передача в `YandexSTTStream(..., eou_mode=...)`, startup-log `Pipeline: Yandex STT (GRPC, EOU=high)`.
+- `.env` на VPS: добавлена строка `YANDEX_STT_EOU_MODE=high`.
+
+### Live test звонок `4ad65942` (83.0с, 5 turns + 3 barge-in)
+
+| Метрика | 4b109925 (EOU=default) | 4ad65942 (EOU=high) | Δ |
+|---|---|---|---|
+| EOU wait медиана (чистые измерения) | 2240мс | **1920мс** | −320мс |
+| EOU wait короткая фраза («все спасибо») | 2168мс | **1545мс** | **−620мс** |
+| User pause от stable text → TTS first | 3099мс | **2119мс** | **−980мс** |
+| Длинная фраза с микропаузами — 1 final? | ✅ | ✅ (100 симв, 32 partials) | без регресса |
+| Длинная 109 симв с повторами | ✅ | ✅ (23 partials, 1 final) | без регресса |
+| Barge-in #1 latency | 1404мс | 1252мс | −152мс |
+| Barge-in clean recovery | BI#1, BI#3 ok; BI#2 deadlock | BI#1, BI#2 ok; BI#3 deadlock | сопоставимо |
+| is_broken | False | False | — |
+| ERROR/Exception | 0 | 0 | — |
+
+Sergey subjective: «работает, ура».
+
+### Rollback
+
+Одной строкой `.env` без правки кода:
+```
+sed -i "s/^YANDEX_STT_EOU_MODE=high/YANDEX_STT_EOU_MODE=default/" /opt/sofia-voice/.env && systemctl restart sofia-voice
+```
+
+### Побочные находки
+
+- **E402 в `yandex_stt_grpc.py:31`** (pre-existing от Phase 2A — import после `sys.path.insert`). flake8 на этом файле не запускался раньше (нет pre-commit для VPS-only модуля). Добавил `# noqa: E402` по образцу `voice_asterisk.py:39-41`. Не scope creep — project pattern.
+- **DEV продолжает не содержать `yandex_stt_grpc.py`** — правка применена только на VPS через scp-workflow. В git commit войдёт только `voice_asterisk.py`. Гэп известен с Phase 2A, закрывается отдельной P2-задачей (см. BACKLOG).
+
+### Следующие шаги
+
+Осталось **«Post-barge-in ack timer»** (P1) — 3-секундный таймер после `_process_turn` finally при barge-in exit, проговаривающий «я вас слушаю?» если новый turn не начался. Решает deadlock-класс BI#2 в 4b109925 и BI#3 в 4ad65942. Независимо от STT-mode.
+
+Deadlock в BI#3 4ad65942 (9.3с silence) подтверждает что Phase 2D не решает эту проблему — требуется отдельный таймер-механизм.
+
+---
+
 ## 17.04.2026 — YANDEX_STT_V3_INTEGRATION_v1 (Phase 2B+2C): gRPC стриминг в production под STT_MODE=grpc
 
 **Сделано:**

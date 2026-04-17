@@ -101,6 +101,9 @@ YANDEX_API_KEY = os.getenv("YANDEX_SPEECHKIT_API_KEY", "")
 # on AudioSocketCall._process_audio. rest=REST v1 accumulator, grpc=v3 stream.
 STT_MODE = os.getenv("STT_MODE", "rest")  # rest | grpc
 
+# EOU sensitivity (Phase 2D): default (conservative ~2240ms wait) | high (fast)
+YANDEX_STT_EOU_MODE = os.getenv("YANDEX_STT_EOU_MODE", "default")
+
 # Yandex TTS settings
 YANDEX_TTS_URL = "https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize"
 YC_API_KEY = os.getenv("YC_API_KEY", "")
@@ -729,6 +732,7 @@ class AudioSocketCall:
             on_partial=self._on_grpc_partial,
             on_final=self._on_grpc_final,
             on_eou=self._on_grpc_eou,
+            eou_mode=YANDEX_STT_EOU_MODE,
         )
         await self._stt_stream.start()
         if self._stt_stream.is_broken:
@@ -1165,8 +1169,9 @@ async def main():
 
     addrs = ", ".join(str(sock.getsockname()) for sock in server.sockets)
     logger.info(f"🚀 AudioSocket server listening on {addrs}")
+    eou_desc = f", EOU={YANDEX_STT_EOU_MODE}" if STT_MODE == "grpc" else ""
     logger.info(
-        f"   Pipeline: Yandex STT ({STT_MODE.upper()}) -> "
+        f"   Pipeline: Yandex STT ({STT_MODE.upper()}{eou_desc}) -> "
         f"{VOICE_TTS_PROVIDER.upper()} TTS"
     )
     logger.info(f"   DB: {DB_PATH}")
