@@ -38,6 +38,7 @@ load_dotenv()
 
 from core.pipeline import stream_voice_response, sanitize_for_tts  # noqa: E402
 from state_manager import StateManager  # noqa: E402
+from yandex_stt_grpc import YandexSTTStream  # noqa: E402
 
 # ============================================================
 # AudioSocket Protocol Constants
@@ -95,6 +96,10 @@ ELEVENLABS_MODEL = "eleven_v3"
 # Yandex SpeechKit settings (direct, no proxy needed)
 YANDEX_STT_URL = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize"
 YANDEX_API_KEY = os.getenv("YANDEX_SPEECHKIT_API_KEY", "")
+
+# STT mode selector — Phase 2B bifurcate (d)-light: method-pointer dispatch
+# on AudioSocketCall._process_audio. rest=REST v1 accumulator, grpc=v3 stream.
+STT_MODE = os.getenv("STT_MODE", "rest")  # rest | grpc
 
 # Yandex TTS settings
 YANDEX_TTS_URL = "https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize"
@@ -525,6 +530,23 @@ class AudioSocketCall:
         # Timings for current turn
         self._turn_timings: dict = {}
 
+        # STT mode + gRPC stream state (Phase 2B)
+        self._stt_mode: str = STT_MODE
+        self._stt_stream: YandexSTTStream | None = None
+        self._stt_stream_turn_t0: float | None = None
+        self._grpc_final_buffer: str = ""
+        self._grpc_partials_count: int = 0
+        self._grpc_finals_count: int = 0
+        self._stt_grpc_broken_logged: bool = False
+
+        # Method-pointer dispatch for audio processing (Phase 2B bifurcate).
+        # REST path: _process_audio_vad (accumulate → REST STT on EOU).
+        # gRPC path: _stream_audio_to_grpc (forward each frame to open stream).
+        if self._stt_mode == "grpc":
+            self._process_audio = self._stream_audio_to_grpc
+        else:
+            self._process_audio = self._process_audio_vad
+
     async def run(self):
         """Main loop: read packets from Asterisk, process them."""
         peer = self.writer.get_extra_info("peername")
@@ -567,6 +589,11 @@ class AudioSocketCall:
             # Send greeting after short delay
             asyncio.create_task(self._send_greeting())
 
+            # Open gRPC stream in parallel with greeting; cached PCM (~12s)
+            # gives TLS handshake plenty of time.
+            if self._stt_mode == "grpc":
+                asyncio.create_task(self._open_grpc_stream())
+
         elif msg_type in (AS_TYPE_AUDIO, AS_TYPE_AUDIO_16K):
             self.audio_frames_received += 1
             self.audio_bytes_received += len(payload)
@@ -577,9 +604,9 @@ class AudioSocketCall:
             if time.monotonic() < self._barge_in_cooldown_until:
                 return
 
-            # Process audio through VAD
+            # Process audio via method-pointer dispatch (REST or gRPC)
             if not self._is_responding:
-                await self._process_audio_vad(payload)
+                await self._process_audio(payload)
             elif self._tts_playing:
                 # TTS actively streaming — client voice is a barge-in candidate
                 await self._detect_barge_in(payload)
@@ -690,6 +717,110 @@ class AudioSocketCall:
                     self._is_speaking = False
                     self._silence_start = None
 
+    async def _open_grpc_stream(self):
+        """Open YandexSTTStream async; greeting (~12s cached PCM) gives
+        TLS handshake plenty of time. No retries here — broken state
+        handled by fallback logic in _stream_audio_to_grpc."""
+        self._stt_stream = YandexSTTStream(
+            api_key=YANDEX_API_KEY,
+            sample_rate=SAMPLE_RATE_IN,
+            language="ru-RU",
+            model="general:rc",
+            on_partial=self._on_grpc_partial,
+            on_final=self._on_grpc_final,
+            on_eou=self._on_grpc_eou,
+        )
+        await self._stt_stream.start()
+        if self._stt_stream.is_broken:
+            logger.error("gRPC stream failed to start — falling back to REST")
+            self._fallback_to_rest()
+        else:
+            logger.info(f"gRPC stream ready for call {self.call_uuid}")
+
+    async def _stream_audio_to_grpc(self, payload: bytes):
+        """gRPC audio path: forward each AudioSocket frame to open stream.
+        Phase 2C: continuous streaming — frames flow even during TTS so
+        that client continuation after Sofia's first reply is captured.
+        TTS-echo is guarded in _on_grpc_* callbacks via _tts_playing flag."""
+        # Stream not ready yet (UUID just arrived, TLS in flight)
+        if self._stt_stream is None or not self._stt_stream.is_started:
+            return
+        # Broken stream → one-time fallback to REST
+        if self._stt_stream.is_broken:
+            if not self._stt_grpc_broken_logged:
+                logger.warning("gRPC stream broken — falling back to REST")
+                self._stt_grpc_broken_logged = True
+            self._fallback_to_rest()
+            # Still process this frame through REST path
+            await self._process_audio_vad(payload)
+            return
+        # Start-of-turn timestamp (for 🗣️ STT (grpc) duration log)
+        if self._stt_stream_turn_t0 is None:
+            self._stt_stream_turn_t0 = time.monotonic()
+        await self._stt_stream.send_audio(payload)
+
+    async def _on_grpc_partial(self, text: str, time_ms: int):
+        """Server partial — count for observability, no turn action."""
+        # TTS playing but no barge-in — treat as TTS echo, ignore (Phase 2C)
+        # NOTE: до _cancel_playback=True (Silero barge-in confirm, ~200мс)
+        # первые partial с речью клиента игнорируются как возможное TTS-echo.
+        # После confirm guard снимается и stream продолжает принимать речь
+        # без cooldown-блока — остаток фразы и продолжения доходят целиком.
+        if self._tts_playing and not self._cancel_playback:
+            return
+        self._grpc_partials_count += 1
+        logger.debug(f"gRPC partial: [{text[:60]}] t={time_ms}ms")
+
+    async def _on_grpc_final(self, text: str, time_ms: int):
+        """Server final — accumulate into buffer. Multiple finals may
+        precede one eou_update (Yandex segments long utterances)."""
+        # TTS playing but no barge-in — treat as TTS echo, ignore (Phase 2C)
+        if self._tts_playing and not self._cancel_playback:
+            return
+        self._grpc_final_buffer = (self._grpc_final_buffer + " " + text).strip()
+        self._grpc_finals_count += 1
+        logger.debug(
+            f"gRPC final: [{text}] t={time_ms}ms "
+            f"buffer_len={len(self._grpc_final_buffer)}"
+        )
+
+    async def _on_grpc_eou(self, time_ms: int):
+        """Server EOU — assemble buffer, launch turn. Idempotent: if
+        buffer empty or responding already, skip to keep turn ordering.
+        TTS-echo guard (Phase 2C): keep buffer intact if echo suspected,
+        so a later legit EOU (after barge-in cancel) still has the text."""
+        # TTS playing but no barge-in — treat as TTS echo, ignore (Phase 2C)
+        # Keep buffer intact — next legit EOU will use it.
+        if self._tts_playing and not self._cancel_playback:
+            return
+        if not self._grpc_final_buffer or self._is_responding:
+            self._grpc_final_buffer = ""
+            return
+        text = self._grpc_final_buffer
+        stream_dur_ms = 0
+        if self._stt_stream_turn_t0 is not None:
+            stream_dur_ms = int((time.monotonic() - self._stt_stream_turn_t0) * 1000)
+        logger.info(
+            f'🗣️ STT (grpc): "{text}" '
+            f"({stream_dur_ms}ms stream, {self._grpc_partials_count} partials, "
+            f"{self._grpc_finals_count} finals)"
+        )
+        # Reset per-turn counters before dispatching turn
+        self._grpc_final_buffer = ""
+        self._grpc_partials_count = 0
+        self._grpc_finals_count = 0
+        self._stt_stream_turn_t0 = None
+        asyncio.create_task(self._process_turn(None, text_override=text))
+
+    def _fallback_to_rest(self):
+        """Re-point _process_audio to REST path for the rest of the call.
+        VAD fields in __init__ are inert until now — REST path works clean.
+        Partial buffer discarded — avoid replying to incomplete utterance
+        (mirrors broken-in-idle behaviour for consistency)."""
+        self._process_audio = self._process_audio_vad
+        self._grpc_final_buffer = ""
+        self._stt_stream_turn_t0 = None
+
     async def _detect_barge_in(self, audio_bytes: bytes):
         """Detect if client is speaking while Sofia is responding (barge-in).
 
@@ -740,8 +871,16 @@ class AudioSocketCall:
                 # clear for VOICE_VAD_PROVIDER=energy rollback fidelity.
                 self._barge_in_buffer.clear()
 
-    async def _process_turn(self, audio_pcm: bytes):
-        """Full turn: STT → LLM → TTS → send audio. Handles barge-in."""
+    async def _process_turn(
+        self,
+        audio_pcm: bytes | None,
+        text_override: str | None = None,
+    ):
+        """Full turn: (STT | text_override) → LLM → TTS → send audio.
+
+        text_override: provided by gRPC callback (bypasses REST STT).
+        Handles barge-in via _cancel_playback flag in _speak.
+        """
         if self._is_responding or self._closed:
             return
         self._is_responding = True
@@ -753,10 +892,14 @@ class AudioSocketCall:
         self._turn_timings = {}
 
         try:
-            # 1. STT
-            t0 = time.monotonic()
-            text = await transcribe_audio(audio_pcm, SAMPLE_RATE_IN)
-            self._turn_timings["stt_ms"] = (time.monotonic() - t0) * 1000
+            # 1. STT (REST) or skip (gRPC — text already assembled in callback)
+            if text_override is not None:
+                text = text_override
+                self._turn_timings["stt_ms"] = 0  # logged in _on_grpc_eou
+            else:
+                t0 = time.monotonic()
+                text = await transcribe_audio(audio_pcm, SAMPLE_RATE_IN)
+                self._turn_timings["stt_ms"] = (time.monotonic() - t0) * 1000
 
             if not text or len(text.strip()) < 2:
                 logger.debug("🎤 Empty transcription, skipping")
@@ -982,6 +1125,11 @@ class AudioSocketCall:
             f"audio_frames={self.audio_frames_received}, "
             f"user_id={self._user_id}"
         )
+        if self._stt_stream is not None:
+            try:
+                await self._stt_stream.close()
+            except Exception as e:
+                logger.debug(f"gRPC stream close error: {e}")
         try:
             self.writer.close()
             await self.writer.wait_closed()
@@ -1017,7 +1165,10 @@ async def main():
 
     addrs = ", ".join(str(sock.getsockname()) for sock in server.sockets)
     logger.info(f"🚀 AudioSocket server listening on {addrs}")
-    logger.info(f"   Pipeline: Yandex STT -> {VOICE_TTS_PROVIDER.upper()} TTS")
+    logger.info(
+        f"   Pipeline: Yandex STT ({STT_MODE.upper()}) -> "
+        f"{VOICE_TTS_PROVIDER.upper()} TTS"
+    )
     logger.info(f"   DB: {DB_PATH}")
     logger.info("   Waiting for Asterisk connections...")
 

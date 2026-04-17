@@ -1,5 +1,71 @@
 # SESSION_LOG — Последние сессии
 
+## 17.04.2026 — YANDEX_STT_V3_INTEGRATION_v1 (Phase 2B+2C): gRPC стриминг в production под STT_MODE=grpc
+
+**Сделано:**
+
+Интегрирован gRPC STT v3 streaming в `voice_asterisk.py` двумя раундами — Phase 2B (bifurcate через method-pointer) и Phase 2C (continuous streaming + TTS-echo guard). STT_MODE=grpc задеплоен и live-тестирован звонками `fe7eed5c` и `4b109925`.
+
+### Phase 2B — bifurcate method-pointer
+
+- **Архитектурное решение (из Build Report YANDEX_STT_V3_BIFURCATE_ADVICE):** вариант (d)-light. В `__init__` `AudioSocketCall`: `self._process_audio = self._stream_audio_to_grpc` при STT_MODE=grpc, иначе `_process_audio_vad`. В `_handle_packet` AUDIO-ветка — `await self._process_audio(payload)` без if. REST-путь при STT_MODE=rest **байт-в-байт** идентичен тому что работал до Phase 2B.
+- **`_process_turn` — одна функция с параметром** `text_override: str | None = None`. При REST (`text_override=None`) идёт через `transcribe_audio`, при gRPC — получает готовый текст из `_on_grpc_eou` callback и пропускает STT-шаг. 81 строк LLM+TTS+timings shared, дублирование исключено.
+- **Новые методы в `voice_asterisk.py`:** `_open_grpc_stream` (19 строк), `_stream_audio_to_grpc` (23), `_on_grpc_partial/final/eou` (36), `_fallback_to_rest` (8). Plus 18 полей в `__init__` + dispatch (7 state + method pointer). Итого **+137 строк** к файлу.
+- **Fallback:** при `_stt_stream.is_broken=True` → `_fallback_to_rest()` переприсваивает pointer на `_process_audio_vad`, до конца звонка REST. Логируется одноразово.
+- **Live test Phase 2B (звонок `fe7eed5c`, 107.7с, 7 turns):**
+  - gRPC stream ready за 2мс (TLS handshake)
+  - Все turn'ы обработаны без ошибок, 0 broken-state событий
+  - Длинная фраза «а так хорошо а какая говорите минимальная цена не услышал» (2 микропаузы!) склеена в **один final** — главный выигрыш gRPC vs REST. В REST эта фраза 100% порезалась бы на VAD_SILENCE=500мс.
+  - Barge-in + продолжение: клиент договаривал после перебивания, Yandex подхватил новую фразу полностью (в REST тот же сценарий дал 8.36с deadlock на звонке 71b461f4 — buffer discard + MIN_BYTES).
+  - **Регрессия:** user pause **+1.2с медиана** по сравнению с REST, целиком из-за Yandex server-side `DefaultEouClassifier` wait ~2240мс (vs нашего VAD_SILENCE_THRESHOLD=500мс).
+
+### Phase 2C — continuous stream + TTS-echo guard
+
+**Триггер:** Sergey в Phase 2B тесте пропустил продолжение клиента после первого ответа Sofia — при `_is_responding=True` `_stream_audio_to_grpc` return'ил без отправки в stream. Замер latency первого partial (preparation task YANDEX_STT_V3_PHASE_2C_PREP) показал: Yandex-only barge-in слишком медленный (~1100мс estimated), Silero нужен как детектор.
+
+**Решение — гибрид:**
+
+- **Stream всегда принимает audio** — удалена блокировка `if self._is_responding: return` из `_stream_audio_to_grpc` (строки 745-748). Фреймы текут непрерывно весь звонок.
+- **TTS-echo guard в `_on_grpc_*` callbacks:** `if self._tts_playing and not self._cancel_playback: return` в каждом из трёх event handler'ов.
+  - `_tts_playing=True, _cancel_playback=False` — активное Sofia TTS без barge-in → события игнорируются как TTS-echo
+  - После Silero barge-in confirm (`_cancel_playback=True`) → guard снимается → все события обрабатываются
+  - Во время greeting (12.4с cached PCM) guard тоже активен — защита на случай если Yandex начнёт hallucinate
+- **`_on_grpc_eou` — buffer intact в echo-ветке:** при срабатывании TTS-echo guard **не чистим** `_grpc_final_buffer`, чтобы при последующем легитимном EOU текст был на месте.
+- **Компромисс**: первые ~200мс речи клиента до Silero confirm игнорируются как potential echo. Зафиксировано явным NOTE-комментарием в `_on_grpc_partial`. Это **лучше** Phase 2B (теряли 700мс = 200мс confirm + 500мс cooldown).
+
+**Добавлено:** +14 строк в файл (4 изменения × 3 callback'а + guard в `_stream_audio_to_grpc` минус старый блок). Final size: 1183 строки.
+
+**Live test Phase 2C (звонок `4b109925`, 140.3с, 8 turns, 3 barge-in):**
+
+| Событие | Результат |
+|---|---|
+| TTS-echo в логах | **0 partials** в логе за ~60с кумулятивно активного TTS (guard работает) |
+| BI#1 turn 3→4 | Первое слово `[пожалуйста]` чисто, полный текст "пожалуйста еще раз доходность и окупаемость", **1404мс** до первого partial |
+| BI#2 turn 5→6 | **Deadlock 7.3с** (pre-existing UX issue: Sergey коротко перебил + ждал ack от Sofia, Yandex не emit'ил EOU на тишину). НЕ регрессия Phase 2C — тот же паттерн в Phase 2B fe7eed5c и REST 71b461f4 |
+| BI#3 turn 7→8 | Первое слово `[интересно]` чисто, **1453мс** — такой же clean recovery как BI#1 |
+| Yandex EOU wait медиана | **2240мс** — идентично Phase 2B (параметры Yandex EOU не меняли) |
+| Длинные фразы с микропаузами | Turn 3: 75 симв., 20 partials, склеены целиком ✅ |
+| is_broken | False всю сессию |
+| ERROR/Exception | 0 |
+
+### Побочные находки
+
+1. **Phone AEC работает отлично** — 12.4с cached greeting на живой линии дают **0 false partials от Yandex**. Это нерегулируемая нами зависимость (hardware AEC мобильного), но наблюдение стабильное.
+2. **Yandex EOU — основной bottleneck пауз.** ~2240мс wait server-side unchanged by continuous streaming. Решается либо `EouSensitivity=HIGH` (один-строчная правка `yandex_stt_grpc.py`), либо `ExternalEouClassifier` (шлём EOU по триггеру Silero VAD endpoint). Обе в backlog (Phase 2D).
+3. **Deadlock post-barge-in класс проблем** — pre-existing во всех STT-режимах. Клиент перебивает коротко, ожидает ack от Sofia, Sofia молчит (нет EOU триггера) → 7+ секунд тишины. Решение: таймер в P1 backlog («Post-barge-in ack timer»).
+4. **Orphan `/opt/sofia-gpt-dev/yandex_stt.py`** (26.03, Pipecat-специфичный) остаётся как референс. После стабилизации Phase 2C можно удалить — не подключён нигде.
+5. **DEV отсутствует `yandex_stt_grpc.py` + `yandex_proto/`** (только на VPS). Phase 2A коммит был docs-only. `voice_asterisk.py` импортирует `from yandex_stt_grpc import ...` — в DEV модуль отсутствует. Не блокер (DEV-файл не исполняется локально, только коммитится). Портбэк на DEV — отдельная follow-up задача.
+
+### Коммит DEV
+`feat(voice): Yandex STT v3 gRPC streaming (Phase 2B+2C) — hybrid barge-in Silero + continuous stream to Yandex, TTS-echo guard in event handlers, verified 4b109925`
+
+### Следующее (Phase 2D, P1)
+
+1. **Yandex EouSensitivity=HIGH тест** — одна строка в `yandex_stt_grpc.py::_request_iterator`, добавить `DefaultEouClassifier` с `type=HIGH` в `StreamingOptions.eou_classifier`. Ожидаемый gain: −500-1000мс user pause. Деплой + один тестовый звонок. 30 минут.
+2. **Post-barge-in ack timer** — таймер 3с после `_process_turn` finally при barge-in exit; если новый turn не триггернулся → Sofia говорит «я вас слушаю?». Решает deadlock-класс проблем при коротких barge-in. Независимо от STT-mode.
+
+---
+
 ## 17.04.2026 — YANDEX_STT_V3_INFRA_v1 (Phase 2A): gRPC-инфра на VPS без интеграции
 
 **Сделано:**
