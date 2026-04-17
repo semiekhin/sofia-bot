@@ -31,19 +31,29 @@ Exit codes:
 import argparse
 import csv
 import datetime as dt
+import hashlib
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 import time
 
 CDR_PATH = "/var/log/asterisk/cdr-csv/Master.csv"
+DB_PATH = "/opt/sofia-voice/sofia_voice.db"
 METRICS_DIR = "/var/log/sofia-voice"
+TRANSCRIPTS_DIR = os.path.join(METRICS_DIR, "transcripts")
 CALL_TIMEOUT_SEC = 600  # 10 min: allows 3-5 min RIZALTA conversations
 POLL_INTERVAL_SEC = 2
+STATE_POLL_INTERVAL_SEC = 1  # channel state poll is faster than CDR poll
 CHANNEL_APPEAR_WAIT_SEC = 5
 ORIGINATE_CMD_TIMEOUT = 10
 MIN_BILLSEC_SUCCESS = 5  # ANSWERED with billsec < 5 => still a hangup
+
+# NOTE: formula MUST match voice_asterisk.py:125 function call_id_to_user_id.
+# Duplicated intentionally to keep dial.py a standalone script without an
+# import dependency on the voice stack. If one changes — change the other.
+VOICE_USER_ID_OFFSET = 9_500_000
 
 CDR_FIELDS = [
     "accountcode",
@@ -189,26 +199,131 @@ def cdr_line_count() -> int:
         return 0
 
 
+def get_channel_state(channel_hint: str = "telphin-endpoint") -> str | None:
+    """Return 'Ringing' | 'Up' | 'Other' | None (channel absent).
+    Substring match on `core show channels concise` output, NOT field-index
+    parsing — see P3 backlog `concise parser field index bug`. Safe as long
+    as we have at most one outbound call in flight (V1 assumption)."""
+    try:
+        rc, out, _ = run_asterisk_cli("core show channels concise")
+    except subprocess.TimeoutExpired:
+        return None
+    if rc != 0:
+        return None
+    for line in out.splitlines():
+        if channel_hint not in line:
+            continue
+        if "!Up!" in line:
+            return "Up"
+        if "!Ring" in line:  # matches Ring and Ringing
+            return "Ringing"
+        return "Other"
+    return None
+
+
+def _print_state_transition(old: str | None, new: str | None) -> None:
+    """Stdout status line on channel state change. UTC (VPS timezone)."""
+    ts = time.strftime("%H:%M:%S")
+    if new == "Ringing":
+        print(f"[{ts}] Ringing...")
+    elif new == "Up":
+        print(f"[{ts}] Answered")
+    elif new is None and old in ("Ringing", "Up"):
+        print(f"[{ts}] Ended")
+
+
 def wait_for_cdr(
-    uniqueid: str | None, initial_lines: int, ts_start: dt.datetime, timeout_sec: int
+    uniqueid: str | None,
+    initial_lines: int,
+    ts_start: dt.datetime,
+    timeout_sec: int,
+    print_status: bool = True,
 ) -> dict | None:
-    """Poll until CDR row appears. Primary: uniqueid match (fast short-circuit
-    when capture worked). Fallback: timestamp+dcontext match — ALWAYS tried
-    as safety net, because `core show channels concise` parsing can return
-    a wrong value on Asterisk 20 (observed on call 1776446150.338: uniqueid
-    was captured but didn't match CDR row). See P3 backlog `dial.py concise
-    parser — field index bug`."""
+    """Poll CDR + channel state. Primary CDR match: uniqueid (fast
+    short-circuit when capture worked). Fallback: timestamp+dcontext —
+    ALWAYS tried as safety net (concise parser can return wrong uniqueid
+    on Asterisk 20, P3 backlog). State polling at 1s cadence, CDR at 2s.
+
+    When print_status=True, emits [HH:MM:SS] status lines on state
+    transitions (None→Ringing, *→Up, (Ringing|Up)→None)."""
     deadline = time.monotonic() + timeout_sec
+    last_state: str | None = None
+    next_cdr_check = time.monotonic()
     while time.monotonic() < deadline:
-        time.sleep(POLL_INTERVAL_SEC)
-        if uniqueid:
-            rec = find_cdr_by_uniqueid(uniqueid)
+        time.sleep(STATE_POLL_INTERVAL_SEC)
+        if print_status:
+            state = get_channel_state()
+            if state != last_state:
+                _print_state_transition(last_state, state)
+                last_state = state
+        if time.monotonic() >= next_cdr_check:
+            next_cdr_check = time.monotonic() + POLL_INTERVAL_SEC
+            if uniqueid:
+                rec = find_cdr_by_uniqueid(uniqueid)
+                if rec:
+                    return rec
+            rec = find_cdr_fallback(initial_lines, ts_start)
             if rec:
                 return rec
-        rec = find_cdr_fallback(initial_lines, ts_start)
-        if rec:
-            return rec
     return None
+
+
+def audiosocket_uuid_to_chat_id(uuid_str: str) -> str:
+    """Mirror of voice_asterisk.py:125 call_id_to_user_id. MUST stay in sync
+    with the voice side — see NOTE near VOICE_USER_ID_OFFSET constant."""
+    h = hashlib.md5(uuid_str.encode()).hexdigest()[:8]
+    return str(VOICE_USER_ID_OFFSET + (int(h, 16) % 1_000_000))
+
+
+def fetch_transcript(audiosocket_uuid: str) -> list[tuple[str, str, str]]:
+    """Read messages table for this call. Returns [(timestamp, role,
+    content), ...] ordered by id (insert order). Returns [] on SQLite
+    error and logs to stderr — transcript is non-critical, must not
+    crash the dialer."""
+    chat_id = audiosocket_uuid_to_chat_id(audiosocket_uuid)
+    try:
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+        try:
+            return conn.execute(
+                "SELECT timestamp, role, content FROM messages "
+                "WHERE chat_id = ? ORDER BY id",
+                (chat_id,),
+            ).fetchall()
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        print(f"Transcript SQL error: {e}", file=sys.stderr)
+        return []
+
+
+def format_transcript(
+    rows: list[tuple[str, str, str]], call_start_ts: dt.datetime
+) -> str:
+    """Render rows as '[MM:SS] ROLE: content'. Offset in seconds from
+    call_start_ts (UTC-aware); values before call_start_ts clamp to 00:00."""
+    if not rows:
+        return ""
+    lines = []
+    for ts_str, role, content in rows:
+        try:
+            msg_ts = dt.datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=dt.timezone.utc
+            )
+        except ValueError:
+            msg_ts = call_start_ts
+        offset_sec = max(int((msg_ts - call_start_ts).total_seconds()), 0)
+        mm, ss = divmod(offset_sec, 60)
+        role_label = "SOFIA" if role == "assistant" else "USER"
+        lines.append(f"[{mm:02d}:{ss:02d}] {role_label}: {content}")
+    return "\n".join(lines)
+
+
+def write_transcript_file(uuid_str: str, content: str) -> str:
+    os.makedirs(TRANSCRIPTS_DIR, exist_ok=True)
+    path = os.path.join(TRANSCRIPTS_DIR, f"transcript_{uuid_str}.txt")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content + "\n")
+    return path
 
 
 def write_jsonl(record: dict) -> str:
@@ -250,6 +365,7 @@ def main() -> int:
     channels_before = snapshot_channel_uniqueids()
     uniqueid: str | None = None  # what concise parser captured (may differ from CDR)
 
+    print(f"[{time.strftime('%H:%M:%S')}] Originating call to {phone}")
     originate_cmd = (
         f"channel originate PJSIP/{phone}@telphin-endpoint "
         f"extension s@outbound-audiosocket"
@@ -329,6 +445,17 @@ def main() -> int:
     billsec = int(rec["billsec"]) if rec["billsec"].isdigit() else 0
     exit_code = disposition_to_exit(disposition, billsec)
 
+    # AudioSocket UUID is the first CSV token of lastdata "UUID,host:port"
+    audiosocket_uuid = rec["lastdata"].split(",")[0] if rec.get("lastdata") else ""
+    transcript_rows = fetch_transcript(audiosocket_uuid) if audiosocket_uuid else []
+    transcript_text = format_transcript(transcript_rows, ts_start)
+    transcript_path: str | None = None
+    if transcript_text:
+        try:
+            transcript_path = write_transcript_file(audiosocket_uuid, transcript_text)
+        except OSError as e:
+            print(f"Transcript file write error: {e}", file=sys.stderr)
+
     record = {
         "ts_start": ts_start.isoformat(),
         "ts_end": ts_end.isoformat(),
@@ -339,6 +466,8 @@ def main() -> int:
         "duration": duration,
         "billsec": billsec,
         "exit_code": exit_code,
+        "transcript_path": transcript_path,
+        "message_count": len(transcript_rows),
     }
     path = write_jsonl(record)
     print(f"Call: {phone}")
@@ -346,6 +475,13 @@ def main() -> int:
     print(f"Status: {disposition}")
     print(f"Duration: {duration}s (billsec: {billsec}s)")
     print(f"Log: {path}")
+    if transcript_path:
+        print(f"Transcript: {transcript_path}")
+        print()
+        print("--- Transcript ---")
+        print(transcript_text)
+    else:
+        print("Transcript: (no messages found)")
     return exit_code
 
 

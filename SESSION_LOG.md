@@ -43,6 +43,8 @@ Per-turn тайминги Yandex EOU=high: EOU wait медиана ~1920мс, LL
 
 3. **`captured_uniqueid` в JSONL** — добавлено поле для post-mortem: что вернул concise parser. Сравнивается с `uuid` (реальный CDR uniqueid) — расхождение подтверждает P3 задачу «concise parser field index bug на Asterisk 20». Fallback sempre compensated.
 
+4. **Realtime status + post-call transcript** — `dial.py` теперь выводит `[HH:MM:SS] Originating → Ringing → Answered → Ended` по мере polling'а `core show channels concise` (substring-match на `!Up!` / `!Ring*!`, не по индексу — чтобы не попасть в P3 concise-parser bug). После summary печатается транскрипт из SQLite — SELECT по `chat_id = md5(audiosocket_uuid)[:8] mod 1M + 9_500_000` (зеркальная формула `voice_asterisk.py:125`, дублирование отмечено P3 `Extract chat_id derivation to shared module`). Транскрипт пишется в `/var/log/sofia-voice/transcripts/transcript_<UUID>.txt` + выводится в stdout как `[MM:SS] SOFIA:/USER: <text>` (offset от `call_start`). JSONL дополнен полями `transcript_path` и `message_count`. Unit-тест на исторических `dfc4aee9` и `86c53f97` — 7 и 1 сообщений соответственно, формат корректен.
+
 Test звонки в сессию: `98332baf` (19:15 live — нормальный UX, но dial.py висел → убит), `dfc4aee9` (17:15 retest первого fix — dial.py висел → убит), `86c53f97` (17:41 retest второго fix timestamp fallback — dial.py всё равно висел из-за cdr_line_count bug → убит). **Live re-test после csv-row-count fix не делаем** — `csv.reader` поведение детерминировано, unit-test achieves same confidence без лишних звонков Сергею.
 
 ### Следующее (P1)
