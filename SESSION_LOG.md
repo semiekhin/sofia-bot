@@ -1,5 +1,41 @@
 # SESSION_LOG — Последние сессии
 
+## 18.04.2026 — FAIL2BAN_DEPLOY_v1: второй слой защиты VPS sofia-voice
+
+**Сделано:**
+
+- Установлен `fail2ban 1.0.2-3ubuntu0.1` на VPS `185.207.66.201` (Ubuntu 24.04)
+- `/etc/fail2ban/jail.local` с двумя jail:
+  - `[sshd]` — `backend=systemd`, `maxretry=10`, `bantime=3600`, `findtime=600`
+  - `[asterisk]` — `backend=auto`, `logpath=/var/log/asterisk/messages.log`, `port=5090,5060`, `maxretry=5`, `bantime=3600`, `findtime=600`
+- `[DEFAULT] banaction=ufw`, `ignoreip = 127.0.0.1/8 ::1 46.229.221.93 72.56.64.91 77.106.252.172` (Telfin + главный sofia-gpt сервер + личный IP Сергея)
+- С первого старта из systemd journal sshd поймано и забанено через `ufw prepend reject` **9 SSH-сканеров** (maxretry=5 на момент первичного обнаружения пакетным дефолтом, далее новые баны идут с нашим threshold=10)
+- Базовые UFW allow-правила (22/tcp, 5090/udp←46.229.221.93, 10000-20000/udp) **не тронуты** — fail2ban только prepend'ит reject выше
+- `sofia-voice`, `asterisk`, `fail2ban` — все три active после деплоя
+
+Изменения — только на VPS (pкет+config), в git-репо sofia-gpt-dev не коммитились. Рабочая SSH-сессия (72.56.64.91→185.207.66.201) не пострадала благодаря ignoreip.
+
+**Побочные находки (пополнят CLAUDE.md «Уроки»):**
+
+1. **apt install сразу стартует fail2ban** с дефолтным `banaction=nftables` из `/etc/fail2ban/jail.d/defaults-debian.conf`. После правки `jail.local` нужен `systemctl restart fail2ban`, **не** `reload` — reload не перевыполняет actionban, остаются phantom in-memory баны без реальных правил firewall. После restart состояние восстанавливается из persistence DB корректно.
+2. **Приоритет fail2ban-конфигов:** `jail.d/*.conf` → `jail.local` → побеждает последний. Наш `jail.local` корректно перекрывает `defaults-debian.conf` по banaction. Но любой будущий `*.local` в `jail.d/` побьёт наш `jail.local`.
+3. **Asterisk не пишет в systemd journal** на этой сборке Ubuntu — `journalctl -u asterisk` пусто, логи только в `/var/log/asterisk/{messages,full}.log`. Глобальный дефолт `backend=systemd` оставил бы asterisk-jail с пустым источником → фильтр никогда бы не сматчил. Явный `backend=auto` в `[asterisk]` — обязательно.
+4. **`maxretry=5` в UFW-комментариях** при конфиге `maxretry=10` — это `<failures>` на момент первого бана (до загрузки нашего jail.local). Новые баны идут с threshold=10, комментарий в существующих правилах не обновляется. Не требует правки.
+
+**Эффект:**
+
+| Слой | Что покрывает |
+|---|---|
+| UFW (17.04) | Блокирует ~100% SIP-сканеров на SYN до Asterisk. `full.log` рост 44 KB/s → 0 B/s |
+| fail2ban (18.04) | SSH brute-force через открытый 22/tcp; sip-атаки, если кто-то пролезет через whitelisted IP (маловероятно, но копеечная страховка) |
+
+**Следующее:**
+
+1. **Yandex STT v3 gRPC streaming** (P1, 1-2 дня) — архитектурное упрощение, server-side EOU убирает кастомную VAD+silence-threshold логику целиком. `docs/VOICE_RESEARCH_2026_04_16.md` идея #1.
+2. **Мониторинг fail2ban:** `fail2ban-client status <jail>` раз в неделю, смотреть на рост `Total banned` и список IP. В P3 можно завести алерт на рост сверх baseline.
+
+---
+
 ## 17.04.2026 — VOICE_STACK_STABILIZATION_v1: barge-in fixes × 4 + Silero VAD + UFW
 
 **Сделано:**
