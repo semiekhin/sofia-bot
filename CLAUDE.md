@@ -161,7 +161,47 @@ ssh sofia-voice "journalctl -u sofia-voice -n 50 --no-pager"
 - Переключает greeting в `voice_asterisk.py` (`_send_greeting()`) и system prompt в `core/pipeline.py` (`stream_voice_response()`)
 - На VPS `.env`: `VOICE_PROMPT_MODE=rizalta`
 - `VOICE_SYSTEM_PROMPT` — Atlantis (входящая квалификация), НЕ ТРОГАТЬ
-- `VOICE_SYSTEM_PROMPT_RIZALTA` — RIZALTA v3 (16.04): без представления, двухчастный каноничный питч, логика мессенджеров (Ватсап/Макс = номер уже знаем, Телеграм = уточняем ник), вход 15 млн, Совкомбанк/Сбер ипотека, запрет «скину пакет»
+- `VOICE_SYSTEM_PROMPT_RIZALTA` — RIZALTA v4.2 (18.04): секции ЧЕЛОВЕЧНОСТЬ + ФАКТЫ-ДОСЛОВНО + МОЖНО ВАРЬИРОВАТЬ (variant pools для pitch-2 closer / offer / messenger / farewell), инструкция `[END]` в конце прощальной реплики (feeds auto-hangup). Без представления, двухчастный каноничный питч, логика мессенджеров, вход 15 млн, Совкомбанк/Сбер ипотека. Коммиты: `ffcde20e` (v4), `ab90940b` (v4.1), `110a6a3c` (v4.2)
+
+**Phase 1 VLAT-07 — `max_pause_between_words_hint_ms=700` (18.04, `393eb062`):**
+- Env `YANDEX_MAX_PAUSE_HINT_MS=700` в .env на VPS. 0 = Yandex internal default (rollback).
+- Hint в `DefaultEouClassifier` передаётся через `yandex_stt_grpc.py:120-125`.
+- EOU_WAIT median **1778 → 1036мс (−742мс, −42 %)**, p95 **2148 → 1446мс**.
+- Per-category: short 1924→1011, medium 1790→1145, long 1662→1076.
+- L0 rollback: `sed -i 's/=700/=0/' /opt/sofia-voice/.env && systemctl restart sofia-voice`.
+
+**EOU instrumentation (18.04, `d2f875d1`):**
+- Per-turn `EOU_WAIT uuid=... turn=N eou_wait_ms=M text_len=K` в journalctl.
+- Phantom EOU rate ~54 % (Yandex protocol artefact — duplicate eou_update per real one, харamless но noise).
+
+**Auto-hangup после Sofia farewell (18.04, `b78fe04c`):**
+- Hybrid detection: farewell keyword в last 80 chars response OR `state.dialog_finished` (set by `[END]` marker в pipeline.py).
+- Keywords: «хорошего дня», «всего доброго», «удачного дня», «удачной дороги», «до свидания», «не буду занимать».
+- Timing: 1500 ms polite pause после TTS → AS_TYPE_HANGUP 0x00 frame → Asterisk terminates PJSIP leg.
+- Barge-in interlock: 15 × 100ms чанков sleep, cancel если `_is_responding=True` (user заговорил) или `_closed=True`.
+- Gate: `VOICE_PROMPT_MODE=rizalta` (Atlantis НЕ затронут).
+- Env: `AUTO_HANGUP_ENABLED=true` (default). Rollback: `false` + restart.
+- Observability 3 лога: `AUTO_HANGUP detect|exec|cancel uuid=... reason=...`.
+
+**[END] handler fix (18.04, `19102904`):**
+- Pre-existing bug: `if "[END]" in answer_text` substring match в `core/pipeline.py:1061` ДО anti-hallucination filter — LLM emit `[END]` в hallucinated tail → `state.dialog_finished=True` flipped → false auto-hangup (впервые проявился call `f184c7be`).
+- Fix: swap order (hallucination filter FIRST) + anchor `answer_text.rstrip().endswith("[END]")`.
+- ⚠ **Тот же баг лежит в text-path `core/pipeline.py:319-326` для PROD** (Telegram/Radist/web) — P1 backlog.
+
+**MixMonitor recording (18.04, `19a49fa6`):**
+- Запись всех звонков в оба dialplan-контекстах (`[from-telphin]` + `[outbound-audiosocket]`).
+- Path: `/var/lib/asterisk/recordings/YYYY-MM-DD/<UUID>.wav` (mono mix обеих сторон, raw PCM 8 kHz, no beep).
+- TZ: VPS `Etc/UTC` → `STRFTIME` даёт UTC дату (MSK hour − 3 = UTC hour для навигации).
+- Cron `/etc/cron.d/sofia-voice-recordings`: 03:00 WAV→Opus 32 kbps (>72 h), 03:30 удалить Opus >30 дней.
+- Script: `/opt/sofia-voice/bin/rotate_recordings.sh` (idempotent, atomic WAV→Opus).
+- Log: `/var/log/sofia-voice/recordings_rotate.log`.
+- Disk projection: ~230 MB WAV/day → ~23 MB Opus → ~700 MB retention 30 дней (<20 GB free).
+
+**dial.py realtime streaming (18.04, `4ce5881b`):**
+- Во время звонка в терминал dial.py стримятся USER/SOFIA/AUTO_HANGUP события из journalctl с префиксом `[HH:MM:SS]`.
+- Gate: env `STREAM_TRANSCRIPT=true` default.
+- Start on channel state→Up, stop on Ended (orphan-safe через finally).
+- Post-call SQLite transcript (offset timestamps `[MM:SS]`) выводится как прежде — визуально не путается с realtime block (wall-clock).
 
 **Yandex TTS Alena (текущий провайдер с 16.04):**
 - Голос: `alena`, формат `lpcm` 8kHz 16-bit mono (готовый для AudioSocket, без ffmpeg)
@@ -327,7 +367,12 @@ ssh sofia-voice "journalctl -u sofia-voice -n 50 --no-pager"
 | RADIST_DEV_MODE | true | false | Radist не отправляет ответы |
 | ELEVENLABS_API_KEY | + (Starter) | — | ElevenLabs TTS |
 | YANDEX_SPEECHKIT_API_KEY | + | — | Yandex STT/TTS |
-| GROQ_API_KEY | + | — | Groq (kimi-k2 voice LLM) |
+| GROQ_API_KEY | + | — | Groq (legacy — голос на Yandex с 16.04, dead branch) |
+| YANDEX_MAX_PAUSE_HINT_MS | — | — | **700** на voice VPS (Phase 1 VLAT-07, 18.04). 0 = rollback к Yandex default. |
+| AUTO_HANGUP_ENABLED | — | — | **true** на voice VPS (18.04). false = rollback, клиент кладёт сам. Gate: только при VOICE_PROMPT_MODE=rizalta. |
+| YANDEX_STT_EOU_MODE | — | — | **high** на voice VPS (Phase 2D, 17.04). default = conservative ~2240ms wait. |
+| STT_MODE | — | — | **grpc** на voice VPS (Phase 2B, 17.04). rest = REST v1 fallback. |
+| STREAM_TRANSCRIPT | — | — | **true** default в dial.py (18.04). false = без realtime stream в терминале. |
 | DAILY_API_KEY | + | — | Daily WebRTC |
 | WEB_API_PORT | 8081 | 8080 | Порт web API |
 

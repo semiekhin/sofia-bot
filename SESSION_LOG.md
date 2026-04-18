@@ -108,6 +108,20 @@ MixMonitor: active в обоих dialplan контекстах
 
 Сервис active, banner: `Pipeline: Yandex STT (GRPC, EOU=high, hint=700ms) -> YANDEX TTS | Mode: rizalta, auto_hangup=on`.
 
+### Post-session addendum — первые пилотные inbound звонки (18.04 вечер)
+
+После session close (df9015a6, 13:24 UTC) Сергей запустил первых тестеров на inbound +79310091644:
+
+| UTC | MSK | UUID | Phone | billsec | WAV size |
+|-----|-----|------|-------|--------:|---------:|
+| 14:24:20 | 17:24:20 | `e561a7c6-9535-4508-8daa-6443f28bc0d1` | +79160322905 | 73 с | 1.11 MB |
+| 14:27:55 | 17:27:55 | `94ea75b1-94b0-49b1-95d5-3aa0c8dbccd7` | +79160322905 | 70 с | 1.06 MB |
+| 14:31:18 | 17:31:18 | `b2786722-a448-494e-937d-dc739e78a674` | +79160322905 | 54 с | 848 KB |
+
+Все 3 записаны MixMonitor'ом (deploy сегодня утром, `19a49fa6`). Сергей скачивает WAV для прослушивания — первый real-world acoustic verification. Transcripts для inbound не создаются dial.py (он только outbound), но SQLite `sofia_voice.db messages` содержит все turns — на следующей сессии нужен `transcript_dump.py <UUID>` из P2 backlog чтобы вытащить текст.
+
+Сервис всё так же active, Phase 1 intact, auto-hangup active. **Пилот живой.** Полный анализ откладывается на следующую сессию — прослушивание + cross-ref с journalctl даст реальный feedback для Option A решения.
+
 ---
 
 ## 17.04.2026 — OUTBOUND_DIALER_v1: dial.py + [outbound-audiosocket] context
