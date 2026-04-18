@@ -1,5 +1,115 @@
 # SESSION_LOG — Последние сессии
 
+## 18.04.2026 — полная сессия: Phase 1 (−742мс EOU) + auto-hangup + recording + prompt v4.x + realtime dial.py stream
+
+### TL;DR
+
+Самая продуктивная сессия на voice. **12 коммитов**, **~10-12 часов работы**, 8 подробных docs-отчётов.
+
+- **Phase 1 (VLAT-07-P1)** — добавлен `max_pause_between_words_hint_ms=700` через env. EOU_WAIT median **1778 → 1036 мс** (−742 мс, −42 %), p95 **2148 → 1446 мс**. Targets оркестратора (median ≤1500, p95 ≤2000) hit с margin.
+- **Auto-hangup после farewell** — hybrid keyword + [END] marker, gate `VOICE_PROMPT_MODE=rizalta`. Исправлен pre-existing [END]-handler bug (swap order + anchor endswith).
+- **Call recording** — MixMonitor в обоих dialplan-контекстах, cron 72h WAV→Opus, retention 30д. Inbound тест: 792 KB WAV / 49.5 с / обе стороны audible (−18..−21 dB per 5-s window).
+- **RIZALTA prompt v3 → v4.2** — 3 итерации: вариативность связок (v4), fix stress-problematic phrases (v4.1), natural phrasing (v4.2).
+- **dial.py realtime streaming** — journalctl -f в терминал, USER/SOFIA/AUTO_HANGUP с [HH:MM:SS].
+- **EOU instrumentation** — per-turn `EOU_WAIT uuid=... eou_wait_ms=N` в логах.
+- **yandex_stt_grpc.py sync в DEV git** — устранён scp-only drift (P2 backlog item).
+
+### Хронология коммитов (12, в порядке)
+
+| # | SHA | Subject |
+|--:|------|---------|
+| 1 | `296505c2` | chore(voice): sync yandex_stt_grpc.py from VPS (scp-workflow since Phase 2A, 17.04) |
+| 2 | `d2f875d1` | feat(voice): add eou_wait_ms instrumentation in yandex_stt_grpc.py (VLAT-07 prep) |
+| 3 | `393eb062` | feat(voice): Phase 1 — max_pause_between_words_hint_ms via env (VLAT-07-P1) |
+| 4 | `60f62916` | docs(voice): Phase 1 results — hint=700ms A/B vs baseline |
+| 5 | `ffcde20e` | feat(voice): RIZALTA v4 — variability in bindings (human-sounding) |
+| 6 | `f6f750c1` | docs(voice): RIZALTA v4 live-test results — keep decision |
+| 7 | `ab90940b` | feat(voice): RIZALTA v4.1 — replace stress-problematic phrases |
+| 8 | `b78fe04c` | feat(voice): auto-hangup after Sofia farewell (RIZALTA only) |
+| 9 | `19102904` | fix(voice): [END] handler — run hallucination filter first, anchor to end-of-text |
+| 10 | `110a6a3c` | chore(voice): RIZALTA v4.2 — natural phrasing for two variants |
+| 11 | `4ce5881b` | feat(dial): realtime transcript streaming to terminal |
+| 12 | `19a49fa6` | feat(voice): call recording — MixMonitor + 72h→Opus rotation |
+
+### Метрики ДО и ПОСЛЕ Phase 1
+
+| Metric | Baseline (утро, 22 turns) | Post-Phase-1 (21 turns) | Δ |
+|--------|---:|---:|---:|
+| median EOU_WAIT | **1778 мс** | **1036 мс** | **−742 (−42 %)** |
+| p90 | 2051 | 1177 | −874 |
+| p95 | 2148 | 1446 | −702 |
+| max | 2153 | 1675 | −478 |
+| short category median | 1924 | 1011 | −913 (−47 %) |
+| medium category median | 1790 | 1145 | −645 (−36 %) |
+| long category median | 1662 | 1076 | −586 (−35 %) |
+
+### Ключевые архитектурные паттерны (закрепились)
+
+- **Env-gated rollback на каждую фичу** — Phase 1 (`YANDEX_MAX_PAUSE_HINT_MS`), auto-hangup (`AUTO_HANGUP_ENABLED`), streaming (`STREAM_TRANSCRIPT`). L0 rollback = `sed` на `.env` + `systemctl restart` (<30 с). L1 = snapshot в `/tmp/*.before_<ts>`. L2 = git reset. **Никогда не заходили за L0 в этой сессии.**
+- **Pre-existing [END] ordering bug** — `if "[END]" in answer_text` substring match runs BEFORE hallucination filter → LLM emit `[END]` в hallucinated tail, filter strips tail but `state.dialog_finished` уже contaminated. Fix: swap + anchor `endswith`. Протестирован живьём: false-positive исчез (call f184c7be был последним incident). **Тот же bug лежит в text-path `core/pipeline.py:319-326` для PROD** — P1 backlog.
+- **Snapshot-before-scp discipline** — каждый deploy на VPS предваряется `cp /opt/sofia-voice/X /tmp/X.before_<timestamp>`. L1 rollback восстанавливается одной командой cp.
+- **Keyword matching scoped to tail** — farewell keyword match в последних 80 chars response, не во всём тексте. Prevents mid-sentence false positives.
+- **Prompt-level refusal over-eagerness distinct from infrastructure** — call `f8d41815` показал что Sofia входит в Категорический отказ branch на ambiguous user text («это вот теперь не с вами говорить»). Не bug auto-hangup, а prompt-level sensitivity. Fix option: двойное подтверждение refusal (как в Atlantis prompt: «дважды чётко отказался»).
+- **Testers ≠ Sergey phone hardware issue** — tester vs Sergey differential показал что phone/hardware identical; разница в attention level (testers multitask, Сергей focused). STT partials clean, TTS-echo guard works, no HALLUC_TRUNCATED — не инфра bug.
+
+### Созданные docs (8 reference files в `docs/`)
+
+| File | Purpose |
+|------|---------|
+| `VOICE_LATENCY_AUDIT_2026-04-18.md` | 29 KB — Latency audit, 8 optimisations VLAT-01..08 with gain/effort/risk |
+| `VLAT_07_DEEP_DIVE_2026-04-18.md` | 25 KB — Phase 1/2/3 breakdown для max_pause_hint |
+| `EOU_BASELINE_2026-04-18.md` | 16 KB — Baseline 22 turns, 4 calls, per-category medians |
+| `PHASE1_RESULTS_2026-04-18.md` | 16 KB — A/B Phase 1, −742 ms median, 1 regression |
+| `PROMPT_V4_RESULTS_2026-04-18.md` | 9 KB — RIZALTA v4 live-test, keep decision |
+| `CALL_LIFECYCLE_RECON_2026-04-18.md` | 18 KB — Task A (ringing 20с) + Task B (auto-hangup) recon |
+| `NOISE_CASE_POSTMORTEM_2026-04-18.md` | 16 KB — 3-call triage +79160322905 tester failures |
+| `TESTER_VS_SERGEY_DIFF_2026-04-18.md` | 13 KB — гипотеза «phone HW» опровергнута → attention level |
+
+### Найденные но НЕ исправленные проблемы (на P1 backlog)
+
+- **Text-path [END] handler в PROD `core/pipeline.py:319-326`** — тот же баг что мы fix'ed в голосе (`19102904`), но для text channels (Telegram/Radist/web). В PROD репо `/opt/sofia-gpt/`. Влияет на Atlantis inbound когда LLM галлюцинирует `[END]` в tail — false dialog_finished. Критично для text pipeline.
+- **Option A RIZALTA prompt hardening** (из NOISE_CASE_POSTMORTEM) — добавить «двойное подтверждение отказа» в Категорический отказ branch. ~2 часа. Запустить если пилот-серия покажет повторные false refusals.
+- **Audio dropouts** — Сергей слышит что Sofia иногда «глотает слова» в inbound тесте. Гипотезы: TTS pacing `asyncio.sleep(0.018)` под CPU нагрузкой / prompt-artefacts. Evidence в логах чистый (0 RTP warnings, 0 underrun). Catch в WAV при пилоте.
+- **1 vCPU bottleneck** — VPS 1 ядро, Silero singleton под GIL. Safe concurrent calls: 3-4. Пилот планируется sequential → OK. P2: upgrade 2-4 vCPU.
+- **Белокуриха misstress** — Yandex Alena ставит ударение на предпоследний слог. P1 backlog: проверить U+0301 acute accent in prompt или Yandex custom pronunciation dictionary.
+
+### Next steps (для завтра)
+
+1. **Пилот-серия** — Сергей ожидает 5-6 тестеров × 5-6 inbound звонков = ~30 calls на +79310091644. Инструкции тестерам: тихая комната, focused, не одновременно (1 vCPU limit). MixMonitor активен — все будут записаны.
+2. **Post-pilot analysis** (следующая сессия):
+   - Прослушать все WAV (Сергей) + cross-ref с journalctl
+   - Rate drop-offs, Sofia-initiated refusals, audio dropouts
+   - Решить: Option A prompt hardening YES/NO based on repeat of `f8d41815`-class falses
+   - Audio dropout diagnosis если подтвердится в WAV
+
+### Side note: userMemories оркестратора устарели
+
+userMemories в Claude.ai упоминают:
+- kimi-k2 как active LLM (давно YandexGPT)
+- ElevenLabs Flash v2.5 (давно Yandex Alena)
+- Ничего про сегодняшние Phase 1, auto-hangup, recording, streaming, prompt v4.x
+
+**Требуется обновление через `memory_user_edits` в начале следующей сессии.** Claude Code не имеет доступа к этому инструменту, делает сам оркестратор.
+
+### Feature flags / состояние сервиса на конец сессии
+
+```
+STT_MODE=grpc
+YANDEX_STT_EOU_MODE=high
+YANDEX_MAX_PAUSE_HINT_MS=700      ← Phase 1
+AUTO_HANGUP_ENABLED=true          ← Auto-hangup
+VOICE_PROMPT_MODE=rizalta          ← gate для auto-hangup
+VOICE_VAD_PROVIDER=silero
+VOICE_PROVIDER=yandex
+VOICE_TTS_PROVIDER=yandex
+STREAM_TRANSCRIPT=true (dial.py default, не .env)
+MixMonitor: active в обоих dialplan контекстах
+```
+
+Сервис active, banner: `Pipeline: Yandex STT (GRPC, EOU=high, hint=700ms) -> YANDEX TTS | Mode: rizalta, auto_hangup=on`.
+
+---
+
 ## 17.04.2026 — OUTBOUND_DIALER_v1: dial.py + [outbound-audiosocket] context
 
 **Сделано:**
