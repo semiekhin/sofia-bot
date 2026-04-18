@@ -119,6 +119,21 @@ YANDEX_TTS_SPEED = float(os.getenv("YANDEX_TTS_SPEED", "1.1"))
 # TTS provider selection (yandex / elevenlabs)
 VOICE_TTS_PROVIDER = os.getenv("VOICE_TTS_PROVIDER", "yandex")
 
+# Auto-hangup after Sofia farewell (RIZALTA only, env-gated).
+# Detection: keyword match in last 80 chars of response OR state.dialog_finished
+# (set by core/pipeline.py:1055-1060 when Sofia emits [END] marker).
+VOICE_PROMPT_MODE = os.getenv("VOICE_PROMPT_MODE", "atlantis")
+AUTO_HANGUP_ENABLED = os.getenv("AUTO_HANGUP_ENABLED", "true").lower() == "true"
+FAREWELL_KEYWORDS = (
+    "хорошего дня",
+    "всего доброго",
+    "удачного дня",
+    "удачной дороги",
+    "до свидания",
+    "не буду занимать",
+)
+AUTO_HANGUP_DELAY_SEC = 1.5
+
 # Database
 SOFIA_PATH = os.getenv("SOFIA_PATH", os.path.dirname(os.path.abspath(__file__)))
 DB_PATH = os.getenv("DB_PATH", "sofia_voice.db")
@@ -958,6 +973,14 @@ class AudioSocketCall:
                 f"TOTAL={total:.0f}ms"
             )
 
+            # Auto-hangup check (RIZALTA only, env-gated)
+            should_hangup, reason = self._should_hangup(response)
+            if should_hangup:
+                logger.info(
+                    f"AUTO_HANGUP detect uuid={self.call_uuid} " f"reason={reason}"
+                )
+                asyncio.create_task(self._delayed_hangup(reason))
+
         except Exception as e:
             logger.error(f"❌ Turn processing error: {e}")
         finally:
@@ -1115,6 +1138,54 @@ class AudioSocketCall:
             f"total={elapsed:.0f}ms)"
         )
 
+    def _should_hangup(self, response: str) -> tuple[bool, str]:
+        """Decide whether to fire auto-hangup after Sofia's last reply.
+        RIZALTA only, env-gated. Returns (trigger, reason)."""
+        if not AUTO_HANGUP_ENABLED or VOICE_PROMPT_MODE != "rizalta":
+            return False, ""
+        if self._state_manager is not None:
+            state = self._state_manager.get_state(self._user_id)
+            if state is not None and getattr(state, "dialog_finished", False):
+                return True, "state"
+        if response:
+            tail = response[-80:].lower()
+            if any(kw in tail for kw in FAREWELL_KEYWORDS):
+                return True, "keyword"
+        return False, ""
+
+    async def _delayed_hangup(self, reason: str):
+        """Wait AUTO_HANGUP_DELAY_SEC, abort if user speaks or connection
+        already closed. Otherwise send AS_TYPE_HANGUP and close."""
+        t0 = time.monotonic()
+        chunk = 0.1
+        while time.monotonic() - t0 < AUTO_HANGUP_DELAY_SEC:
+            await asyncio.sleep(chunk)
+            if self._closed:
+                logger.info(f"AUTO_HANGUP cancel uuid={self.call_uuid} reason=closed")
+                return
+            if self._is_responding:
+                logger.info(
+                    f"AUTO_HANGUP cancel uuid={self.call_uuid} reason=user_spoke"
+                )
+                return
+        logger.info(
+            f"AUTO_HANGUP exec uuid={self.call_uuid} "
+            f"after_delay={AUTO_HANGUP_DELAY_SEC}s"
+        )
+        await self._send_hangup()
+        self._closed = True
+
+    async def _send_hangup(self):
+        """Send AS_TYPE_HANGUP (0x00) frame to Asterisk — protocol-level
+        hangup request. Asterisk terminates the PJSIP leg."""
+        if self._closed:
+            return
+        try:
+            self.writer.write(struct.pack(">BH", AS_TYPE_HANGUP, 0))
+            await self.writer.drain()
+        except Exception as e:
+            logger.debug(f"_send_hangup write error: {e}")
+
     async def _send_audio(self, audio_data: bytes, audio_type: int = AS_TYPE_AUDIO):
         """Send audio packet back to Asterisk."""
         if self._closed:
@@ -1181,6 +1252,10 @@ async def main():
     logger.info(
         f"   Pipeline: Yandex STT ({STT_MODE.upper()}{eou_desc}) -> "
         f"{VOICE_TTS_PROVIDER.upper()} TTS"
+    )
+    logger.info(
+        f"   Mode: {VOICE_PROMPT_MODE}, "
+        f"auto_hangup={'on' if AUTO_HANGUP_ENABLED else 'off'}"
     )
     logger.info(f"   DB: {DB_PATH}")
     logger.info("   Waiting for Asterisk connections...")
