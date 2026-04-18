@@ -51,6 +51,7 @@ class YandexSTTStream:
         on_final: Optional[FinalCb] = None,
         on_eou: Optional[EouCb] = None,
         eou_mode: str = "default",
+        max_pause_between_words_hint_ms: int = 0,
         call_uuid: str = "",
     ):
         self._api_key = api_key
@@ -61,6 +62,7 @@ class YandexSTTStream:
         self._on_final = on_final
         self._on_eou = on_eou
         self._eou_mode = eou_mode.lower() if eou_mode else "default"
+        self._max_pause_hint_ms = max_pause_between_words_hint_ms
         if self._eou_mode not in ("default", "high"):
             logger.warning(
                 f"YandexSTTStream: unknown eou_mode={eou_mode!r}, using DEFAULT"
@@ -106,6 +108,10 @@ class YandexSTTStream:
             self._recv_task = asyncio.create_task(self._receive_loop(stream))
             self._started = True
             logger.info("YandexSTTStream: gRPC stream opened")
+            if self._max_pause_hint_ms > 0:
+                logger.info(
+                    f"YandexSTTStream: max_pause_hint_ms={self._max_pause_hint_ms}"
+                )
         except Exception as e:
             logger.error(f"YandexSTTStream: start failed: {e}")
             self._broken = True
@@ -164,7 +170,14 @@ class YandexSTTStream:
                 audio_processing_type=stt_pb2.RecognitionModelOptions.REAL_TIME,
             ),
             eou_classifier=stt_pb2.EouClassifierOptions(
-                default_classifier=stt_pb2.DefaultEouClassifier(type=eou_type),
+                default_classifier=(
+                    stt_pb2.DefaultEouClassifier(
+                        type=eou_type,
+                        max_pause_between_words_hint_ms=self._max_pause_hint_ms,
+                    )
+                    if self._max_pause_hint_ms > 0
+                    else stt_pb2.DefaultEouClassifier(type=eou_type)
+                ),
             ),
         )
         yield stt_pb2.StreamingRequest(session_options=session_options)

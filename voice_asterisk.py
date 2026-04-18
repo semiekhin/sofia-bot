@@ -104,6 +104,10 @@ STT_MODE = os.getenv("STT_MODE", "rest")  # rest | grpc
 # EOU sensitivity (Phase 2D): default (conservative ~2240ms wait) | high (fast)
 YANDEX_STT_EOU_MODE = os.getenv("YANDEX_STT_EOU_MODE", "default")
 
+# VLAT-07 Phase 1: hint to Yandex DefaultEouClassifier for max inter-word pause.
+# 0 = не передавать (Yandex internal default). 700ms = стартовое значение.
+YANDEX_MAX_PAUSE_HINT_MS = int(os.getenv("YANDEX_MAX_PAUSE_HINT_MS", "700"))
+
 # Yandex TTS settings
 YANDEX_TTS_URL = "https://tts.api.cloud.yandex.net/speech/v1/tts:synthesize"
 YC_API_KEY = os.getenv("YC_API_KEY", "")
@@ -733,6 +737,7 @@ class AudioSocketCall:
             on_final=self._on_grpc_final,
             on_eou=self._on_grpc_eou,
             eou_mode=YANDEX_STT_EOU_MODE,
+            max_pause_between_words_hint_ms=YANDEX_MAX_PAUSE_HINT_MS,
             call_uuid=self.call_uuid or "",
         )
         await self._stt_stream.start()
@@ -1171,6 +1176,8 @@ async def main():
     addrs = ", ".join(str(sock.getsockname()) for sock in server.sockets)
     logger.info(f"🚀 AudioSocket server listening on {addrs}")
     eou_desc = f", EOU={YANDEX_STT_EOU_MODE}" if STT_MODE == "grpc" else ""
+    if STT_MODE == "grpc" and YANDEX_MAX_PAUSE_HINT_MS > 0:
+        eou_desc += f", hint={YANDEX_MAX_PAUSE_HINT_MS}ms"
     logger.info(
         f"   Pipeline: Yandex STT ({STT_MODE.upper()}{eou_desc}) -> "
         f"{VOICE_TTS_PROVIDER.upper()} TTS"
