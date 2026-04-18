@@ -1,0 +1,7 @@
+# Sofia Voice — MixMonitor recording rotation
+# Convert WAV to Opus after 72h; delete Opus after 30d.
+# Deployed to /etc/cron.d/sofia-voice-recordings (owner root:root, mode 0644).
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+0 3 * * * root /opt/sofia-voice/bin/rotate_recordings.sh convert   >/dev/null 2>&1
+30 3 * * * root /opt/sofia-voice/bin/rotate_recordings.sh retention >/dev/null 2>&1
