@@ -1056,16 +1056,12 @@ async def stream_voice_response(
             r"<think>.*?</think>", "", full_text, flags=re.DOTALL
         ).strip()
 
-    # 5. [END] check
     answer_text = full_text.strip()
-    if "[END]" in answer_text or "[end]" in answer_text:
-        answer_text = answer_text.replace("[END]", "").replace("[end]", "").strip()
-        state_manager.update_state(
-            user_id, {"dialog_finished": True, "finish_type": "llm_end"}
-        )
-        log.info(f"🏁 [{tag}] Voice: диалог завершён [END]")
 
-    # 5b. Anti-hallucination filter: cut off fake dialog continuations
+    # 5. Anti-hallucination filter: cut off fake dialog continuations.
+    # Must run BEFORE [END] check — LLM may emit [END] in hallucinated tail,
+    # which would falsely flip dialog_finished. Call f184c7be (18.04) was
+    # the first production regression exposing this order bug.
     halluc_match = re.search(
         r"(?im)^\s*(?:Пользователь|Клиент|Ассистент|User|Assistant|Client)\s*:",
         answer_text,
@@ -1086,6 +1082,16 @@ async def stream_voice_response(
         if not answer_text:
             log.error(f"[{tag}] HALLUCINATION_FILTER: entire response was hallucinated")
             answer_text = "Секунду, повторите пожалуйста?"
+
+    # 5b. [END] check — anchored to end-of-text (defense-in-depth against
+    # mid-reply [END] marker that could slip past hallucination filter).
+    stripped = answer_text.rstrip()
+    if stripped.endswith("[END]") or stripped.endswith("[end]"):
+        answer_text = answer_text.replace("[END]", "").replace("[end]", "").strip()
+        state_manager.update_state(
+            user_id, {"dialog_finished": True, "finish_type": "llm_end"}
+        )
+        log.info(f"🏁 [{tag}] Voice: диалог завершён [END]")
 
     # 6. Sanitize for TTS
     answer_text = sanitize_for_tts(answer_text)
