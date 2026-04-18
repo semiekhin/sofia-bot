@@ -733,6 +733,7 @@ class AudioSocketCall:
             on_final=self._on_grpc_final,
             on_eou=self._on_grpc_eou,
             eou_mode=YANDEX_STT_EOU_MODE,
+            call_uuid=self.call_uuid or "",
         )
         await self._stt_stream.start()
         if self._stt_stream.is_broken:

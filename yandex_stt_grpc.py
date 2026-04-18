@@ -20,6 +20,7 @@ Error handling:
 import asyncio
 import os
 import sys
+import time
 from typing import Awaitable, Callable, Optional
 
 import grpc
@@ -50,6 +51,7 @@ class YandexSTTStream:
         on_final: Optional[FinalCb] = None,
         on_eou: Optional[EouCb] = None,
         eou_mode: str = "default",
+        call_uuid: str = "",
     ):
         self._api_key = api_key
         self._sample_rate = sample_rate
@@ -72,6 +74,13 @@ class YandexSTTStream:
         self._started = False
         self._closed = False
         self._broken = False
+
+        # EOU instrumentation (VLAT-07 prep): wall-clock gap between last
+        # partial-text change and eou_update arrival. -1 if no partial seen.
+        self._call_uuid: str = call_uuid
+        self._last_partial_text: str = ""
+        self._last_partial_change_ts: Optional[float] = None
+        self._turn_idx: int = 0
 
     @property
     def is_broken(self) -> bool:
@@ -174,18 +183,43 @@ class YandexSTTStream:
             async for response in stream:
                 if response.HasField("partial"):
                     alts = response.partial.alternatives
-                    if alts and alts[0].text and self._on_partial:
-                        await self._on_partial(
-                            alts[0].text, response.audio_cursors.partial_time_ms
-                        )
+                    if alts and alts[0].text:
+                        # EOU instrumentation: record wall time of last
+                        # partial-text change (proxy for "user stopped
+                        # speaking"). Fires regardless of user callback.
+                        if alts[0].text != self._last_partial_text:
+                            self._last_partial_text = alts[0].text
+                            self._last_partial_change_ts = time.monotonic()
+                        if self._on_partial:
+                            await self._on_partial(
+                                alts[0].text,
+                                response.audio_cursors.partial_time_ms,
+                            )
                 elif response.HasField("final"):
                     alts = response.final.alternatives
                     if alts and alts[0].text and self._on_final:
                         await self._on_final(
                             alts[0].text, response.audio_cursors.final_time_ms
                         )
-                elif response.HasField("eou_update") and self._on_eou:
-                    await self._on_eou(response.audio_cursors.eou_time_ms)
+                elif response.HasField("eou_update"):
+                    # EOU instrumentation: compute wall-clock wait and log.
+                    if self._last_partial_change_ts is not None:
+                        eou_wait_ms = (
+                            time.monotonic() - self._last_partial_change_ts
+                        ) * 1000
+                    else:
+                        eou_wait_ms = -1
+                    logger.info(
+                        f"EOU_WAIT uuid={self._call_uuid} "
+                        f"turn={self._turn_idx} "
+                        f"eou_wait_ms={eou_wait_ms:.0f} "
+                        f"text_len={len(self._last_partial_text)}"
+                    )
+                    self._turn_idx += 1
+                    self._last_partial_change_ts = None
+                    self._last_partial_text = ""
+                    if self._on_eou:
+                        await self._on_eou(response.audio_cursors.eou_time_ms)
         except grpc.aio.AioRpcError as e:
             if e.code() != grpc.StatusCode.CANCELLED:
                 logger.error(f"YandexSTTStream: gRPC error {e.code()} {e.details()}")
