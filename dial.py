@@ -34,9 +34,11 @@ import datetime as dt
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 
 CDR_PATH = "/var/log/asterisk/cdr-csv/Master.csv"
@@ -49,6 +51,13 @@ STATE_POLL_INTERVAL_SEC = 1  # channel state poll is faster than CDR poll
 CHANNEL_APPEAR_WAIT_SEC = 5
 ORIGINATE_CMD_TIMEOUT = 10
 MIN_BILLSEC_SUCCESS = 5  # ANSWERED with billsec < 5 => still a hangup
+
+# Realtime transcript streaming to terminal (tail journalctl while call is Up)
+STREAM_TRANSCRIPT = os.getenv("STREAM_TRANSCRIPT", "true").lower() != "false"
+_LOG_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2})\.\d+")
+_LOG_USER_RE = re.compile(r"🎤 USER: (.*)$")
+_LOG_SOFIA_RE = re.compile(r"🧠 SOFIA: (.*)$")
+_LOG_AUTO_RE = re.compile(r"(AUTO_HANGUP (?:detect|exec|cancel)[^\r\n]*)$")
 
 # NOTE: formula MUST match voice_asterisk.py:125 function call_id_to_user_id.
 # Duplicated intentionally to keep dial.py a standalone script without an
@@ -232,6 +241,73 @@ def _print_state_transition(old: str | None, new: str | None) -> None:
         print(f"[{ts}] Ended")
 
 
+def _log_tail_reader(stdout) -> None:
+    """Read journalctl -f lines, print matched USER/SOFIA/AUTO_HANGUP
+    events as [HH:MM:SS] prefixed lines. Silent on exceptions —
+    stream is best-effort, must not crash dial.py."""
+    try:
+        for raw in iter(stdout.readline, b""):
+            try:
+                line = raw.decode("utf-8", errors="replace").rstrip()
+            except Exception:
+                continue
+            ts_m = _LOG_TS_RE.match(line)
+            hms = ts_m.group(1) if ts_m else time.strftime("%H:%M:%S")
+            u = _LOG_USER_RE.search(line)
+            if u:
+                print(f"[{hms}] USER: {u.group(1)}", flush=True)
+                continue
+            s = _LOG_SOFIA_RE.search(line)
+            if s:
+                print(f"[{hms}] SOFIA: {s.group(1)}", flush=True)
+                continue
+            a = _LOG_AUTO_RE.search(line)
+            if a:
+                print(f"[{hms}] {a.group(1)}", flush=True)
+    except Exception:
+        pass
+
+
+def start_log_tail():
+    """Spawn journalctl -u sofia-voice -f reader. Returns (proc, thread)
+    tuple or None. Safe on env-disabled / spawn failure — prints a
+    one-line warning and returns None."""
+    if not STREAM_TRANSCRIPT:
+        return None
+    try:
+        proc = subprocess.Popen(
+            ["journalctl", "-u", "sofia-voice", "-f", "-n", "0", "-o", "cat"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as e:
+        print(f"(live stream unavailable: {e})", file=sys.stderr)
+        return None
+    thread = threading.Thread(target=_log_tail_reader, args=(proc.stdout,), daemon=True)
+    thread.start()
+    return (proc, thread)
+
+
+def stop_log_tail(handle) -> None:
+    """Terminate journalctl subprocess and join reader thread.
+    Idempotent — safe on None handle."""
+    if handle is None:
+        return
+    proc, thread = handle
+    try:
+        proc.terminate()
+        proc.wait(timeout=2)
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    try:
+        thread.join(timeout=2)
+    except Exception:
+        pass
+
+
 def wait_for_cdr(
     uniqueid: str | None,
     initial_lines: int,
@@ -245,27 +321,38 @@ def wait_for_cdr(
     on Asterisk 20, P3 backlog). State polling at 1s cadence, CDR at 2s.
 
     When print_status=True, emits [HH:MM:SS] status lines on state
-    transitions (None→Ringing, *→Up, (Ringing|Up)→None)."""
+    transitions (None→Ringing, *→Up, (Ringing|Up)→None). Also streams
+    realtime USER/SOFIA/AUTO_HANGUP events from journalctl while the
+    channel is Up (STREAM_TRANSCRIPT=true)."""
     deadline = time.monotonic() + timeout_sec
     last_state: str | None = None
+    log_tail = None
     next_cdr_check = time.monotonic()
-    while time.monotonic() < deadline:
-        time.sleep(STATE_POLL_INTERVAL_SEC)
-        if print_status:
-            state = get_channel_state()
-            if state != last_state:
-                _print_state_transition(last_state, state)
-                last_state = state
-        if time.monotonic() >= next_cdr_check:
-            next_cdr_check = time.monotonic() + POLL_INTERVAL_SEC
-            if uniqueid:
-                rec = find_cdr_by_uniqueid(uniqueid)
+    try:
+        while time.monotonic() < deadline:
+            time.sleep(STATE_POLL_INTERVAL_SEC)
+            if print_status:
+                state = get_channel_state()
+                if state != last_state:
+                    _print_state_transition(last_state, state)
+                    if state == "Up" and log_tail is None:
+                        log_tail = start_log_tail()
+                    elif state is None and last_state in ("Ringing", "Up"):
+                        stop_log_tail(log_tail)
+                        log_tail = None
+                    last_state = state
+            if time.monotonic() >= next_cdr_check:
+                next_cdr_check = time.monotonic() + POLL_INTERVAL_SEC
+                if uniqueid:
+                    rec = find_cdr_by_uniqueid(uniqueid)
+                    if rec:
+                        return rec
+                rec = find_cdr_fallback(initial_lines, ts_start)
                 if rec:
                     return rec
-            rec = find_cdr_fallback(initial_lines, ts_start)
-            if rec:
-                return rec
-    return None
+        return None
+    finally:
+        stop_log_tail(log_tail)
 
 
 def audiosocket_uuid_to_chat_id(uuid_str: str) -> str:
