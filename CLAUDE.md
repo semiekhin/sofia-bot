@@ -64,14 +64,17 @@ Python 3.12, FastAPI, SQLite, OpenAI gpt-5.2 (Responses API), ChromaDB (RAG, tex
 
 **core/bitrix.py** — Битрикс CRM:
 - `SOFIA_AI_USER_ID = 428` — ответственный на время квалификации (робот-распределитель не трогает)
-- `BITRIX_ASSIGNED_ID = 426` — fallback при restore
+- `BITRIX_BP_ASSIGNED_ID = 24932` — передача раздатчику перед запуском БП 152
 - `BITRIX_ATLANTIS_SOURCE_ID = "397"` — источник Тильда/Атлантис
 - `BITRIX_SOURCE_ID = "504"` (env, default) — источник для новых лидов
-- `create_or_update_lead()`: create → ASSIGNED_BY_ID=428; update → COMMENTS с диалогом; final → `restore_assigned()`
-- `restore_assigned(db, lead_id)`: original из `lead_assigned` → fallback 426
+- `create_or_update_lead()`: create → ASSIGNED_BY_ID=428; update → COMMENTS с диалогом; final → `finalize_lead()`
+- `finalize_lead(db, lead_id)`: **stage-guard 19.04** — сначала `get_lead_status(lead_id)`, если `!= "NEW"` → менеджер взял в работу, `set_manager_active(user_id, True)` + log `[FINALIZE_SKIP]` + return. Иначе `set_lead_assigned(24932)` + `start_distribution_bp()`.
+- `get_lead_status(lead_id) -> str | None` — pull-проверка STATUS_ID через `crm.lead.get`. Fail-safe: None при любой ошибке API → caller трактует как не-NEW → skip финализации (тишина лучше перезаписи менеджера).
 - `find_recent_atlantis_lead()`: последний лид с SOURCE_ID=397
-- Webhook (`/api/bitrix/webhook`): если ASSIGNED_BY_ID != 428 → менеджер перехватил → `manager_active=1`
-- `is_manager_active()` / `set_manager_active()`: флаг перехвата, София молчит
+- Webhook (`/api/bitrix/webhook`): если `ASSIGNED_BY_ID != 428` → `manager_active=1`. **Defense in depth**: подписка ONCRMLEADUPDATE у Bitrix пока не настроена (P2 backlog, Stetsenko), stage-guard — основной механизм защиты.
+- `is_manager_active()` / `set_manager_active()`: флаг перехвата, София молчит во всех каналах.
+
+Stage-guard также встроен в `sofia_radist_gateway.py`: `radist_send_reminder` (2 свежих вызова — перед отправкой + перед finalize после sleep) и `_radist_finalize_timeout`.
 
 ### Обработка сообщения (message_processor.py)
 
