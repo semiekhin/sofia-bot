@@ -58,6 +58,8 @@ Python 3.12, FastAPI, SQLite, OpenAI gpt-5.2 (Responses API), ChromaDB (RAG, tex
 
 Фичи 18.04: Phase 1 VLAT-07 (EOU median −742мс), auto-hangup после farewell/`[END]`, MixMonitor recording (WAV→Opus ротация >72h), dial.py realtime stream в терминал.
 
+Пилот-аудит 19.04 (9 WAV за 18.04): A/B Yandex TTS через прямой curl (baseline/48k_soxr/jane × 4 фразы) исключил TTS как источник проглатываний слогов. Live-эксперимент с отключённым MixMonitor показал частичное улучшение — 1 vCPU VPS подтверждён как главный bottleneck (конкуренция Silero VAD GIL + gRPC STT + asyncio TTS pacing + MixMonitor I/O + SQLite writes). Приоритет 20.04 — апгрейд до 2-4 vCPU.
+
 **Полный текст: [docs/VOICE_ARCHITECTURE.md](docs/VOICE_ARCHITECTURE.md)** — AudioSocket протокол, Silero VAD внутренности, barge-in логика, Phase 1/EOU instrumentation/auto-hangup/[END] fix/MixMonitor детали, VOICE_PROMPT_MODE, Yandex TTS Alena конфиг, ElevenLabs legacy rollback, SIP данные Телфин, деплой, systemd unit.
 
 **Стадии (RAG stages):** GREETING → ACTUALIZATION → QUALIFICATION → PRESENTATION → OBJECTION → MEETING → CLOSING
