@@ -65,6 +65,96 @@
 
 ---
 
+## 19.04.2026 — продолжение: пилот-аудит + TTS A/B + MixMonitor эксперимент
+
+### TL;DR
+
+Вторая часть сессии целиком под голосовой пилот: инвентаризация собранных записей, разведка двух проблемных звонков, A/B-матрица Yandex TTS на прямых curl-ах, эксперимент с отключённым MixMonitor на живом звонке. Код не правился — только наблюдения. Пилот накопил 9 WAV за 8.5ч активности 18.04, после 18.04 17:32 MSK новых звонков 24+ часа нет.
+
+Ключевой вывод дня: **проблема проглатывания слогов и щелчков в аудио Sofia не в Yandex TTS и не в нашем send_audio, а в ресурсах VPS**. A/B показал что все три варианта синтеза (baseline alena 8kHz / alena 48kHz→8kHz soxr / premium jane 8kHz) на тех же фразах звучат чисто. MixMonitor-эксперимент на живом звонке Сергея подтвердил влияние нагрузки — с выключенным MixMonitor стало субъективно немного лучше, но не до конца. Главный подозреваемый к утру 20.04 — **1 vCPU на VPS sofia-voice**.
+
+### PILOT_INVENTORY_19_04
+
+Инвентаризация `/var/lib/asterisk/recordings/` за 18-19.04:
+- **9 WAV** (9.98 MB), все за 18.04, папки 2026-04-19 нет. Последний файл — `b2786722-...wav` от 18.04 14:32 UTC (17:32 MSK). За следующие ~24 часа активности sofia-voice нет (journal пустой после 14:32).
+- **CDR**: 35 строк в пилот-контекстах за 18.04 (13 inbound from-telphin + 22 outbound-audiosocket). 4 уникальных номера: `+79181011091` (5 звонков, 3 билли=0), `+79189007826` (4 длинных, 310с), `+79160322905` (3 вечерних тестера 197с), `+79113379876` (1 звонок 94с).
+- **Gap CDR↔WAV**: 13 inbound vs 9 WAV — MixMonitor добавили в dialplan ~13:20 UTC, 4 ранних коротких inbound без записи (билли 0-5с, потеря минимальна).
+- **AUTO_HANGUP**: 14 detect + 14 exec, 0 cancel — 100% happy-path, 14 уникальных UUID.
+- **EOU_WAIT (positive n=167)**: median 1035мс ≈ baseline 1036мс (Phase 1 hint работает), p95 1790мс, max 2153мс. 194 строки `eou_wait_ms=-1` — gRPC close markers (P2 backlog — phantom EOU silencing).
+- **Ошибки non-STT**: 2 (оба DEBUG «_send_hangup write error: Connection lost» — клиент клал первым, не real error).
+- **HALLUC_TRUNCATED**: 6 (anti-halluc штатно), **[END]**: 4 («Всего доброго! [END]»).
+- **Cron-ротация**: работает (03:00/03:30 UTC 19.04), 0 конвертаций (все WAV <72h).
+
+### AUDIO_DROPOUT_8a7c4983
+
+Разведка звонка `8a7c4983` (18.04 13:51 UTC, +79189007826, 124с). Сергей слышит проглатывание «безопасном» на 0:19 и «управляющую» на 0:51. Полное соответствие timing: оба артефакта — на стыках длинных слов (инвестиционно|безопасном, через|управляющую) внутри одного SSML-блока без `<break>`, в середине реплики, не в начале.
+
+Факты: Yandex вернул полный PCM (bytes/duration сходятся до сэмпла), `_speak` отправил целиком, 0 событий BARGE-IN/_cancel_playback/HALLUC_TRUNCATED во всём call window. Длительность WAV 123.76с = call_duration 123.8с.
+
+Гипотеза — **(E) Yandex coarticulation artefact**, не наша сторона. Побочное: `_speak` не логирует per-chunk события (невозможно по логам доказать отсутствие underrun внутри реплики), `asyncio.sleep(0.018)` vs frame 20мс даёт постоянный 10% overrun.
+
+### AUDIO_DROPOUT_94ea75b1
+
+Разведка звонка `94ea75b1` (18.04 14:27 UTC, +79160322905, 69.5с). Сергей слышал больше артефактов чем на 8a7c4983.
+
+Найдено конкретное отличие — **1 false-positive BARGE-IN на reply #2**. Silero VAD с threshold 0.5 набрал 200мс (3200 bytes) через 497мс после старта TTS и дёрнул `_cancel_playback`. Reply #2 «Это апарт-отель в Белокурихе, под сдачу через управляющую компанию. Гарантии… Вход от пятнадцати миллионов рублей. Подходит такой формат?» сыграла только 655мс из 10.79с — успело «Это апарт-отель в…», потом тишина 4.7с до следующего user-turn. **10.1с запланированного аудио потеряно**, реплика не возобновляется. Клиент реальный вопрос задал через 4.7с — значит то что VAD принял за речь, речью не было (кашель/TTS-echo на SIP).
+
+Плотность artefact-кандидатов (стыков 2 длинных слов ≥6 букв): 0.46/сек идентична 8a7c4983 — характер текста тот же. Больше артефактов у 94ea75b1 — от BARGE-IN обрезки, не от coarticulation. Звонок изолированный (gap 2:22 до, 2:14 после), параллельных нет. Нагрузочных алертов 0.
+
+Побочное: Silero `SILERO_VAD_THRESHOLD_BARGE_IN=0.5` + 200мс cumulative window на SIP линии даёт false positives (комментарий в коде прямо: «TTS-echo mix on SIP line»). Возможное решение — threshold 0.6-0.7 на TTS-период или удлинить window 200→400мс.
+
+### TTS_AB_MATRIX_v1
+
+Сгенерировано 12 WAV через прямой curl на Yandex TTS API, без изменений production-кода. 4 проблемных текста из пилотных реплик × 3 варианта синтеза = 12 файлов в `/tmp/pilot_recordings_18_04/ab_*.wav`:
+- **baseline**: alena 8kHz LPCM (идентично production параметрам из `synthesize_tts_yandex` + `add_ssml_breaks`)
+- **48k_downsample**: alena 48kHz LPCM → ffmpeg `aresample=resampler=soxr` → 8kHz WAV (гипотеза что синтез на полной частоте сохраняет транзиенты безударных слогов)
+- **jane**: premium голос 8kHz (jane/ermil/zahar — все три пробника 200 OK; выбран jane по умолчанию)
+
+Sanity: все 12 файлов `pcm_s16le / 8000 Hz / 1 ch / 16 bit`. PCM-before downsample в 6× больше baseline (97k→581k для текста A) — подтверждает что синтез был реально 48kHz. После downsample WAV побайтово совпадает с baseline duration (<0.1с delta). API latency: baseline 410мс / 48k 579мс (+169мс) / jane 527мс.
+
+**Вердикт Сергея после прослушивания**: все три варианта звучат **чисто**, проглатывания нет ни в одном. Значит проблема проглатывания слогов **не в Yandex TTS**, а в чём-то между Yandex ответом и ухом клиента на production звонке.
+
+### MIXMONITOR_DISABLE_TEST
+
+Эксперимент с живым звонком Сергея. Гипотеза: MixMonitor пишет смешанный поток на диск синхронно → на 1 vCPU VPS конкурирует за CPU/I/O с AudioSocket send + Silero VAD → `_speak` получает задержки → слышно как проглатывания и щелчки.
+
+Процедура:
+1. Snapshot `/etc/asterisk/extensions.conf` (md5 `b17c7d34febde34aa4c1ddf66f670194`) → `/tmp/extensions.conf.before_mixmonitor_disable_20260419_212739`
+2. Закомментированы 2 строки `MixMonitor(...)` в `[from-telphin]:14` и `[outbound-audiosocket]:30`
+3. `asterisk -rx 'dialplan reload'` — OK, dialplan показал контексты без MixMonitor-шага
+4. Asterisk PID 698, sofia-voice PID 161279 — не менялись (только reload, не restart)
+5. Живой звонок Сергея на +79310091644 — разговор 1-2 мин про Белокуриху/Атлантис/инвестиции (провоцировал длинные слова)
+6. Восстановление: `cp` из snapshot → диff пустой, md5 совпал, `dialplan reload`, MixMonitor вернулся в dialplan на те же priorities (6 в from-telphin, 4 в outbound-audiosocket)
+
+**Субъективный вердикт Сергея**: «немного лучше, но не решено». MixMonitor — часть проблемы, но не вся. Новый симптом, зафиксированный в этом звонке — **щелчки в аудио Sofia** (jitter / CPU contention / I/O stall).
+
+### Основная гипотеза к утру 20.04
+
+**1 vCPU bottleneck на VPS sofia-voice**. Конкуренция за CPU на 1 ядре между:
+- Silero VAD inference (singleton под GIL, `intra_op_num_threads=1`)
+- gRPC STT stream `yandex_stt_grpc` (bidirectional streaming, continuous)
+- `asyncio.sleep(0.018)` TTS pacing в `_speak` (чувствительна к event loop latency)
+- MixMonitor I/O на диск (синхронная запись смешанного потока)
+- SQLite writes (`save_message`, `client_state`, WAL checkpoint — подозревались ещё 17.04 на звонке 98332baf)
+
+A/B исключил Yandex TTS как источник проглатываний. Эксперимент MixMonitor показал что I/O нагрузка действительно влияет. Следующий шаг — убрать главное ограничение (1 vCPU), тогда в продакшн-like окружении станет видно какая проблема осталась.
+
+### TODO для следующей сессии 20.04
+
+1. **P0 — Апгрейд VPS sofia-voice с 1 vCPU до 2-4 vCPU** (главный кандидат на решение проглатывания + щелчков).
+2. Повторный тестовый звонок после апгрейда с MixMonitor **включённым** — сравнить субъективно и по логам.
+3. Если после апгрейда проблема останется — инструментация `_speak` per-chunk timing (добавить счётчик `chunks_sent` и `max_sleep_lag_ms` в строку `TTS done`, одна правка).
+4. Возможное вторичное: пересмотреть `SILERO_VAD_THRESHOLD_BARGE_IN` 0.5→0.6-0.7 или удлинить cumulative window 200→400мс (false-positive на reply #2 94ea75b1).
+
+### Что изменилось в файлах
+
+- Код: **ничего** (read-only разведки + curl-генерация + временный MixMonitor toggle через cp).
+- `/tmp/pilot_recordings_18_04/ab_*.wav` — 12 файлов A/B для прослушивания Сергеем (эфемерно, не в git).
+- `/tmp/extensions.conf.before_mixmonitor_disable_20260419_212739` — snapshot VPS-конфига (оставлен для истории).
+- `SESSION_LOG.md`, `BACKLOG.md` — эта запись + backlog-перестановки.
+
+---
+
 ## 18.04.2026 — полная сессия: Phase 1 (−742мс EOU) + auto-hangup + recording + prompt v4.x + realtime dial.py stream
 
 ### TL;DR
