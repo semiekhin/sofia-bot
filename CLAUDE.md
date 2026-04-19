@@ -50,175 +50,15 @@ Python 3.12, FastAPI, SQLite, OpenAI gpt-5.2 (Responses API), ChromaDB (RAG, tex
 
 ### Голосовой стек Asterisk (voice_asterisk.py)
 
-**Архитектура (2 сервера):**
+Двухсерверная архитектура: **VPS sofia-voice `185.207.66.201`** (Asterisk 20 PJSIP 5090 + voice_asterisk.py + AudioSocket TCP 9090) ↔ **основной сервер `72.56.64.91`** (nginx proxy :8095 только для текстового OpenAI-трафика, не для голоса с 16.04).
 
-```
-Клиент звонит +79310091644
-    │
-    ▼
-Телфин SIP (sipproxy.telphin.ru:5068)
-    │
-    ▼
-┌─────────────── VPS 185.207.66.201 (ssh sofia-voice) ───────────────┐
-│ Asterisk 20 (PJSIP, порт 5090)                                     │
-│    │                                                                 │
-│    ▼ AudioSocket (TCP localhost:9090)                                │
-│ voice_asterisk.py:                                                   │
-│    ├─ VAD: Silero VAD v4 ONNX (0.5s silence threshold, 17.04)       │
-│    ├─ Barge-in: 10-frame confirm Silero / 5-frame energy            │
-│    ├─ Cooldown 500ms + sliding-silence reset 300ms                  │
-│    ├─ _tts_playing флаг (barge-in только при active TTS)            │
-│    ├─ STT: Yandex SpeechKit REST v1 (~290ms) ──── напрямую          │
-│    ├─ LLM: YandexGPT 5 Pro (~620ms) ─────────────── напрямую        │
-│    └─ TTS: Yandex SpeechKit Alena v1 LPCM (~155ms) напрямую         │
-└─────────────────────────────────────────────────────────────────────┘
-                  ▲
-          UFW firewall (17.04):
-          22/tcp + 46.229.221.93:5090/udp + 10000-20000/udp
-          default deny incoming — SIP-сканеры отрезаны на SYN
+Стек VPS: Silero VAD v4 ONNX (8kHz, 500ms silence) → Yandex STT v3 gRPC streaming (EOU=high, `YANDEX_MAX_PAUSE_HINT_MS=700`) → YandexGPT 5 Pro → Yandex TTS Alena v1 LPCM. Тайминги: ~1.0с от конца речи до первого звука ответа, greeting TTFB 0ms (cached PCM).
 
-┌─────────────── Основной сервер 72.56.64.91 ────────────────────────┐
-│ nginx proxy :8095 (UFW: only 185.207.66.201) — только для ТЕКСТА   │
-│    ├─ /openai/   → https://api.openai.com/  (text: gpt-5.2)        │
-│    └─ (legacy: /groq/, /elevenlabs/ — мёртвые ветки голоса)        │
-└────────────────────────────────────────────────────────────────────┘
-```
+Ключевые env-переключатели: `VOICE_PROMPT_MODE=rizalta|atlantis`, `AUTO_HANGUP_ENABLED=true`, `STT_MODE=grpc|rest`, `YANDEX_STT_EOU_MODE=high`, `VOICE_VAD_PROVIDER=silero|energy` (energy = L1 rollback). UFW whitelist: 22/tcp + Telfin SIP 5090/udp (`46.229.221.93` + `213.170.84.105`) + RTP 10000-20000/udp.
 
-**Архитектурное решение (16.04.2026):** После миграции голосового стека на Yandex Cloud (все API доступны из России напрямую) — proxy на 72.56.64.91 **больше не участвует в голосовом пути**. Остаётся для текстового стека (OpenAI gpt-5.2). Двухсерверная архитектура сохраняется: Телфин блокирует SIP по IP (403 Forbidden Ip) — VPS в белом списке.
+Фичи 18.04: Phase 1 VLAT-07 (EOU median −742мс), auto-hangup после farewell/`[END]`, MixMonitor recording (WAV→Opus ротация >72h), dial.py realtime stream в терминал.
 
-**AudioSocket протокол (TCP):**
-- Пакет: `[1 byte type][2 bytes length BE][payload]`
-- UUID=0x01 (16 bytes binary), Audio=0x10 (slin 8kHz, 320 bytes/20ms), Hangup=0x00, Error=0xFF
-- Телфин отправляет INVITE на extension 's'
-
-**Тайминги (конец речи → первый звук ответа, обновлено 17.04):**
-- VAD silence: 500ms (поднято с 300ms на звонке e177d7ad — резало фразы на микропаузах)
-- STT (Yandex REST v1): ~290ms
-- LLM (YandexGPT 5 Pro напрямую): ~620ms медиана
-- TTS first byte (Yandex Alena v1 LPCM напрямую): ~155ms
-- **Итого: ~1.0с ощущаемая пауза** (чуть выше чем 860ms после 16.04 из-за более длинного silence threshold — цена за целые фразы)
-- Greeting TTFB: **0ms** (cached PCM), 1ms до первого фрейма
-
-**Silero VAD v4 (17.04):**
-- Модель: `/opt/sofia-voice/silero_vad.onnx`, 1.8MB, md5 `03da8de2fec4108a089b39f1b4abefef`
-- Singleton ONNX session (eager-load в `main()`, лог «Silero VAD loaded: ... (v4, 8kHz, md5=...)»)
-- Per-call `SileroVAD` instance: `_h`, `_c` LSTM states `[2, 1, 64]`, buffer до 512B chunks (256 samples @ 8kHz = 32ms)
-- Threshold 0.5 одинаково для normal VAD и barge-in (было 0.6 для barge-in — не пробивалось)
-- Inputs: `input` float32 [1, N], `sr` int64 scalar, `h`/`c` state tensors
-- **v5 не подошла для 8kHz** (13% detection на чистой речи, оптимизирована под 16kHz). v5 сохранена как `silero_vad_v5.onnx.legacy`
-- Python deps: `onnxruntime 1.24.4`, `numpy 2.4.4` (numpy подтянулся с onnxruntime)
-
-**Barge-in логика (17.04, итоговая):**
-- Константы: `BARGE_IN_COOLDOWN=0.5` (отбрасывание VAD-фреймов после TTS cancel против echo cascade), `MIN_SPEECH_BYTES_FOR_STT=10240` (0.64с), `BARGE_IN_SILENCE_RESET=0.3`
-- Флаги: `_is_responding` (весь STT→LLM→TTS) vs `_tts_playing` (только реальное TTS output). Barge-in detection **только** при `_tts_playing=True` — иначе pre-TTS race (клиент договаривает свою реплику в фазе LLM → cancel_playback=True до первого chunk → 0s played)
-- Confirm frames: 10 для Silero (~200ms sustained speech с учётом chunking), 5 для energy (100ms, 1:1 frame→RMS). Bifurcate через `confirm_frames = 10 if self._vad is not None else 5` — energy-ветка сохраняет rollback fidelity для `VOICE_VAD_PROVIDER=energy`
-- Sliding-silence reset: `_last_barge_in_speech_ts` отслеживает последний is_speech=True; buffer clear только после 300ms sustained silence (защита от Silero chunking альтернации True/False)
-- После cancel TTS `_process_turn` finally **очищает** barge-in buffer (без re-feed в VAD — иначе cascade на polluted fragment >MIN_BYTES)
-- Dispatch `_handle_packet`:
-  ```
-  if not _is_responding:  → _process_audio_vad (normal turn)
-  elif _tts_playing:      → _detect_barge_in
-  else:                   → ignore (STT/LLM фаза, клиент договаривает свою реплику)
-  ```
-
-**UFW firewall (17.04):**
-- Whitelist: 22/tcp (SSH), 46.229.221.93:5090/udp (Telfin SIP /32), 10000-20000/udp (RTP media)
-- Default deny incoming / allow outgoing
-- Закрыты наружу: UDP 5060 (chan_sip legacy), UDP 4569 (IAX2) — только сканеры ими пользовались
-- Эффект: рост `/var/log/asterisk/full.log` **44 KB/s → 0 B/s** (SIP-сканеры блокируются на SYN, Asterisk их не видит)
-- fail2ban: P1 backlog, не развёрнут (UFW даёт 100%). Контракт для fail2ban готов
-
-**SIP данные Телфин:**
-- Сервер: sipproxy.telphin.ru:5068
-- Добавочный: 15400*101, пароль: jAJk6585e
-- Кодеки: alaw, ulaw (G.711)
-- Номер: +79310091644
-
-**Файлы голосового стека:**
-- `voice_asterisk.py` — AudioSocket сервер + VAD + STT/LLM/TTS pipeline
-- `asterisk/pjsip.conf` — PJSIP trunk к Телфин
-- `asterisk/extensions.conf` — dialplan (входящий → AudioSocket)
-- `asterisk/logger.conf` — логирование Asterisk
-- `/etc/nginx/sites-available/llm-proxy` — nginx proxy config
-- VPS: `/opt/sofia-voice/` — рабочая директория, venv, .env, sofia_voice.db
-
-**Деплой голосового стека:**
-```bash
-# Скопировать код на VPS
-scp voice_asterisk.py sofia-voice:/opt/sofia-voice/
-scp core/pipeline.py sofia-voice:/opt/sofia-voice/core/
-# Перезапустить через systemd (НЕ nohup!)
-ssh sofia-voice "systemctl restart sofia-voice"
-# Проверить статус и логи
-ssh sofia-voice "systemctl status sofia-voice"
-ssh sofia-voice "journalctl -u sofia-voice -n 50 --no-pager"
-```
-
-**systemd unit (создан 10.04):** `/etc/systemd/system/sofia-voice.service` — Type=simple, Restart=on-failure, RestartSec=3, EnvironmentFile=/opt/sofia-voice/.env, LOGURU_COLORIZE=false. Автостарт при ребуте включён (enabled).
-
-**VOICE_PROMPT_MODE (08.04):**
-- env-переменная `VOICE_PROMPT_MODE`: `atlantis` (default) или `rizalta`
-- Переключает greeting в `voice_asterisk.py` (`_send_greeting()`) и system prompt в `core/pipeline.py` (`stream_voice_response()`)
-- На VPS `.env`: `VOICE_PROMPT_MODE=rizalta`
-- `VOICE_SYSTEM_PROMPT` — Atlantis (входящая квалификация), НЕ ТРОГАТЬ
-- `VOICE_SYSTEM_PROMPT_RIZALTA` — RIZALTA v4.2 (18.04): секции ЧЕЛОВЕЧНОСТЬ + ФАКТЫ-ДОСЛОВНО + МОЖНО ВАРЬИРОВАТЬ (variant pools для pitch-2 closer / offer / messenger / farewell), инструкция `[END]` в конце прощальной реплики (feeds auto-hangup). Без представления, двухчастный каноничный питч, логика мессенджеров, вход 15 млн, Совкомбанк/Сбер ипотека. Коммиты: `ffcde20e` (v4), `ab90940b` (v4.1), `110a6a3c` (v4.2)
-
-**Phase 1 VLAT-07 — `max_pause_between_words_hint_ms=700` (18.04, `393eb062`):**
-- Env `YANDEX_MAX_PAUSE_HINT_MS=700` в .env на VPS. 0 = Yandex internal default (rollback).
-- Hint в `DefaultEouClassifier` передаётся через `yandex_stt_grpc.py:120-125`.
-- EOU_WAIT median **1778 → 1036мс (−742мс, −42 %)**, p95 **2148 → 1446мс**.
-- Per-category: short 1924→1011, medium 1790→1145, long 1662→1076.
-- L0 rollback: `sed -i 's/=700/=0/' /opt/sofia-voice/.env && systemctl restart sofia-voice`.
-
-**EOU instrumentation (18.04, `d2f875d1`):**
-- Per-turn `EOU_WAIT uuid=... turn=N eou_wait_ms=M text_len=K` в journalctl.
-- Phantom EOU rate ~54 % (Yandex protocol artefact — duplicate eou_update per real one, харamless но noise).
-
-**Auto-hangup после Sofia farewell (18.04, `b78fe04c`):**
-- Hybrid detection: farewell keyword в last 80 chars response OR `state.dialog_finished` (set by `[END]` marker в pipeline.py).
-- Keywords: «хорошего дня», «всего доброго», «удачного дня», «удачной дороги», «до свидания», «не буду занимать».
-- Timing: 1500 ms polite pause после TTS → AS_TYPE_HANGUP 0x00 frame → Asterisk terminates PJSIP leg.
-- Barge-in interlock: 15 × 100ms чанков sleep, cancel если `_is_responding=True` (user заговорил) или `_closed=True`.
-- Gate: `VOICE_PROMPT_MODE=rizalta` (Atlantis НЕ затронут).
-- Env: `AUTO_HANGUP_ENABLED=true` (default). Rollback: `false` + restart.
-- Observability 3 лога: `AUTO_HANGUP detect|exec|cancel uuid=... reason=...`.
-
-**[END] handler fix (18.04, `19102904`):**
-- Pre-existing bug: `if "[END]" in answer_text` substring match в `core/pipeline.py:1061` ДО anti-hallucination filter — LLM emit `[END]` в hallucinated tail → `state.dialog_finished=True` flipped → false auto-hangup (впервые проявился call `f184c7be`).
-- Fix: swap order (hallucination filter FIRST) + anchor `answer_text.rstrip().endswith("[END]")`.
-- ⚠ **Тот же баг лежит в text-path `core/pipeline.py:319-326` для PROD** (Telegram/Radist/web) — P1 backlog.
-
-**MixMonitor recording (18.04, `19a49fa6`):**
-- Запись всех звонков в оба dialplan-контекстах (`[from-telphin]` + `[outbound-audiosocket]`).
-- Path: `/var/lib/asterisk/recordings/YYYY-MM-DD/<UUID>.wav` (mono mix обеих сторон, raw PCM 8 kHz, no beep).
-- TZ: VPS `Etc/UTC` → `STRFTIME` даёт UTC дату (MSK hour − 3 = UTC hour для навигации).
-- Cron `/etc/cron.d/sofia-voice-recordings`: 03:00 WAV→Opus 32 kbps (>72 h), 03:30 удалить Opus >30 дней.
-- Script: `/opt/sofia-voice/bin/rotate_recordings.sh` (idempotent, atomic WAV→Opus).
-- Log: `/var/log/sofia-voice/recordings_rotate.log`.
-- Disk projection: ~230 MB WAV/day → ~23 MB Opus → ~700 MB retention 30 дней (<20 GB free).
-
-**dial.py realtime streaming (18.04, `4ce5881b`):**
-- Во время звонка в терминал dial.py стримятся USER/SOFIA/AUTO_HANGUP события из journalctl с префиксом `[HH:MM:SS]`.
-- Gate: env `STREAM_TRANSCRIPT=true` default.
-- Start on channel state→Up, stop on Ended (orphan-safe через finally).
-- Post-call SQLite transcript (offset timestamps `[MM:SS]`) выводится как прежде — визуально не путается с realtime block (wall-clock).
-
-**Yandex TTS Alena (текущий провайдер с 16.04):**
-- Голос: `alena`, формат `lpcm` 8kHz 16-bit mono (готовый для AudioSocket, без ffmpeg)
-- Модель: Yandex SpeechKit v1 REST, endpoint `tts.api.cloud.yandex.net/speech/v1/tts:synthesize`
-- TTFB ~150-185ms медиана (single REST POST, весь PCM одним ответом)
-- Настройки: emotion=neutral, speed=1.1
-- SSML: `<break time="300ms"/>` (Yandex требует integer ms, не дробные секунды как 0.3s)
-- Cached greetings (0ms TTFB): `greeting_rizalta.pcm` (198318 bytes, 12.4s аудио, регенерирован 16.04 под RIZALTA v3), `greeting_atlantis.pcm`
-- Регенерация cached PCM: inline Python через `synthesize_tts_yandex()` → запись файла
-- Ударения: ~99% на русском (лучше ElevenLabs), voice cloning отсутствует
-- `add_ssml_breaks()` — функция в voice_asterisk.py, автоматически вставляет breaks между предложениями
-- Env VPS: `YC_API_KEY`, `YC_FOLDER_ID`, `YANDEX_TTS_VOICE=alena`, `YANDEX_TTS_EMOTION=neutral`, `YANDEX_TTS_SPEED=1.1`, `VOICE_TTS_PROVIDER=yandex`
-
-**ElevenLabs legacy (dead branch, rollback-only):**
-- Переключается через `VOICE_TTS_PROVIDER=elevenlabs` в .env
-- Nastya PVC, voice_id=YjESejviApN7SHrbfnA2, модель `eleven_v3`, через proxy 72.56.64.91:8095 → ffmpeg MP3→PCM
-- Код сохранён для экстренного rollback
+**Полный текст: [docs/VOICE_ARCHITECTURE.md](docs/VOICE_ARCHITECTURE.md)** — AudioSocket протокол, Silero VAD внутренности, barge-in логика, Phase 1/EOU instrumentation/auto-hangup/[END] fix/MixMonitor детали, VOICE_PROMPT_MODE, Yandex TTS Alena конфиг, ElevenLabs legacy rollback, SIP данные Телфин, деплой, systemd unit.
 
 **Стадии (RAG stages):** GREETING → ACTUALIZATION → QUALIFICATION → PRESENTATION → OBJECTION → MEETING → CLOSING
 
@@ -316,42 +156,9 @@ ssh sofia-voice "journalctl -u sofia-voice -n 50 --no-pager"
 
 ### Уроки из ошибок
 
-- **SOFIA_PATH баг (21.03):** dev писал в prod БД. Фикс: `SOFIA_PATH=/opt/sofia-gpt-dev` в .env
-- **process_message сбрасывает dialog_finished:** строки 52-56. Async Extractor в voice вызывает extract_sync напрямую
-- **hash() для ID:** непредсказуем между процессами. Фикс: autoincrement из БД (web_api) или md5 (voice)
-- **reasoning модели + max_tokens:** gpt-5.2 с reasoning тратит токены на думание, max_output_tokens=4000 для текста, 800 для голоса
-- **ElevenLabs блокер:** бесплатный план → HTTP 402, WS молча глотал. Pipecat таймауты: `AUDIO_CONTEXT_TIMEOUT` пропатчен до 15с в системном пакете — при обновлении повторить
-- **Yandex STT ломает turn detection:** push_frame напрямую, user_aggregator не видит. Нужна интеграция
-- **Yandex TTS REST v1 + латиница:** плохие ударения. Нужен gRPC v3 + unsafe_mode
-- **user_aggregator пушит LLMContextFrame**, НЕ LLMRunFrame — SofiaPipelineProcessor ловит именно его
-- **Retell двойной ответ:** два response_required подряд. Фикс: `is_responding` флаг
-- **Observer portback (08.04 → 10.04):** при git recovery 08.04 коммит 49659ffb был сделан напрямую в PROD. Не попал в DEV. 2 дня мина лежала — любой деплой DEV→PROD молча удалил бы Observer. Нашли через аудит. Урок: прямые prod-коммиты = источник расхождения, требуют немедленного backport или явной фиксации в SESSION_LOG.
-- **Аудит должен сверять git и диск (10.04):** первая версия аудита AUDIT_ATLANTIS заявила "prod и dev разошлись по bot_server.py, prod новее по Observer". При детальной проверке оказалось что коммит 49659ffb есть только в prod-git, в dev его вообще нет. Аудит смотрел только на файлы на диске. Урок: при сравнении веток проверять `git log --oneline`, `md5 git HEAD:file`, `md5 on-disk file` — все три показателя, и явно различать "расхождение в git" vs "расхождение между git и диском".
-- **Claude Code и cwd при git-операциях (10.04):** при проверке коммита 49659ffb Claude Code дважды запустил `git log` с неправильным cwd (из /opt/sofia-gpt когда ожидался /opt/sofia-gpt-dev), получил ложный вывод "коммит есть в обеих ветках". Исправлено явным `cd` перед каждой git-командой. Урок: в multi-repo окружении всегда явный `cd /opt/sofia-gpt` или `cd /opt/sofia-gpt-dev` перед git-вызовами, не полагаться на текущую cwd.
-- **logrotate-конфиг Asterisk сломан с 2022 (15.04):** glob-паттерны `messages`/`full`/`*_log` в `/etc/logrotate.d/asterisk` не матчили реальные файлы `messages.log`/`full.log`. logrotate каждую неделю молча проходил мимо. Файлы росли 4 года. Урок: при первой установке любого пакета — проверять что его logrotate-конфиг реально матчит файлы которые сервис создаёт. Простой способ: `logrotate --debug /etc/logrotate.d/<package>` — должен показать "considering log <file>" для каждого ожидаемого файла.
-- **Длинные ответы оркестратора на простые вопросы (15.04):** на вопросы вида "есть ли N в твоём промпте" Claude.ai давал эссе с ходом рассуждений вместо списка из N пунктов. Урок зафиксирован в ORCHESTRATOR_RULES.md.
-- **Отсутствие прохода "что забыл" перед отдачей контракта (15.04):** Claude.ai отдавал спринт-контракт с 10 пропусками, которые нашёл только ретроспективно после вопроса Сергея. Урок: обязательная финальная проверка контракта на полноту перед отдачей. Зафиксировано в ORCHESTRATOR_RULES.md.
-- **--vacuum-size vs --vacuum-time для journalctl (15.04):** на disk-rescue `journalctl --vacuum-size=200M` снёс логи тихих сервисов целиком. Для тихих сервисов (sofia-voice пишет редко) `--vacuum-time=7d` предсказуемее.
-- **Bitrix-фильтр TITLE LIKE для ATL даёт ложноотрицательный результат (15.04):** Sofia в ATL-flow обновляет существующий Tilda-лид (TITLE "Клиент #Планировки Атлантис"), а не создаёт свой "AI-бот: ...". Фильтр по TITLE никогда не найдёт ATL-клиентов. Правильный фильтр — `SOURCE_ID=397 + DATE_MODIFY`, кросс-проверка с `radist_leads`/`radist_messages`. Общее правило: вывод "пусто → значит нет" подозрителен и требует второй независимой проверки.
-- **git cherry-pick не работает между отдельными git-репо (15.04):** PROD `/opt/sofia-gpt/.git` и DEV `/opt/sofia-gpt-dev/.git` — **разные репозитории**, не ветки одного. `git cherry-pick <sha>` в PROD падает с `fatal: bad revision` потому что SHA существует только в DEV-objects. Рабочий способ — `cd /opt/sofia-gpt-dev && git format-patch -1 <sha> --stdout | (cd /opt/sofia-gpt && git am --no-verify -)`. Альтернатива — `cd /opt/sofia-gpt && git fetch /opt/sofia-gpt-dev main && git cherry-pick FETCH_HEAD` (оставляет dangling objects до gc). Прецедент `3892c648 (cherry-pick 7f4c96a2)` в PROD сделан именно через format-patch+am, метка «cherry-pick» — лишь в commit message.
-- **DEV→PROD деплой: учитывать файлы-потребители, не только целевые (15.04):** при деплое `config/source_objects.py` с расширенным `prompt_addon` в PROD выяснилось что PROD `core/pipeline.py` вообще **не читает** `prompt_addon` (нет ветки `if obj_config.get("prompt_addon")`), и в `source_objects.py` PROD этого ключа никогда не было. Atlantis-addon — DEV-only фича целиком, 400+ строк разницы в pipeline.py PROD vs DEV. Урок: в investigate_first обязательно сравнивать не только целевые файлы, но и файлы-потребители (pipeline.py когда трогаем config/*.py, bot_server.py когда трогаем core/bitrix.py). Иначе деплой превращается в «данные есть, код-потребителя нет → мёртвый текст в словаре».
-- **Groq может убрать модель без предупреждения (16.04):** `moonshotai/kimi-k2-instruct` полностью исчезла из Groq `/v1/models` между 10-16.04. Все 5 звонков 16.04 получили 404, голос мёртв. Урок: (1) мониторить доступность модели периодически (curl models endpoint), (2) fallback-модель должна РЕАЛЬНО работать (OpenAI fallback без proxy = pre-existing мёртвый код), (3) не полагаться на одну модель одного провайдера для production без запасного пути.
-- **Barge-in buffer re-feed пропустил echo через MIN_BYTES порог (16.04):** на звонке UUID 21b96626 после cancel TTS `_process_turn` finally переместил 13120-байтовый barge-in buffer (0.82с) в `_speech_buffer` и скормил VAD после cooldown. Буфер оказался **чуть выше** порога `MIN_SPEECH_BYTES_FOR_STT=10240` → прошёл фильтр → STT получил смесь echo+обрывка речи → вернул garbled «Со стороны» → LLM интерпретировал как невнятное и выдал фолбэк «плохо слышно» из блока «Не расслышала» RIZALTA-промпта. Правильный фикс: **не re-feed'ить** barge-in buffer в VAD, просто очищать после cooldown и ждать свежую речь клиента. Урок: MIN_BYTES порог — только первая линия защиты; любой источник «накопленного накануне» буфера (barge-in, начало захвата до cooldown) может протечь выше порога. Второй слой защиты должен быть в местах, откуда поступают эти источники.
-- **Silero VAD v5 vs v4 на 8kHz (17.04):** v5 (2.3MB, latest release на apr 2026) даёт ~13% speech detection на чистой русской речи 8kHz lpcm (проверено на `greeting_rizalta.pcm`). v4 (1.8MB, md5 `03da8de2fec4108a089b39f1b4abefef`) на тех же данных даёт 73% (86% на speech+noise). Причина: v5 тренирована преимущественно на 16kHz, деградация на 8kHz — документированная проблема в GitHub issues репо. Вывод: **для телефонии 8kHz — v4 mandatory**. v5 сохранена как `silero_vad_v5.onnx.legacy` для re-test когда upstream улучшит 8kHz support.
-- **AudioSocket / Silero chunking mismatch (17.04):** AudioSocket шлёт 320-byte фреймы (20мс @ 8kHz), Silero требует 512-byte chunks (32мс = 256 samples @ 8kHz). Внутренний буфер `SileroVAD.is_speech()` копит фреймы до 512B chunks и обрабатывает. Результат: **`is_speech()` альтернирует True/False** на каждом AudioSocket-фрейме даже при непрерывной речи (обрабатывается каждый ~1.6-й фрейм). Любая логика «5 consecutive speech frames» на булевом выходе ломается — counter сбрасывается при любом False. Симптом: `BARGE-IN confirmed = 0` за весь звонок (bcf67956, 17.04). Фикс: **sliding-silence pattern** — track `_last_barge_in_speech_ts`, clear buffer только после 300ms sustained silence. Урок: любой VAD с внутренней буферизацией под чанк не 1:1 с входным фреймом требует временно́го окна, а не consecutive-counter.
-- **Pre-TTS race (17.04):** `_is_responding=True` устанавливался в начале `_process_turn` (ещё до STT). `_detect_barge_in` вызывался всё это время. Клиент договаривал свою же реплику после VAD endpoint → Silero детектил → BARGE-IN confirmed → `_cancel_playback=True` **до того** как TTS начал играть → первый `_send_audio` видел cancel → break → `total=first_chunk_time` (0s audio). Звонок 89dadd55: Sofia сгенерировала корректный ответ 2 раза, клиент услышал тишину. Фикс: отдельный флаг `_tts_playing` (True только между первой реально отправленной frame и завершением TTS). Barge-in detection только при `_tts_playing=True`. Во время STT/LLM фреймы клиента **игнорируются**. Урок: `_is_responding` (широкая фаза pipeline) ≠ `_tts_playing` (узкая фаза активного output) — разные флаги для разных целей.
-- **Energy-ветка = L1 rollback, не просто dead branch (17.04):** дважды в одной сессии Сергей настоял на bifurcate по `self._vad is not None` для sliding-silence (коммит 97934f47) и для confirm_frames (коммит 95b4eeae) — чтобы поведение при `VOICE_VAD_PROVIDER=energy` осталось дословно тем же как было. Мотивация: energy — это rollback на случай внезапной проблемы с Silero (одной env-переменной). Если «по пути» менять семантику energy-ветки — через месяц при срочном rollback получим сюрприз. Паттерн: всегда `if self._vad is not None: <new>  else: <original>` с комментарием `kept for rollback fidelity`.
-- **VAD_SILENCE 300ms резал фразы на микропаузах (17.04):** клиент говорит «Скажите примерно минимальную цену **и** [срок]» — Silero endpoint сработал на паузе между «и» и «срок» (300ms silence). STT вернул оборванную фразу, Sofia ответила только на «цену», клиент пытался продолжить → deadlock (UUID e177d7ad). Фикс: поднять `VAD_SILENCE_THRESHOLD` до 0.5s. Параллельно поднят barge-in confirm с 5 до 10 frames (было 100ms, стало 200ms) — одиночный «ээ»/вдох больше не убивает TTS. Временная заплатка до Yandex STT v3 gRPC streaming (server-side EOU определяет конец фразы, убирает silence threshold целиком).
-- **Late-night session через полночь UTC/MSK (17.04):** одна непрерывная рабочая сессия может начаться 16.04 вечером и продолжиться после полуночи как 17.04 утром. Git log timestamps показывают реальную последовательность. Не полагаться на mental-date, проверять `git log --since`. Коммит `5104a0cc` сделан 23:07 MSK 16.04 — в SESSION_LOG зафиксирован как «утренний fix 17.04» поскольку является первым действием сессии.
-- **Split-deploy как честное решение при разошедшихся DEV↔PROD (15.04):** когда деплой одного коммита обнаруживает что в PROD отсутствует инфраструктура, **не** делать слепой cp всей фичи из DEV. Правильно: применить **только** те файлы, где diff чистый и инфраструктура готова, остальное отложить в backlog как `ATLANTIS_ADDON_INFRA_PORTBACK`-подобный спринт с полной разведкой и планом порта. Сегодняшний `d60e9b0b` — прецедент: `sofia_prompt_v2.py` в PROD применён через `git show <sha> -- <file> | git apply --index -`, Atlantis-addon часть отложена.
-- **fail2ban autostart после apt install (17.04):** пакетный установщик на Ubuntu 24.04 сразу запускает fail2ban с дефолтным `banaction=nftables` из `/etc/fail2ban/jail.d/defaults-debian.conf`. При правке banaction в `jail.local` нужен `systemctl restart fail2ban`, **НЕ** `reload` — reload не перевыполняет actionban, остаются phantom in-memory баны без реальных правил firewall (fail2ban думает что IP забанены, но в UFW/nftables их нет). После restart состояние восстанавливается из persistence DB корректно и баны переносятся в новый banaction. Урок: при первой настройке fail2ban или смене banaction — всегда restart.
-- **fail2ban jail.d vs jail.local приоритет (17.04):** порядок загрузки конфигов — `jail.conf` → `jail.d/*.conf` → `jail.local` → `jail.d/*.local`, побеждает последний. Наш `jail.local` на VPS sofia-voice корректно перекрывает `defaults-debian.conf` по `banaction` (nftables → ufw). Но если в будущем кто-то положит новый `*.local` файл в `jail.d/` — он побьёт наш `jail.local`. При ревью изменений fail2ban-конфига всегда смотреть **всю** `jail.d/` тоже, не только `jail.local`. Проверка фактической конфигурации: `fail2ban-client -d | grep -iE "<jail>.*action"` показывает итоговые actionban-команды.
-- **gRPC recv_loop race при teardown (17.04, Phase 2A YANDEX_STT_V3_INFRA_v1):** при callback-based gRPC-клиенте с bidirectional stream сервер может прислать валидное событие (например `eou_update`) **уже после** нашего `close()` — recv-task ещё жив, ивент доходит до callback. Если в except-ветках recv-loop слепо ставить `self._broken = True`, любое `CANCELLED`/другое отклонение во время нашего же teardown ложно помечает stream как сломанный. Это отравит fallback-логику caller'а (будем думать что gRPC умер, а мы сами закрыли). Правильный паттерн: **`if not self._closed: self._broken = True`** в каждой except-ветке `_receive_loop` — установка broken-флага только при ошибках в течение жизни stream'а, не при teardown. Подтверждено smoke-тестом Yandex STT v3 (320B silence → eou_update t=0ms пришёл во время close(), `is_broken` остался False благодаря защите).
-- **fail2ban backend для Asterisk (17.04):** Asterisk 20 на Ubuntu 24.04 из пакета Debian/Ubuntu **не пишет** в systemd journal (`journalctl -u asterisk` → `No entries`), только в `/var/log/asterisk/{messages,full}.log`. Глобальный дефолт `backend=systemd` из `defaults-debian.conf` при этом применяется ко всем jail без явного override — asterisk-jail читал бы пустой journal и фильтр никогда бы не сматчил. Фикс: явный `backend = auto` в `[asterisk]` секции (или `backend = polling`) — тогда jail использует `logpath=/var/log/asterisk/messages.log` и реально работает. Общее правило: при задании нового jail всегда явно указывать backend, не полагаться на глобальный дефолт из дистрибутивных `jail.d/*.conf`.
-- **AudioSocket dialplan app требует RFC-4122 UUID, не `${UNIQUEID}` (17.04 вечер, outbound v1):** Asterisk'овский `${UNIQUEID}` имеет формат `<epoch>.<counter>` (пример `1776428982.328`) и **отклоняется** `app_audiosocket.c: Failed to parse UUID`. Канал мгновенно hangup'ается, CDR billsec=0. Для inbound `[from-telphin]` уже правильно использовался `${SHELL(cat /proc/sys/kernel/random/uuid)}`. Первый outbound dialplan context попытался взять UNIQUEID «чтобы уменьшить fork» — не сработало. Вернулись к SHELL-генерации зеркально inbound. CDR ↔ AudioSocket correlation остаётся через CDR поле `lastdata` (содержит UUID+host:port), не через `uniqueid`. **Правило:** любой AudioSocket/external-media app в dialplan → UUID из `SHELL(cat /proc/sys/kernel/random/uuid)`, не из встроенных переменных.
-- **CDR CSV с embedded newlines ломает byte-line counting (17.04 вечер, dial.py hang):** `sum(1 for _ in open(cdr_path, "rb"))` считает `\n` байт-level, но CDR rows могут содержать embedded newlines в quoted CallerID полях. На 17.04 наблюдалось: 256 byte-newlines vs **254 csv.reader rows** на одном файле. Если использовать byte-count для `initial_lines` → `rows[initial_lines:]` даёт empty slice → matcher ничего не находит → dial.py висит до timeout. **Правило:** для любого CSV-aware кода считать строки только через `csv.reader`, не через byte-level newline count. Прецедент `24dfc4b8`.
-- **`core show channels concise` field-index fragile между версиями Asterisk (17.04 вечер):** в Asterisk 20 concise-вывод имеет **14 полей** через `!`, uniqueid на **индексе 13**. Предположение parts[12] (вероятно из Asterisk 18 документации) возвращает пустоту или не-uniqueid → `find_cdr_by_uniqueid(garbage)` никогда не match'ит, dial.py висит на polling'е. **Правило для парсинга concise:** substring-match на известных маркерах состояния (`"!Up!" in line`, `"!Ring" in line`, substring канального имени) вместо `parts[N]`. Правильный индекс для Asterisk 20: 13; не фиксить в коде без live-теста с каналом на линии. Прецедент зафиксирован в P3 backlog.
-- **Два Telphin SIP IP в identify match (17.04 вечер):** `pjsip show endpoints` для Telphin trunk показывает match на **46.229.221.93/32** И **213.170.84.105/32**. Исторически UFW whitelist был только на первый (добавлен 17.04 утром). Outbound тесты показали: если Telphin приходит с второго IP на 5090/udp, UFW дропает. Добавили 213.170.84.105 в UFW whitelist. **При появлении третьего IP** — Telphin иногда расширяет edge-сеть — нужно мониторить `pjsip show endpoints` в контексте identify match и синхронизировать UFW. Команда проверки: `asterisk -rx "pjsip show endpoints" | grep -A1 "Identify:"`.
+~30 прецедентных уроков из сессий 21.03–18.04.2026 с датами, SHA коммитов, UUID звонков. Категории: prod/dev drift и git recovery, Silero VAD / AudioSocket chunking mismatch, barge-in pre-TTS race, fail2ban autostart / backend / jail.d приоритет, Yandex STT v3 gRPC teardown race, Groq model outage, AudioSocket UUID parsing, CDR CSV parsing, logrotate-конфиг Asterisk, Bitrix TITLE-фильтр vs SOURCE_ID, git cherry-pick между репо, Claude Code cwd в multi-repo, reasoning-модели + max_tokens, ElevenLabs блокер, user_aggregator Pipecat.
+
+**Полный текст: [docs/LESSONS_LEARNED.md](docs/LESSONS_LEARNED.md)** — все уроки дословно с техническими деталями, командами rollback, прецедентами.
 
 ## .env ключи
 
@@ -378,6 +185,8 @@ ssh sofia-voice "journalctl -u sofia-voice -n 50 --no-pager"
 
 ## Docs (справочники)
 
+- `docs/VOICE_ARCHITECTURE.md` — **полная архитектура голосового стека** (вынесено из CLAUDE.md 19.04): AudioSocket, Silero VAD v4, Yandex STT gRPC, Phase 1 VLAT-07, auto-hangup, MixMonitor, VOICE_PROMPT_MODE
+- `docs/LESSONS_LEARNED.md` — **прецедентные уроки 21.03–18.04** (вынесено из CLAUDE.md 19.04): ~30 уроков с SHA, UUID, командами rollback
 - `docs/SOFIA_CURRENT.md` — текущий статус, таблица сервисов, тайминги
 - `docs/SOFIA_TASKS.md` — задачи и бэклог
 - `docs/KNOWLEDGE_INDEX.md` — лог решений, уроки из ошибок, инструкции отката
@@ -408,6 +217,8 @@ scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/SESSION_LOG.md ~/projects_claude
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/CLAUDE.md ~/projects_claude/Sofia/
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/ORCHESTRATOR_RULES.md ~/projects_claude/Sofia/docs/
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/SPRINT_TEMPLATE_v2.md ~/projects_claude/Sofia/docs/
+scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/VOICE_ARCHITECTURE.md ~/projects_claude/Sofia/docs/
+scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/LESSONS_LEARNED.md ~/projects_claude/Sofia/docs/
 scp -P 2222 root@72.56.64.91:/root/.claude/projects/-opt-sofia-gpt-dev/memory/project_prod_dev_drift.md ~/projects_claude/Sofia/memory/
 scp -P 2222 root@72.56.64.91:/root/.claude/projects/-opt-sofia-gpt-dev/memory/user_sergey.md ~/projects_claude/Sofia/memory/
 scp -P 2222 root@72.56.64.91:/root/.claude/projects/-opt-sofia-gpt-dev/memory/project_voice_sprint_next.md ~/projects_claude/Sofia/memory/
