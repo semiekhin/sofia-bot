@@ -684,8 +684,47 @@ async def start_distribution_bp(lead_id: int) -> bool:
         return False
 
 
+async def get_lead_status(lead_id: int) -> str | None:
+    """Получить STATUS_ID лида из Bitrix.
+
+    Fail-safe: при любой ошибке API (network / timeout / невалидный ответ /
+    пустой result) возвращает None — caller должен трактовать None как
+    «не NEW» и НЕ выполнять перезапись ASSIGNED, чтобы перестраховаться и
+    не трогать лид, над которым может уже работать менеджер.
+    """
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                BITRIX_BASE_URL + "crm.lead.get",
+                params={"id": lead_id},
+            ) as resp:
+                result = await resp.json()
+                lead = result.get("result") or {}
+                status = lead.get("STATUS_ID")
+                return status if status else None
+    except Exception as e:
+        log.warning(f"⚠️ [BITRIX] get_lead_status error for lead #{lead_id}: {e}")
+        return None
+
+
 async def finalize_lead(db_path: str, lead_id: int) -> None:
-    """Завершение работы с лидом: сменить ответственного на BP-assigned + запустить БП."""
+    """Завершение работы с лидом: сменить ответственного на BP-assigned + запустить БП.
+
+    Защита от перезаписи менеджера: перед перезаписью ASSIGNED проверяем
+    STATUS_ID. Если лид уже не в стадии NEW — менеджер взял в работу,
+    заглушаем Sofia для этого клиента через manager_active и выходим.
+    """
+    status = await get_lead_status(lead_id)
+    if status != "NEW":
+        user_id = find_user_id_by_lead(db_path, lead_id)
+        if user_id:
+            set_manager_active(db_path, user_id, True)
+        log.warning(
+            f"⚠️ [FINALIZE_SKIP] lead #{lead_id} in stage={status} (not NEW), "
+            f"user {user_id} muted"
+        )
+        return
+
     log.info(f"[BITRIX] Финализация лида #{lead_id}")
     await set_lead_assigned(lead_id, BITRIX_BP_ASSIGNED_ID)
     await start_distribution_bp(lead_id)

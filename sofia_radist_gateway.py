@@ -38,9 +38,11 @@ from core.bitrix import (
     create_or_update_lead,
     finalize_lead,
     find_recent_atlantis_lead,
+    get_lead_status,
     is_manager_active,
     save_original_assigned,
     set_lead_assigned,
+    set_manager_active,
     update_lead,
     SOFIA_AI_USER_ID,
 )
@@ -494,6 +496,20 @@ async def _radist_finalize_timeout(
             history = get_history(channel, chat_id, limit=100)
             lead_id = get_radist_lead_id(user_id)
 
+            # Stage guard: если менеджер уже взял лид (не NEW) — заглушаем
+            # Sofia для этого user и не трогаем Bitrix совсем.
+            if lead_id:
+                status = await get_lead_status(lead_id)
+                if status != "NEW":
+                    set_manager_active(DB_PATH, user_id, True)
+                    log(
+                        f"⚠️ [TIMEOUT_SKIP] lead #{lead_id} in stage={status} "
+                        f"(not NEW), user {user_id} muted"
+                    )
+                    radist_reminder_tasks.pop(user_key, None)
+                    radist_reminder_sent.pop(user_key, None)
+                    return
+
             # Получаем сохранённый TG username для передачи в Bitrix
             stored_tg = get_tg_username(channel, chat_id)
             tg_url = f"https://t.me/{stored_tg}" if stored_tg else ""
@@ -555,6 +571,19 @@ async def radist_send_reminder(
         if last_msg.get("role") != "assistant":
             return
 
+        # Stage guard перед отправкой напоминания: если менеджер взял лид,
+        # Sofia молчит (manager_active=True → Sofia отключена во всех каналах).
+        lead_id = get_radist_lead_id(user_id)
+        if lead_id:
+            status = await get_lead_status(lead_id)
+            if status != "NEW":
+                set_manager_active(DB_PATH, user_id, True)
+                log(
+                    f"⚠️ [REMINDER_SKIP] lead #{lead_id} in stage={status} "
+                    f"(not NEW), user {user_id} muted"
+                )
+                return
+
         # Отправляем напоминание через Radist
         reminder_text = random.choice(REMINDER_PHRASES).format(name=user_name)
         success = await send_message(connection_id, chat_id, reminder_text)
@@ -585,6 +614,19 @@ async def radist_send_reminder(
             last_time
             and (datetime.now().timestamp() - last_time) >= TIMEOUT_AFTER_REMINDER - 30
         ):
+            # Свежий stage-check перед финализацией (стадия могла поменяться
+            # за 15 мин sleep после первой проверки перед отправкой напоминания).
+            lead_id = get_radist_lead_id(user_id)
+            if lead_id:
+                status = await get_lead_status(lead_id)
+                if status != "NEW":
+                    set_manager_active(DB_PATH, user_id, True)
+                    log(
+                        f"⚠️ [REMINDER_SKIP] lead #{lead_id} in stage={status} "
+                        f"(not NEW) before finalize, user {user_id} muted"
+                    )
+                    return
+
             await _radist_finalize_timeout(
                 user_key,
                 user_id,
