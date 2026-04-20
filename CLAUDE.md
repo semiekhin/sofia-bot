@@ -60,7 +60,11 @@ Python 3.12, FastAPI, SQLite, OpenAI gpt-5.2 (Responses API), ChromaDB (RAG, tex
 
 Pacing 20.04 (коммит `8f3eeaf0`): **`_speak_pcm=sleep(0.020)`**, **`_speak=sleep(0.019)`** (асимметрия под разный event loop overhead — 855us в активном `_speak` с gRPC+Silero vs 610us в тишине `_speak_pcm`). Target wall_per_chunk = 20ms = audio rate. До 20.04 было `sleep(0.018)` → AudioSocket buffer overflow → дроп фреймов → проглатывания слогов. После фикса: 0 dropouts, correlation greeting-source vs MixMonitor 0.987 (было 0.034). VPS апгрейд 1→2 vCPU 20.04 — аппаратно ok, но к проглатываниям не относился (см. SESSION_LOG 20.04).
 
-Открыто на 21.04: «склейки внутри слов» (шероховатость на стыках слогов в TTS — не dropouts, другой класс артефактов). Диагностика через existing A/B файлы на Mac (`call_8ad55f5b_reply{5,8}_{baseline,48k,jane}.wav`) — бесплатный первый шаг.
+Post-mortem 20.04 вечер: инцидент 14:56–15:53 UTC (Asterisk 193% CPU / load 27) — **root cause orphan AudioSocket channels** от 4 подряд `systemctl restart sofia-voice` во время активных звонков. Python TCP socket (port 9090) умирает, Asterisk PJSIP-канал остаётся с работающим `AudioSocket()` app → tight retry loop на dead socket. Safety net (`ExecStop=hangup_audiosocket.sh` + cron load_watchdog) draft'нут, деплой отложен до первых пилотных звонков 21.04. Secondary — kernel 6.8.0-110 PSI bug (D-state SSH сессии, P2).
+
+🔴 **КРИТИЧЕСКОЕ ОПЕРАЦИОННОЕ ПРАВИЛО:** НЕ делать `systemctl restart sofia-voice` во время активных звонков — до деплоя safety net это единственная защита от orphan AudioSocket. Перед любым hot-patch: `ssh sofia-voice 'asterisk -rx "core show channels count"'`, убедиться `0 active channels`, только тогда restart. Planned deploy'и — в окно тишины между тестерами.
+
+Открыто на 21.04 (carry-over P1, не блокер): «склейки внутри слов» на **cached greeting** (live TTS чистый после speed=1.2). Speed A/B (1.1→1.0→1.2) показал что 1.2 помогает live, но не cached → путь проблемы в static file readback / SSML break gaps / waveform phase при сохранении. Бесплатная диагностика: выключить cached-load на 1 звонок, MixMonitor diff live vs cached.
 
 **Полный текст: [docs/VOICE_ARCHITECTURE.md](docs/VOICE_ARCHITECTURE.md)** (hot-reference) и **[docs/VOICE_TECH_STACK_FULL.md](docs/VOICE_TECH_STACK_FULL.md)** (исчерпывающий 49KB стек от SIP INVITE до клиента, 19 шагов, 25 параметров с `file:line`, diagnostic команды).
 
