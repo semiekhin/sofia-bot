@@ -58,9 +58,11 @@ Python 3.12, FastAPI, SQLite, OpenAI gpt-5.2 (Responses API), ChromaDB (RAG, tex
 
 Фичи 18.04: Phase 1 VLAT-07 (EOU median −742мс), auto-hangup после farewell/`[END]`, MixMonitor recording (WAV→Opus ротация >72h), dial.py realtime stream в терминал.
 
-Пилот-аудит 19.04 (9 WAV за 18.04): A/B Yandex TTS через прямой curl (baseline/48k_soxr/jane × 4 фразы) исключил TTS как источник проглатываний слогов. Live-эксперимент с отключённым MixMonitor показал частичное улучшение — 1 vCPU VPS подтверждён как главный bottleneck (конкуренция Silero VAD GIL + gRPC STT + asyncio TTS pacing + MixMonitor I/O + SQLite writes). Приоритет 20.04 — апгрейд до 2-4 vCPU.
+Pacing 20.04 (коммит `8f3eeaf0`): **`_speak_pcm=sleep(0.020)`**, **`_speak=sleep(0.019)`** (асимметрия под разный event loop overhead — 855us в активном `_speak` с gRPC+Silero vs 610us в тишине `_speak_pcm`). Target wall_per_chunk = 20ms = audio rate. До 20.04 было `sleep(0.018)` → AudioSocket buffer overflow → дроп фреймов → проглатывания слогов. После фикса: 0 dropouts, correlation greeting-source vs MixMonitor 0.987 (было 0.034). VPS апгрейд 1→2 vCPU 20.04 — аппаратно ok, но к проглатываниям не относился (см. SESSION_LOG 20.04).
 
-**Полный текст: [docs/VOICE_ARCHITECTURE.md](docs/VOICE_ARCHITECTURE.md)** — AudioSocket протокол, Silero VAD внутренности, barge-in логика, Phase 1/EOU instrumentation/auto-hangup/[END] fix/MixMonitor детали, VOICE_PROMPT_MODE, Yandex TTS Alena конфиг, ElevenLabs legacy rollback, SIP данные Телфин, деплой, systemd unit.
+Открыто на 21.04: «склейки внутри слов» (шероховатость на стыках слогов в TTS — не dropouts, другой класс артефактов). Диагностика через existing A/B файлы на Mac (`call_8ad55f5b_reply{5,8}_{baseline,48k,jane}.wav`) — бесплатный первый шаг.
+
+**Полный текст: [docs/VOICE_ARCHITECTURE.md](docs/VOICE_ARCHITECTURE.md)** (hot-reference) и **[docs/VOICE_TECH_STACK_FULL.md](docs/VOICE_TECH_STACK_FULL.md)** (исчерпывающий 49KB стек от SIP INVITE до клиента, 19 шагов, 25 параметров с `file:line`, diagnostic команды).
 
 **Стадии (RAG stages):** GREETING → ACTUALIZATION → QUALIFICATION → PRESENTATION → OBJECTION → MEETING → CLOSING
 
@@ -190,7 +192,8 @@ Stage-guard также встроен в `sofia_radist_gateway.py`: `radist_send
 
 ## Docs (справочники)
 
-- `docs/VOICE_ARCHITECTURE.md` — **полная архитектура голосового стека** (вынесено из CLAUDE.md 19.04): AudioSocket, Silero VAD v4, Yandex STT gRPC, Phase 1 VLAT-07, auto-hangup, MixMonitor, VOICE_PROMPT_MODE
+- `docs/VOICE_ARCHITECTURE.md` — **hot-reference архитектуры голосового стека** (вынесено из CLAUDE.md 19.04): AudioSocket, Silero VAD v4, Yandex STT gRPC, Phase 1 VLAT-07, auto-hangup, MixMonitor, VOICE_PROMPT_MODE, Pacing fix 20.04
+- `docs/VOICE_TECH_STACK_FULL.md` — **исчерпывающий технический стек** (создан 20.04, 49KB): пошаговый путь байта от SIP INVITE до звука клиента, 10 разделов, 19 шагов, 25 параметров с `file:line`, таблица 27 файлов, 2 приложения (навигация по коду + diagnostic команды)
 - `docs/LESSONS_LEARNED.md` — **прецедентные уроки 21.03–18.04** (вынесено из CLAUDE.md 19.04): ~30 уроков с SHA, UUID, командами rollback
 - `docs/SOFIA_CURRENT.md` — текущий статус, таблица сервисов, тайминги
 - `docs/SOFIA_TASKS.md` — задачи и бэклог
@@ -223,6 +226,7 @@ scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/CLAUDE.md ~/projects_claude/Sofi
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/ORCHESTRATOR_RULES.md ~/projects_claude/Sofia/docs/
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/SPRINT_TEMPLATE_v2.md ~/projects_claude/Sofia/docs/
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/VOICE_ARCHITECTURE.md ~/projects_claude/Sofia/docs/
+scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/VOICE_TECH_STACK_FULL.md ~/projects_claude/Sofia/docs/
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/LESSONS_LEARNED.md ~/projects_claude/Sofia/docs/
 scp -P 2222 root@72.56.64.91:/root/.claude/projects/-opt-sofia-gpt-dev/memory/project_prod_dev_drift.md ~/projects_claude/Sofia/memory/
 scp -P 2222 root@72.56.64.91:/root/.claude/projects/-opt-sofia-gpt-dev/memory/user_sergey.md ~/projects_claude/Sofia/memory/
