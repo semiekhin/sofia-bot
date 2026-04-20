@@ -1029,7 +1029,7 @@ class AudioSocketCall:
                     )
                     first_sent = True
                 offset += frame_size
-                await asyncio.sleep(0.018)
+                await asyncio.sleep(0.020)
         except Exception as e:
             logger.error(f"Cached PCM playback error: {e}")
         finally:
@@ -1087,7 +1087,7 @@ class AudioSocketCall:
                         first_audio_time = (time.monotonic() - t0) * 1000
                         logger.info(f"TTS first audio chunk: {first_audio_time:.0f}ms")
                     offset += frame_size
-                    await asyncio.sleep(0.018)
+                    await asyncio.sleep(0.019)
             else:
                 # ElevenLabs legacy: streaming via ffmpeg
                 async for pcm_chunk in stream_tts_audio(clean_text):
@@ -1112,7 +1112,7 @@ class AudioSocketCall:
                             logger.info(
                                 f"TTS first audio chunk: {first_audio_time:.0f}ms"
                             )
-                        await asyncio.sleep(0.018)
+                        await asyncio.sleep(0.019)
 
                 # Send remaining buffer
                 if buffer and not self._closed and not self._cancel_playback:
