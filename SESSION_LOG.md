@@ -172,6 +172,97 @@ Pacing-фикс убрал проглатывания/дропы, но оста�
 
 ---
 
+## 20.04.2026 (session 2, вечер) — RIZALTA v4.3, speed A/B (1.1→1.0→1.2), codec recon
+
+### TL;DR
+
+После утреннего pacing-фикса прошла вторая серия спринтов: (A) RIZALTA промпт v4.3 с ценами + порогом входа + фактологическими правками, (B) A/B эксперимент TTS speed 1.1→1.0→1.2 с регенерацией cached greeting трижды, (C) синхронизация hardcoded greeting text в `voice_asterisk.py` с v4.3, (D) разведка SIP codec negotiation через Telphin — вывод: G.722 недоступен на уровне провайдера, Stage 2 отменён. Итог: **speed=1.2 зафиксирован** как оптимальный (на live-речи субъективное улучшение), greeting-артефакты остались — требуют отдельного диагностического спринта.
+
+### Хронология коммитов (DEV)
+
+| # | SHA | Subject |
+|--:|------|---------|
+| 1 | `0cedd8f0` | feat(voice): RIZALTA v4.3 — pricing + entry threshold + fact corrections |
+| 2 | `e8cbd0b6` | fix(voice): sync hardcoded greeting with v4.3 prompt (remove 'окупаемостью') |
+
+### Sprint B — RIZALTA v4.3 (pricing + entry threshold)
+
+- `VOICE_SYSTEM_PROMPT_RIZALTA` в `core/pipeline.py` (lines 646-842), md5 `583a977df…` → `e5c7af2e9…`
+- Убрано из canonical pitch + 3 few-shot примеров: «окупаемостью от семи лет»
+- Добавлено: «Минимальная цена апартамента — пятнадцать миллионов рублей за двадцать два квадратных метра», «Минимальный вход в сделку — четыре миллиона семьсот тысяч рублей»
+- Snapshot: `/tmp/pipeline.py.before_v43_20260420_174825` (VPS)
+- Задеплоено через scp DEV→VPS, sofia-voice restart, live-звонок подтвердил
+
+### Sprint C/E — YANDEX_TTS_SPEED A/B (1.1→1.0→1.2)
+
+- **Baseline** `YANDEX_TTS_SPEED=1.1` (код default, в .env не было): `greeting_rizalta.pcm` 198318 B, 12.39s, md5 `8e553237…`
+- **Speed=1.0** (Sprint C): добавлена строка `YANDEX_TTS_SPEED=1.0` в `/opt/sofia-voice/.env`, PCM регенерирован нативным импортом `voice_asterisk` (скрипт `/tmp/regen_greeting_speed10.py`, использует `synthesize_tts_yandex` + `add_ssml_breaks` из hot path — zero drift). Результат: 205006 B, 12.81s, md5 `fe60bf5d…`. **Non-linear time-stretching** — ожидалось ~13.6s (+10%), получили +3.4%
+- **Greeting sync v4.3** (Sprint D): в `voice_asterisk.py:668` заменил hardcoded literal — убрал «и окупаемостью от семи лет», поставил «в год». После регенерации: 181972 B, 11.37s, md5 `e0e97036…`. Snapshot: `/tmp/voice_asterisk.py.before_greeting_v43_20260420_191636`
+- **Speed=1.2** (Sprint E): `YANDEX_TTS_SPEED=1.2` в .env, регенерация: 150206 B, 9.39s, md5 `44d25194…`. Сжатие −17.4% от speed=1.0 (против ожидания −16.7% — близко к линейному в эту сторону)
+- **Ear-validation Сергея:** speed=1.2 на live-речи даёт субъективное улучшение (меньше «тягучести»), на cached greeting артефакты остались стабильными на всех трёх значениях speed
+
+### Sprint F — SIP codec recon (Stage 1, Stage 2 отменён)
+
+- Текущая конфигурация `/etc/asterisk/pjsip.conf` VPS: `disallow=all; allow=alaw; allow=ulaw`. Snapshot: `/tmp/pjsip.conf.before_codec_20260420_164536` (md5 `c52386700b…`)
+- `pjsip set logger on` → 2 тестовых звонка Сергея → `pjsip set logger off`
+- **Telphin INVITE offer (идентичен в обоих звонках):**
+  ```
+  m=audio <port> RTP/AVP 8 0 101
+  a=rtpmap:8 PCMA/8000    ← alaw
+  a=rtpmap:0 PCMU/8000    ← ulaw
+  a=rtpmap:101 telephone-event/8000
+  ```
+- **G.722 Telphin не offerит.** Asterisk в 200 OK зеркалит тот же порядок, согласован **alaw** (первый общий).
+- `core show translation`: slin16→g722 фактически быстрее (6000μs) чем slin16→alaw/ulaw (14500μs), но это неприменимо — G.722 нет в offerе
+- **Вывод:** переключение alaw↔ulaw — косметика, оба 64 kbit/s PCM 8 kHz, одна и та же психоакустика G.711. HD-звук через Telphin невозможен без изменений на стороне провайдера. Это **fundamental limit** PSTN через Telphin — документируется и принимается
+- **Stage 2 отменён** (перестановка кодеков в pjsip.conf) — нет данных, что это улучшит качество. Снапшот оставлен в /tmp как страховка, rollback не требуется
+
+### Ключевые архитектурные паттерны (закрепились)
+
+- **Read-only разведка как первый этап двухэтапного спринта** — Sprint F разделили на «разведка» (логи SDP через `pjsip set logger`) и «модификация». После разведки решение было отменить модификацию. Спринт не закрыт как «выполнен» — закрыт как «проверено, оказался no-op». Разведочный этап сэкономил правку pjsip.conf, которая дала бы 0 эффекта
+- **Native-import регенерация PCM** (`sys.path.insert + import voice_asterisk`) — использует те же `add_ssml_breaks` + `synthesize_tts_yandex` что и runtime hot path. Zero drift от production, гарантирует что cached greeting соответствует точно тому же пути синтеза что live TTS
+- **Субъективная ear-validation после объективных метрик** — speed=1.2 снижает PCM на 17.4% (объективно), но финальное решение за ухом Сергея: live улучшилось, greeting не изменился
+- **Провайдер PSTN как hard ceiling качества** — до сегодня считали что возможно договориться о HD через кодек. Оказалось: Telphin offerит только G.711 (alaw/ulaw), G.722/Opus не на столе. Потолок SIP-линии — 8kHz narrowband независимо от нашей TTS. Для HD нужна смена провайдера или переход на Over-The-Top (WebRTC/Daily) для конкретных сценариев
+
+### Обнаруженные побочные проблемы
+
+- **scp `-P 2222` port conflict** — при активном алиасе `sofia-voice` в `~/.ssh/config` (port 22) передача `-P 2222` перекрывает алиас и идёт на несуществующий порт. **Правило:** не использовать `-P 2222` вместе с алиасом `sofia-voice`
+- **SSH session timeout при load 28** — во время длинной работы на VPS произошёл session hang (auth проходил, channel_open_confirmation не приходил). Сергей рестартанул Asterisk, load упал 28→5, VPS восстановился. Причина load 28 не диагностирована (P2): либо запущенный Silero inference + ffmpeg rotation + gRPC STT race, либо disk I/O
+- **Регенерационный скрипт с hardcoded assert** — `/tmp/regen_greeting_speed10.py` содержал `assert va.YANDEX_TTS_SPEED == 1.0`, для speed=1.2 пришлось патчить через sed. Минор
+
+### Открыто в следующую сессию
+
+**🟡 «Greeting PCM playback artefacts» — почему cached звучит хуже live при идентичном transcoding**:
+
+Speed=1.2 дал улучшение на live TTS, но **не** на cached greeting. При том что транскодинг пути одинаковые (оба `_speak_pcm` → AudioSocket → G.711 alaw → Telphin). Гипотезы:
+1. **Static file artefacts при повторных воспроизведениях** — что-то в пути чтения файла/передачи чанков, чего нет в live-stream
+2. **Silence/breath между `add_ssml_breaks` гранями** генерируется детерминированно в cached, но адаптивно в live (из-за разных начальных условий SSML parser / TTS engine state)
+3. **Артефакты ре-воспроизведения PCM, сохранённого при одном прохождении TTS engine**, которые не слышны в live потому что каждый live-синтез идёт через свежий prepare chain
+4. **Физический артефакт waveform phase при 8kHz decimation** из greeting_rizalta.pcm именно — live избегает за счёт непрерывного потока
+
+**Бесплатный первый шаг диагностики:** записать через MixMonitor live-синтез того же greeting-текста без cached PCM (выключить cached-load на 1 звонок), сравнить с MixMonitor'ом звонка где греeting пришёл из cached. Если live чистый — причина в cached-path. Если оба грязные — физика 8kHz/G.711.
+
+Отдельный спринт, P1 в BACKLOG.
+
+### Deploy details
+
+- **sofia-voice**: systemctl active, последний рестарт при Sprint E speed=1.2, PID live
+- **Snapshots в /tmp** (VPS, оставлены для rollback до ребута):
+  - `pipeline.py.before_v43_20260420_174825`
+  - `greeting_rizalta.pcm.before_speed10_20260420_190137`
+  - `voice_asterisk.py.before_greeting_v43_20260420_191636`
+  - `greeting_rizalta.pcm.before_greeting_v43_20260420_191636`
+  - `greeting_rizalta.pcm.before_speed12_20260420_192339`
+  - `pjsip.conf.before_codec_20260420_164536`
+- **Финальный .env VPS:** `YANDEX_TTS_SPEED=1.2` (зафиксировано как оптимальное)
+- **Git DEV**: `0cedd8f0` + `e8cbd0b6` pushed в origin (утро), этот session-close коммит (вечер) — не пушить
+
+### Docs Updates
+
+- Этот session-close коммит — `SESSION_LOG.md` (блок session 2) + `BACKLOG.md` (новый P1). Других docs правок нет.
+
+---
+
 ## 19.04.2026 — CLAUDE.md разгрузка + BITRIX stage-guard (инцидент Елены)
 
 ### TL;DR
