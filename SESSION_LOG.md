@@ -261,6 +261,38 @@ Speed=1.2 дал улучшение на live TTS, но **не** на cached gre
 
 - Этот session-close коммит — `SESSION_LOG.md` (блок session 2) + `BACKLOG.md` (новый P1). Других docs правок нет.
 
+### Sprint G — Asterisk post-mortem (incident 14:56–15:53 UTC)
+
+**Контекст:** во время вечерней серии deploy'ев (4 подряд `systemctl restart sofia-voice` на 14:55/16:02/16:17/16:24 UTC в рамках Sprint B/C/D/E) VPS вошёл в критическое состояние: Asterisk 193.9% CPU (2 ядра в полку), load 27.46, 4 stuck systemd PID в D-state. SSH timeout'ы с основного сервера в 14:55+ UTC. Ликвидация: `systemctl restart asterisk` в 15:53 UTC → load 28→5, sofia-voice сам не трогался. Разведка проведена read-only после восстановления.
+
+**Root cause — orphan AudioSocket channels:**
+- Каждый restart sofia-voice во время активного звонка → Python TCP socket (port 9090) умирает
+- Asterisk PJSIP-канал остаётся активным с работающим `AudioSocket()` dialplan app
+- `app_audiosocket.c` продолжает форвардить RTP от Telphin в dead TCP → tight retry loop с ECONNRESET
+- 4 restart'а × N одновременных звонков = несколько orphan'ов → 193% CPU, 79% sys-time
+- **Конкретные orphan'ы на момент ликвидации:** PJSIP channels `0x09` и `0x0a` (номера ниже чем у каналов 13-14 UTC — пережили 2+ deploy'ев)
+- **Factoid smoking gun:** `asterisk.service: Consumed 1h 56min 44.771s CPU time` при stop'е (2h активной CPU при общем uptime 13ч)
+- **Log silence 13:41 → 15:53 UTC (2h 12min)** — Asterisk физически не успевал флашить логи
+- **Post-restart баг сохранился:** новый orphan `00000004` в 16:50:54 UTC (уже после ликвидации) — подтверждает что root cause в архитектуре, не в конкретных каналах
+
+**Secondary — kernel PSI bug 6.8.0-110:**
+- systemd user-сессии из SSH-логинов (моих retry'ев) застревали в D-state на close() cgroup pressure trigger
+- Stack: `__x64_sys_close → __fput → kernfs_fop_release → cgroup_pressure_release → psi_trigger_destroy → kthread_stop → wait_for_completion`
+- 4 подтверждённых stuck PID (19335/19664/19820/19902), hung_task trace каждые 2 минуты
+- Не источник CPU storm'а (D-state = не потребляет CPU), но источник «13 зомби» в context'е Сергея
+- Лечение: kernel upgrade (отложено, P2 backlog)
+
+**Recon Stage 2A (safety net):**
+- Targeted hangup синтаксис: `asterisk -rx "core show channels concise" | awk -F'!' '$6=="AudioSocket" {print $1}' | xargs -I{} asterisk -rx "channel request hangup {}"` — Asterisk 20 не поддерживает `hangup like <pattern>`
+- Решение 2 файла в `/opt/sofia-voice/bin/`: `hangup_audiosocket.sh` (ExecStop хук) + `load_watchdog.sh` (cron каждые 2 мин, load>15 AND asterisk_cpu>150%, debounce 10 мин, Telegram alert опционально)
+- **Блокер Telegram alert:** `TELEGRAM_BOT_TOKEN` + `ADMIN_CHAT_ID` присутствуют в `/opt/sofia-gpt/.env` (main server), **отсутствуют** в `/opt/sofia-voice/.env` (VPS)
+
+**Deploy решения — отложено на P1:** Сергей выбрал не деплоить safety net прямо сейчас. Причины: (1) root cause понят и контролируется дисциплиной «no restart during calls», (2) ExecStop хук во время звонка обрывает активный разговор — цена для пилота неочевидна, (3) watchdog может ложно сработать если пилот выйдет за пределы экспериментальных оценок load. Вернёмся после первых пилотных звонков с реальными метриками.
+
+**Критическое операционное правило на пилот:** НЕ делать `systemctl restart sofia-voice` во время активных звонков. Если нужен hot-patch — сначала `asterisk -rx "core show channels count"`, убедиться `0 active channels`, только тогда restart. Все planned deploy'и — в окне тишины между тестерами.
+
+**Read-only подтверждение:** 0 write-операций на VPS в post-mortem фазе. Все snapshots 20.04 (pipeline/voice_asterisk/greeting_rizalta.pcm × 3/pjsip.conf) живут в `/tmp` до ребута как страховка L1 rollback.
+
 ---
 
 ## 19.04.2026 — CLAUDE.md разгрузка + BITRIX stage-guard (инцидент Елены)
