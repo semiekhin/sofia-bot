@@ -54,6 +54,8 @@
 - **Итого: ~1.0с ощущаемая пауза** (чуть выше чем 860ms после 16.04 из-за более длинного silence threshold — цена за целые фразы)
 - Greeting TTFB: **0ms** (cached PCM), 1ms до первого фрейма
 
+**Pacing fix (20.04):** `_speak` использует `asyncio.sleep(0.019)`, `_speak_pcm` — `asyncio.sleep(0.020)`. Было общее `0.018` — создавало buffer overflow на Asterisk-side (209 dropout-окон в 12s greeting, подтверждено MixMonitor diff). Асимметрия компенсирует ~1ms event loop overhead от параллельных gRPC STT + Silero inference в активном `_speak`. После фикса per-chunk wall ≈ 20.0ms ровно (audio rate), correlation greeting-source vs MixMonitor = 0.987. Подробности см. `docs/VOICE_TECH_STACK_FULL.md` раздел 10.
+
 **Silero VAD v4 (17.04):**
 - Модель: `/opt/sofia-voice/silero_vad.onnx`, 1.8MB, md5 `03da8de2fec4108a089b39f1b4abefef`
 - Singleton ONNX session (eager-load в `main()`, лог «Silero VAD loaded: ... (v4, 8kHz, md5=...)»)
