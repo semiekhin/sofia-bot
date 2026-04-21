@@ -1,5 +1,81 @@
 # SESSION_LOG — Последние сессии
 
+## 21.04.2026 — Пилот холодного обзвона: инфраструктура workstation + hang bug в dial.py
+
+### TL;DR
+
+Сессия собрала инфраструктуру пилота холодного обзвона за несколько часов утренней работы: 3 новых компонента (dial.py per-turn metrics + recording path + listen_live + ExecStop hangup), 5 реальных звонков холодной базы проведено. Hang bug в dial.py на invalid/unanswered номерах найден через диагностику и починен двумя коммитами — первая попытка (`is not None`) провалилась smoke-тест, рабочая версия требует 3 consecutive Up/Ringing polls перед тем как «channel ever seen». Telphin autodial разведан в публичной доке — НЕЯСНО поддерживается ли AMD + passthrough, Сергей написал менеджеру. CLAUDE.md пополнен секцией «Рабочая станция пилота», новый `docs/PILOT_WORKSTATION_RUNBOOK.md`.
+
+7 коммитов в DEV, not pushed.
+
+### Хронология коммитов
+
+| # | SHA | Subject |
+|--:|------|---------|
+| 1 | `8ac8233f` | feat(dial): per-turn metrics + turn timers + recording path in realtime stream |
+| 2 | `f28cd748` | fix(dial): use CALL_UUID from CDR.lastdata for MixMonitor recording path |
+| 3 | `f501d719` | feat(voice): live audio listen wrapper for pilot |
+| 4 | `37e099a5` | feat(voice): ExecStop hangup AudioSocket orphans on sofia-voice restart |
+| 5 | `2304b075` | docs: pilot operator runbook — three-terminal workflow |
+| 6 | `38c42abf` | fix(dial): early exit when originate produces no channel (v1, flawed) |
+| 7 | `75082b73` | fix(dial): require 3 consecutive Up/Ringing before canceling giveup |
+
+### Sprint 1 — DIAL_PY_METRICS_v1 (`8ac8233f` + `f28cd748`)
+
+Per-turn EOU / LLM / TTS-first-chunk метрики в realtime-стрим `dial.py`, агрегируемые по триггеру `⏱️ Turn timings:`. Timers `[MM:SS]` от call_start для USER/SOFIA/METRICS/AUTO_HANGUP строк. Mixed scheme: `[HH:MM:SS]` wall clock для Ringing/Answered/Ended (удобно cross-ref с CRM). После ANSWERED+billsec≥5: post-call summary выводит `Recording:` путь и `Download (run from your Mac): scp sofia-voice:...` one-liner.
+
+Post-smoke fix (`f28cd748`): первый запуск дал `Recording: not found` т.к. путь строился из `CDR.uniqueid` (`1776758372.14`), а MixMonitor пишет с `${CALL_UUID}` из dialplan (kernel-random RFC-4122 `c83688c7-...`). Retrospective verify на live-файле — путь совпал с реально существующим WAV. Два UUID у Asterisk — выучено.
+
+### Sprint 2 — DIAL_LIVE_LISTEN_v1 (`f501d719`)
+
+`bin/listen_live.sh` — live-прослушка MixMonitor WAV через ssh-pipe + ffplay на Mac. `inotifywait -e create` на каталог `recordings/YYYY-MM-DD/` + `tail -c +0 -F <file.wav>` + exit after 20с idle growth. Mac-side wrapper `while true; do ssh sofia-voice 'listen_live.sh' | ffplay ...; done` автопереключает между звонками.
+
+Smoke провалился первый раз — SSH запрашивал пароль в каждой итерации while-loop. Fix: `ssh-copy-id sofia-voice` на Mac. После — live audio подтверждён, задержка 2-5с приемлема. Финальная команда использует `-f s16le -ar 8000 -ch_layout mono -` (MixMonitor пишет 8kHz mono) + `2>/dev/null` чтобы глушить stderr-статусы листенера.
+
+### Sprint 3 — EXECSTOP_AUDIOSOCKET_CLEANUP_v1 (`37e099a5`)
+
+`bin/hangup_audiosocket.sh` — узкий фильтр: `core show channels concise | awk -F'!' '$6=="AudioSocket" {print $1}' | xargs channel request hangup`. `ExecStop=/opt/sofia-voice/bin/hangup_audiosocket.sh` добавлен в `sofia-voice.service` via `sed`. Unit md5 до `8fdb7808...` → после `0f2a76a6...`. Snapshot `/tmp/sofia-voice.service.before_execstop_20260421_090953`.
+
+Smoke (два phase'а): **Part 1** — restart на активном канале `PJSIP/telphin-endpoint-0000000b`: restart выполнился за **51 мс**, через 3с `core show channels count = 0`, `journalctl -t sofia-voice-hangup` показал `hangup PJSIP/telphin-endpoint-0000000b`, MainPID 24230 → 42525 (auto-restart через `Restart=on-failure`). **Part 2** — normal workflow звонок с graceful hangup клиентом: disposition=ANSWERED billsec=43, ExecStop **не вызван** (Python жив, нет рестарта). Оба passed.
+
+Защита от root-cause 20.04 инцидента задеплоена.
+
+### CLAUDE.md + Pilot operator runbook (`2304b075`)
+
+Новая секция «Рабочая станция пилота (three-terminal workflow)» в CLAUDE.md — T1 Mac listen_live + T2 main-server dial.py + T3 Mac scp download. Плюс строчка про «рестарт безопасен технически, но дисциплина no-restart-mid-call остаётся».
+
+### 5 звонков пилота + hang на 79262228016
+
+Сергей провёл живой обзвон: 11:12:27 +79219662562 ANSWERED 48с, 11:14:41 +79104320164 4с hang-up, 11:15:44 +79181011091 ANSWERED 35с, 11:19:05 +79104320164 3с hang-up, **11:20 +79262228016 — hang 4 мин без summary**. Сергей убил процесс 46783 через `kill`.
+
+### Sprint 4 — HANG_DIAGNOSTIC + DIAL_PY_CHANNEL_GIVEUP_v1 (`38c42abf` → `75082b73`)
+
+**Read-only разведка:**
+- CDR за 11:20–11:27 UTC = пусто (Master.csv последняя строка 11:19:23). Non-ANSWERED за весь день = 0.
+- Asterisk journal 11:19:30–11:28 = пусто. `/var/log/asterisk/full.log` не пишется с 11:16 (logrotate квирк, отдельно).
+- `outbound_2026-04-21.jsonl` не имеет записи для 79262228016 (dial.py убит до writeback).
+- `cdr.conf` — все в `[general]` закомментировано (дефолты). Критическое открытие: дефолтная документация говорит **«outgoing calls always logged regardless of unanswered flag»** — `unanswered=yes` для нашего случая **не помогло бы**. Проблема глубже: Asterisk не создал channel вообще.
+
+**Telphin autodial recon (6 источников):** [Голосовой робот](https://www.telphin.ru/products/virtual-atc/voice-robot) 1790₽/мес, до 100 одновременных, predictive-mode. **AMD и passthrough на внешний SIP endpoint в public docs не упомянуты.** REST API имеет `/callback/` (инициация) и webhooks (dial-out/answer/hangup), но спецификации за Confluence auth'ом. Вердикт: closed-loop voice robot на первый взгляд, нужен ответ менеджера.
+
+**Fix v1 (`38c42abf`) — не сработал:** `channel_ever_seen = True` при любом `state is not None` через 30с giveup. Smoke на 88000000000 — dial.py висел > 60с. Root cause: Asterisk кратковременно создаёт PJSIP channel в state `Ring`/`Other` пока SIP INVITE летит на invalid peer, `is not None` срабатывает → escape навсегда disabled → fallback до 600с.
+
+**Fix v2 (`75082b73`) — рабочий:** счётчик `channel_consecutive`, требует 3 consecutive polls в `("Up", "Ringing")` (≈3с sustained) прежде чем `channel_ever_seen = True`. Сбрасывается на None/Other. Smoke на 88000000000 — **exit за 35.4с** ✓. Regression на +79181011091 — ANSWERED 30с billsec ✓, метрики/transcript/recording все ok.
+
+**Побочная проблема:** stdout всё ещё говорит `Status: FAILED (no CDR after 600s)` даже при 35с exit — общий текст для обеих no-CDR веток. Backlog P1 косметика.
+
+### Новые документы
+
+- `docs/PILOT_WORKSTATION_RUNBOOK.md` — три терминала, состояние 21.04, тонкости (orphan / briefly-existing channels / два UUID / SSH ключ / misleading message / V1 assumption).
+
+### Итог
+
+Инфраструктура пилота полная. Сергей может продолжать обзвон 47+ номеров холодной базы — любой invalid/unanswered номер завершится за 35с, live-прослушка работает, запись скачивается одной командой, restart sofia-voice безопасен.
+
+Carry-over на следующую сессию: (1) Telphin autodial — ждём менеджера, (2) Greeting PCM artefacts — бесплатная диагностика через live-синтез greeting, (3) Misleading FAILED text — косметика.
+
+---
+
 ## 20.04.2026 — pacing fix + локализация проглатывания слогов в голосе
 
 ### TL;DR
