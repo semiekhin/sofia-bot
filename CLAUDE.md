@@ -60,6 +60,8 @@ Python 3.12, FastAPI, SQLite, OpenAI gpt-5.2 (Responses API), ChromaDB (RAG, tex
 
 Pacing 20.04 (коммит `8f3eeaf0`): **`_speak_pcm=sleep(0.020)`**, **`_speak=sleep(0.019)`** (асимметрия под разный event loop overhead — 855us в активном `_speak` с gRPC+Silero vs 610us в тишине `_speak_pcm`). Target wall_per_chunk = 20ms = audio rate. До 20.04 было `sleep(0.018)` → AudioSocket buffer overflow → дроп фреймов → проглатывания слогов. После фикса: 0 dropouts, correlation greeting-source vs MixMonitor 0.987 (было 0.034). VPS апгрейд 1→2 vCPU 20.04 — аппаратно ok, но к проглатываниям не относился (см. SESSION_LOG 20.04).
 
+Pilot-инфра 21.04 (коммиты `8ac8233f` `f28cd748` `f501d719` `37e099a5` `2304b075` `38c42abf` `75082b73`): **dial.py per-turn METRICS** (EOU/LLM/TTS-first-chunk, `[MM:SS]` таймеры, `Recording:` + scp one-liner в post-call), **`bin/listen_live.sh`** (live-прослушка через ssh-pipe+ffplay 8kHz s16le mono, `inotifywait` на сегодняшний recordings dir), **`bin/hangup_audiosocket.sh` + `ExecStop=`** в sofia-voice.service (targeted hangup каналов с `application=AudioSocket` перед SIGTERM → защита от root-cause 20.04 orphan), **dial.py channel_giveup** (требует 3 consecutive Up/Ringing polls — иначе escape через 30с при silent originate failure, фикс hang'а на invalid/unanswered номерах). Runbook: `docs/PILOT_WORKSTATION_RUNBOOK.md`.
+
 Post-mortem 20.04 вечер: инцидент 14:56–15:53 UTC (Asterisk 193% CPU / load 27) — **root cause orphan AudioSocket channels** от 4 подряд `systemctl restart sofia-voice` во время активных звонков. Python TCP socket (port 9090) умирает, Asterisk PJSIP-канал остаётся с работающим `AudioSocket()` app → tight retry loop на dead socket. Safety net (`ExecStop=hangup_audiosocket.sh` + cron load_watchdog) draft'нут, деплой отложен до первых пилотных звонков 21.04. Secondary — kernel 6.8.0-110 PSI bug (D-state SSH сессии, P2).
 
 🔴 **КРИТИЧЕСКОЕ ОПЕРАЦИОННОЕ ПРАВИЛО:** НЕ делать `systemctl restart sofia-voice` во время активных звонков — до деплоя safety net это единственная защита от orphan AudioSocket. Перед любым hot-patch: `ssh sofia-voice 'asterisk -rx "core show channels count"'`, убедиться `0 active channels`, только тогда restart. Planned deploy'и — в окно тишины между тестерами.
@@ -207,6 +209,7 @@ Stage-guard также встроен в `sofia_radist_gateway.py`: `radist_send
 - `docs/ELEVENLABS_V3_RESEARCH.md` — research v3 vs MLv2 vs Flash, API, PVC, pricing (10.04)
 - `docs/AUDIT_ATLANTIS_2026-04-10.md` — полный аудит Атлантиса на 10.04: виджет, Telegram-бот + Тильда (ATL-flow), Radist (@SofiaOazis), Bitrix, контент, git-состояние, переход на @SofiaOazis
 - `docs/ORCHESTRATOR_RULES.md` — правила работы Claude.ai как оркестратора (роль, стиль ответов, перед спринт-контрактами, доверие к Claude Code)
+- `docs/PILOT_WORKSTATION_RUNBOOK.md` — **операторский runbook пилота холодного обзвона** (создан 21.04): 3 терминала (T1 listen_live Mac / T2 dial.py main-server / T3 scp download), состояние инфры, 6 известных особенностей (orphan AudioSocket+ExecStop, briefly-existing channels H1 fix, два UUID Asterisk, V1 concurrent assumption)
 - `SESSION_LOG.md` — последние 10 сессий (компактно)
 - `BACKLOG.md` — невыполненные задачи по приоритетам
 
@@ -263,6 +266,7 @@ scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/SPRINT_TEMPLATE_v2.md ~/pro
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/VOICE_ARCHITECTURE.md ~/projects_claude/Sofia/docs/
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/VOICE_TECH_STACK_FULL.md ~/projects_claude/Sofia/docs/
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/LESSONS_LEARNED.md ~/projects_claude/Sofia/docs/
+scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/PILOT_WORKSTATION_RUNBOOK.md ~/projects_claude/Sofia/docs/
 scp -P 2222 root@72.56.64.91:/root/.claude/projects/-opt-sofia-gpt-dev/memory/project_prod_dev_drift.md ~/projects_claude/Sofia/memory/
 scp -P 2222 root@72.56.64.91:/root/.claude/projects/-opt-sofia-gpt-dev/memory/user_sergey.md ~/projects_claude/Sofia/memory/
 scp -P 2222 root@72.56.64.91:/root/.claude/projects/-opt-sofia-gpt-dev/memory/project_voice_sprint_next.md ~/projects_claude/Sofia/memory/
