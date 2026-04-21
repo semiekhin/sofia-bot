@@ -54,10 +54,30 @@ MIN_BILLSEC_SUCCESS = 5  # ANSWERED with billsec < 5 => still a hangup
 
 # Realtime transcript streaming to terminal (tail journalctl while call is Up)
 STREAM_TRANSCRIPT = os.getenv("STREAM_TRANSCRIPT", "true").lower() != "false"
-_LOG_TS_RE = re.compile(r"^\d{4}-\d{2}-\d{2} (\d{2}:\d{2}:\d{2})\.\d+")
+_LOG_TS_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})\.\d+")
 _LOG_USER_RE = re.compile(r"🎤 USER: (.*)$")
 _LOG_SOFIA_RE = re.compile(r"🧠 SOFIA: (.*)$")
 _LOG_AUTO_RE = re.compile(r"(AUTO_HANGUP (?:detect|exec|cancel)[^\r\n]*)$")
+# Per-turn metrics: EOU (STT end-of-utterance wait) and TTS first audio chunk
+# accumulate across log lines; '⏱️ Turn timings:' carries LLM and acts as the
+# flush trigger (turn closed → print aggregated METRICS line). EOU regex
+# requires text_len>=1 to skip the echo pair with eou_wait_ms=-1 text_len=0.
+# No UUID filter — V1 assumption: one outbound call in flight (matches the
+# USER/SOFIA matchers above and the concise-parser assumption at line 215).
+_LOG_EOU_RE = re.compile(
+    r"EOU_WAIT uuid=[\w-]+ turn=\d+ eou_wait_ms=(\d+) text_len=[1-9]\d*"
+)
+_LOG_TTS_FIRST_RE = re.compile(r"TTS first audio chunk: (\d+)ms")
+_LOG_TURN_RE = re.compile(
+    r"⏱️ Turn timings: STT=\d+ms, LLM=(\d+)ms, TTS=\d+ms, TOTAL=\d+ms"
+)
+
+# Post-call MixMonitor WAV hint. Dialplan writes with
+# STRFTIME(${EPOCH},,%Y-%m-%d) in UTC (cdr.conf usegmtime=yes), so the
+# YYYY-MM-DD directory matches CDR.start[:10] regardless of local TZ.
+# SCP_HOST is the SSH alias on Sergey's Mac, not root@IP.
+RECORDINGS_DIR = "/var/lib/asterisk/recordings"
+SCP_HOST = "sofia-voice"
 
 # NOTE: formula MUST match voice_asterisk.py:125 function call_id_to_user_id.
 # Duplicated intentionally to keep dial.py a standalone script without an
@@ -241,10 +261,32 @@ def _print_state_transition(old: str | None, new: str | None) -> None:
         print(f"[{ts}] Ended")
 
 
-def _log_tail_reader(stdout) -> None:
-    """Read journalctl -f lines, print matched USER/SOFIA/AUTO_HANGUP
-    events as [HH:MM:SS] prefixed lines. Silent on exceptions —
-    stream is best-effort, must not crash dial.py."""
+def _mmss_offset(log_ts_full: str, call_start: dt.datetime) -> str:
+    """Render 'MM:SS' offset from call_start given 'YYYY-MM-DD HH:MM:SS'
+    captured from a log line. Negative/parse-fail clamps to '00:00'."""
+    try:
+        log_ts = dt.datetime.strptime(log_ts_full, "%Y-%m-%d %H:%M:%S").replace(
+            tzinfo=dt.timezone.utc
+        )
+    except ValueError:
+        return "00:00"
+    offset_sec = max(int((log_ts - call_start).total_seconds()), 0)
+    mm, ss = divmod(offset_sec, 60)
+    return f"{mm:02d}:{ss:02d}"
+
+
+def _log_tail_reader(stdout, call_start: dt.datetime) -> None:
+    """Read journalctl -f lines, print matched USER / SOFIA / METRICS /
+    AUTO_HANGUP events as [MM:SS]-prefixed lines (offset from call_start,
+    which is main()'s ts_start — same origin used by post-call
+    format_transcript for consistency).
+
+    Metrics state machine: EOU_WAIT and TTS-first-chunk log lines arrive
+    before the turn's '⏱️ Turn timings:' line, which closes the turn and
+    triggers the aggregated METRICS print. Silent on exceptions — stream
+    is best-effort, must not crash dial.py."""
+    pending_eou: str | None = None
+    pending_tts: str | None = None
     try:
         for raw in iter(stdout.readline, b""):
             try:
@@ -252,26 +294,51 @@ def _log_tail_reader(stdout) -> None:
             except Exception:
                 continue
             ts_m = _LOG_TS_RE.match(line)
-            hms = ts_m.group(1) if ts_m else time.strftime("%H:%M:%S")
+            mmss = _mmss_offset(ts_m.group(1), call_start) if ts_m else "00:00"
+
             u = _LOG_USER_RE.search(line)
             if u:
-                print(f"[{hms}] USER: {u.group(1)}", flush=True)
+                print(f"[{mmss}] USER: {u.group(1)}", flush=True)
                 continue
             s = _LOG_SOFIA_RE.search(line)
             if s:
-                print(f"[{hms}] SOFIA: {s.group(1)}", flush=True)
+                print(f"[{mmss}] SOFIA: {s.group(1)}", flush=True)
                 continue
             a = _LOG_AUTO_RE.search(line)
             if a:
-                print(f"[{hms}] {a.group(1)}", flush=True)
+                print(f"[{mmss}] {a.group(1)}", flush=True)
+                continue
+
+            e = _LOG_EOU_RE.search(line)
+            if e:
+                pending_eou = e.group(1)
+                continue
+            t = _LOG_TTS_FIRST_RE.search(line)
+            if t:
+                pending_tts = t.group(1)
+                continue
+            tr = _LOG_TURN_RE.search(line)
+            if tr:
+                eou = pending_eou if pending_eou is not None else "?"
+                tts = pending_tts if pending_tts is not None else "?"
+                llm = tr.group(1)
+                print(
+                    f"[{mmss}] METRICS: eou={eou}ms llm={llm}ms tts={tts}ms",
+                    flush=True,
+                )
+                pending_eou = None
+                pending_tts = None
     except Exception:
         pass
 
 
-def start_log_tail():
+def start_log_tail(call_start: dt.datetime):
     """Spawn journalctl -u sofia-voice -f reader. Returns (proc, thread)
     tuple or None. Safe on env-disabled / spawn failure — prints a
-    one-line warning and returns None."""
+    one-line warning and returns None.
+
+    call_start is the UTC originate-time timestamp (main()'s ts_start);
+    used by the reader to render [MM:SS] offsets on streamed events."""
     if not STREAM_TRANSCRIPT:
         return None
     try:
@@ -283,7 +350,9 @@ def start_log_tail():
     except Exception as e:
         print(f"(live stream unavailable: {e})", file=sys.stderr)
         return None
-    thread = threading.Thread(target=_log_tail_reader, args=(proc.stdout,), daemon=True)
+    thread = threading.Thread(
+        target=_log_tail_reader, args=(proc.stdout, call_start), daemon=True
+    )
     thread.start()
     return (proc, thread)
 
@@ -336,7 +405,7 @@ def wait_for_cdr(
                 if state != last_state:
                     _print_state_transition(last_state, state)
                     if state == "Up" and log_tail is None:
-                        log_tail = start_log_tail()
+                        log_tail = start_log_tail(ts_start)
                     elif state is None and last_state in ("Ringing", "Up"):
                         stop_log_tail(log_tail)
                         log_tail = None
@@ -420,6 +489,27 @@ def write_jsonl(record: dict) -> str:
     with open(path, "a", encoding="utf-8") as f:
         f.write(json.dumps(record, ensure_ascii=False) + "\n")
     return path
+
+
+def _print_recording_info(rec: dict) -> None:
+    """Post-call hint: MixMonitor WAV path + scp one-liner for the Mac.
+    Gated by caller on ANSWERED + billsec>=MIN_BILLSEC_SUCCESS; shorter
+    calls either have no file or a meaningless stub. Date is CDR.start[:10]
+    (UTC per cdr.conf usegmtime=yes → matches dialplan STRFTIME(${EPOCH},,
+    %Y-%m-%d) used in the MixMonitor path). scp uses the 'sofia-voice'
+    SSH alias which lives on Sergey's Mac — explicitly labelled in the
+    output since dial.py is run from ssh sofia-dev, not the Mac."""
+    uniqueid = rec.get("uniqueid") or ""
+    start = rec.get("start") or ""
+    if not uniqueid or len(start) < 10:
+        return
+    date_dir = start[:10]
+    path = f"{RECORDINGS_DIR}/{date_dir}/{uniqueid}.wav"
+    if os.path.exists(path):
+        print(f"Recording: {path}")
+        print(f"Download (run from your Mac): scp {SCP_HOST}:{path} ~/Desktop/")
+    else:
+        print(f"Recording: {path} (not found — rotated or disabled?)")
 
 
 def disposition_to_exit(disposition: str, billsec: int) -> int:
@@ -562,6 +652,8 @@ def main() -> int:
     print(f"Status: {disposition}")
     print(f"Duration: {duration}s (billsec: {billsec}s)")
     print(f"Log: {path}")
+    if disposition == "ANSWERED" and billsec >= MIN_BILLSEC_SUCCESS:
+        _print_recording_info(rec)
     if transcript_path:
         print(f"Transcript: {transcript_path}")
         print()
