@@ -394,6 +394,11 @@ def wait_for_cdr(
     realtime USER/SOFIA/AUTO_HANGUP events from journalctl while the
     channel is Up (STREAM_TRANSCRIPT=true)."""
     deadline = time.monotonic() + timeout_sec
+    # Silent originate failure (SIP reject / peer unreachable before channel
+    # creation) leaves no CDR; without this early exit polling would run the
+    # full timeout_sec. 30s covers normal SIP invite/ring-start latency.
+    channel_giveup = time.monotonic() + 30
+    channel_ever_seen = False
     last_state: str | None = None
     log_tail = None
     next_cdr_check = time.monotonic()
@@ -402,6 +407,10 @@ def wait_for_cdr(
             time.sleep(STATE_POLL_INTERVAL_SEC)
             if print_status:
                 state = get_channel_state()
+                if state is not None:
+                    channel_ever_seen = True
+                if not channel_ever_seen and time.monotonic() >= channel_giveup:
+                    return None
                 if state != last_state:
                     _print_state_transition(last_state, state)
                     if state == "Up" and log_tail is None:
