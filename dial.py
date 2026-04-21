@@ -496,15 +496,25 @@ def _print_recording_info(rec: dict) -> None:
     Gated by caller on ANSWERED + billsec>=MIN_BILLSEC_SUCCESS; shorter
     calls either have no file or a meaningless stub. Date is CDR.start[:10]
     (UTC per cdr.conf usegmtime=yes → matches dialplan STRFTIME(${EPOCH},,
-    %Y-%m-%d) used in the MixMonitor path). scp uses the 'sofia-voice'
-    SSH alias which lives on Sergey's Mac — explicitly labelled in the
-    output since dial.py is run from ssh sofia-dev, not the Mac."""
-    uniqueid = rec.get("uniqueid") or ""
+    %Y-%m-%d) used in the MixMonitor path).
+
+    Filename is the AudioSocket CALL_UUID (kernel-random RFC-4122 UUID,
+    not the Asterisk CDR uniqueid). Dialplan writes both MixMonitor and
+    AudioSocket with the same ${CALL_UUID}, so CDR.lastdata (passed to
+    AudioSocket) gives us the correct filename. See extensions.conf
+    [outbound-audiosocket]:28-31 for the comment about why Asterisk's
+    ${UNIQUEID} (epoch.counter) cannot be used — AudioSocket rejects it.
+
+    scp uses the 'sofia-voice' SSH alias which lives on Sergey's Mac —
+    explicitly labelled in the output since dial.py is run from ssh
+    sofia-dev, not the Mac."""
+    lastdata = rec.get("lastdata") or ""
+    call_uuid = lastdata.split(",")[0] if lastdata else ""
     start = rec.get("start") or ""
-    if not uniqueid or len(start) < 10:
+    if not call_uuid or len(start) < 10:
         return
     date_dir = start[:10]
-    path = f"{RECORDINGS_DIR}/{date_dir}/{uniqueid}.wav"
+    path = f"{RECORDINGS_DIR}/{date_dir}/{call_uuid}.wav"
     if os.path.exists(path):
         print(f"Recording: {path}")
         print(f"Download (run from your Mac): scp {SCP_HOST}:{path} ~/Desktop/")
