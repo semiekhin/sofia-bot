@@ -74,6 +74,10 @@ Smoke (два phase'а): **Part 1** — restart на активном канал
 
 Carry-over на следующую сессию: (1) Telphin autodial — ждём менеджера, (2) Greeting PCM artefacts — бесплатная диагностика через live-синтез greeting, (3) Misleading FAILED text — косметика.
 
+### Post-session closure — START_SESSION_PARITY
+
+После финального session-end коммита Сергей обновил локальный `~/projects_claude/start-session.sh` на Mac: добавлены scp + cat для 4 docs (`PILOT_WORKSTATION_RUNBOOK.md`, `LESSONS_LEARNED.md`, `VOICE_ARCHITECTURE.md`, `VOICE_TECH_STACK_FULL.md`). Локальный скрипт теперь полностью зеркалит Gitpull блок CLAUDE.md (13 файлов). Закрыл P3 backlog item «парная правка к `af11212f`» от 19.04. Коммит `21df9bd2` + finalizing commit.
+
 ---
 
 ## 20.04.2026 — pacing fix + локализация проглатывания слогов в голосе
