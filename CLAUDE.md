@@ -219,6 +219,37 @@ Stage-guard также встроен в `sofia_radist_gateway.py`: `radist_send
 - Health check: `curl -s http://localhost:8081/api/health`
 - Линтер: `flake8 *.py --max-line-length=120 --exclude=__pycache__ && black *.py`
 
+### Рабочая станция пилота (three-terminal workflow)
+
+Пилот холодного обзвона RIZALTA: три терминала — два на Mac Сергея, один на main-server.
+
+**T1 (Mac) — live-прослушка разговора** (держится открытым весь день пилота, `while`-loop переключается между звонками автоматически):
+
+```bash
+while true; do
+  ssh sofia-voice '/opt/sofia-voice/bin/listen_live.sh' 2>/dev/null | \
+      ffplay -nodisp -autoexit -f s16le -ar 8000 -ch_layout mono -
+done
+```
+
+Задержка 2-5с. Скрипт exit'ит после 20с idle файла — ffplay закрывается по EOF, `while` стартует прослушку следующего звонка.
+
+**T2 (main-server через `ssh sofia-dev`) — исходящий звонок**:
+
+```bash
+ssh sofia-voice 'python3 /opt/sofia-voice/dial.py +7XXXXXXXXXX'
+```
+
+В терминале realtime: `[MM:SS] USER/SOFIA/METRICS (eou/llm/tts)` + `[HH:MM:SS] Ringing/Answered/Ended`. После hangup — post-call summary с `Recording:` путём и `Download (run from your Mac): scp ...` one-liner'ом.
+
+**T3 (Mac) — скачать запись** (опционально, когда нужен аудит конкретного звонка): копипаст `scp`-команды из post-call summary T2.
+
+```bash
+scp sofia-voice:/var/lib/asterisk/recordings/YYYY-MM-DD/<CALL_UUID>.wav ~/Desktop/
+```
+
+**Рестарт sofia-voice во время звонка — безопасно технически** (ExecStop=hangup_audiosocket.sh делает targeted hangup AudioSocket-каналов, orphan не остаётся). Дисциплинарное правило «не рестартовать зря в середине живого разговора» остаётся — клиент услышит обрыв.
+
 ### Gitpull (скачать на локалку для Claude.ai)
 
 ```bash
