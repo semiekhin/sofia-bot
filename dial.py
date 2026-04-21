@@ -397,7 +397,11 @@ def wait_for_cdr(
     # Silent originate failure (SIP reject / peer unreachable before channel
     # creation) leaves no CDR; without this early exit polling would run the
     # full timeout_sec. 30s covers normal SIP invite/ring-start latency.
+    # Counter requires 3 consecutive Up/Ringing polls to confirm a real
+    # channel — a single transient poll (state="Other", or a briefly-created-
+    # then-hungup channel from an invalid dial) must not cancel the giveup.
     channel_giveup = time.monotonic() + 30
+    channel_consecutive = 0
     channel_ever_seen = False
     last_state: str | None = None
     log_tail = None
@@ -407,8 +411,12 @@ def wait_for_cdr(
             time.sleep(STATE_POLL_INTERVAL_SEC)
             if print_status:
                 state = get_channel_state()
-                if state is not None:
-                    channel_ever_seen = True
+                if state in ("Up", "Ringing"):
+                    channel_consecutive += 1
+                    if channel_consecutive >= 3:
+                        channel_ever_seen = True
+                else:
+                    channel_consecutive = 0
                 if not channel_ever_seen and time.monotonic() >= channel_giveup:
                     return None
                 if state != last_state:
