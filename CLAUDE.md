@@ -267,6 +267,7 @@ scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/VOICE_ARCHITECTURE.md ~/pro
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/VOICE_TECH_STACK_FULL.md ~/projects_claude/Sofia/docs/
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/LESSONS_LEARNED.md ~/projects_claude/Sofia/docs/
 scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/PILOT_WORKSTATION_RUNBOOK.md ~/projects_claude/Sofia/docs/
+scp -P 2222 root@72.56.64.91:/opt/sofia-gpt-dev/docs/ATLANTIS_WIDGETS_STATE.md ~/projects_claude/Sofia/docs/
 scp -P 2222 root@72.56.64.91:/root/.claude/projects/-opt-sofia-gpt-dev/memory/project_prod_dev_drift.md ~/projects_claude/Sofia/memory/
 scp -P 2222 root@72.56.64.91:/root/.claude/projects/-opt-sofia-gpt-dev/memory/user_sergey.md ~/projects_claude/Sofia/memory/
 scp -P 2222 root@72.56.64.91:/root/.claude/projects/-opt-sofia-gpt-dev/memory/project_voice_sprint_next.md ~/projects_claude/Sofia/memory/
