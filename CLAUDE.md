@@ -86,6 +86,12 @@ Post-mortem 20.04 вечер: инцидент 14:56–15:53 UTC (Asterisk 193% 
 
 Stage-guard также встроен в `sofia_radist_gateway.py`: `radist_send_reminder` (2 свежих вызова — перед отправкой + перед finalize после sleep) и `_radist_finalize_timeout`.
 
+**RIZALTA Bitrix bypass (29.04, коммит `9947721d` DEV / `3be32d68` PROD).** Для `source_object=="rizalta"` Bitrix-интеграция отключена by design (менеджеры заносят лиды вручную). Двухуровневая защита:
+- **Уровень 1** — `_is_radist_bitrix_session(user_id)` в `sofia_radist_gateway.py:391-408` возвращает `False` для rizalta → шортит все Bitrix-вызовы в обоих caller-блоках (`radist_callback` + `radist_finalize_timeout`). Skip пишется в лог как `🚫 [BITRIX_SKIP] source=rizalta function=<name>`.
+- **Уровень 2** (defense-in-depth) — внутри `create_or_update_lead` в `core/bitrix.py:430-449`: если caller пропустил rizalta-сессию (баг рефакторинга / новый канал-потребитель), payload **подменяется** на `TITLE/NAME="Тестовый лид"`, `PHONE="89181011091"` через `title_override`-параметр в `create_lead`, дедупликация (`find_lead_by_phone`) пропускается. Громкий `🚨 [BITRIX_RIZALTA_LEAK]` ERROR-лог — видно в мониторинге, call-центр по тестовому номеру не звонит.
+
+`bot_server.py` имеет свой `_is_bitrix_session()` без rizalta-фильтра — там работает только level-2 (P3 backlog: добавить level-1 если RIZALTA когда-нибудь придёт через @humanAINeural_bot).
+
 ### Обработка сообщения (message_processor.py)
 
 `process_message()`: Extractor → State update → Signals. Вызывается ДО `run_pipeline()`.
@@ -99,7 +105,7 @@ Stage-guard также встроен в `sofia_radist_gateway.py`: `radist_send
 |-------|------|-----------------|--------|-------------|
 | Telegram бот @humanAINeural_bot | bot_server.py | telegram_user_id (положительный) | Только source-сессии (`_is_bitrix_session()`) | Legacy канал. До 08.04 был основным ATL-каналом через /start ATL. После 08.04 Тильда переключена на @SofiaOazis (Radist), новых ATL-клиентов через @humanAINeural_bot нет. Сервис крутится, решение о статусе (оставить как fallback / потушить) — открытый вопрос. |
 | Web виджет | web_api.py | 9_000_000 + autoincrement | Да, каждое сообщение | UUID session_id → user_id, resume session, Observer |
-| Radist Telegram @SofiaOazis | sofia_radist_gateway.py | -(offset + chat_id)* | Да, полный цикл (find_recent_atlantis_lead → finalize_lead → БП 152) | **Основной ATL-канал с 08.04**. Telegram Business Link https://t.me/m/QinKZEsTNmRi с prefilled "Здравствуйте, отправьте презентацию АК «Атлантис»" → detect_source("Атлантис") → source_object=atlantis → Bitrix full cycle. `process_with_queue()`, Observer, radist_leads таблица |
+| Radist Telegram @SofiaOazis | sofia_radist_gateway.py | -(offset + chat_id)* | Зависит от source_object: для **atlantis** — полный цикл (find_recent_atlantis_lead → finalize_lead → БП 152). Для **rizalta** — **Bitrix отключён by design** (двухуровневая защита, см. ниже) | **Основной ATL-канал с 08.04** + RIZALTA-канал с 29.04. Atlantis: Business Link https://t.me/m/QinKZEsTNmRi с prefilled "Здравствуйте, отправьте презентацию АК «Атлантис»" → detect_source → source_object=atlantis → Bitrix full cycle. RIZALTA: Business Link https://t.me/m/Ho-WF9DgNTgy с prefilled "Здравствуйте! Хочу подобрать номер в RIZALTA RESORT BELOKURIKHA" → detect_source → source_object=rizalta → Bitrix bypass + Observer-tag «· rizalta». `process_with_queue()`, Observer, radist_leads таблица |
 | Radist Max | sofia_radist_gateway.py | -(1000000 + chat_id) | Нет | Dormant с февраля 2026, 0 сообщений за 30 дней |
 | Voice V1 (Retell) | voice_api.py | 7_000_000 + md5[:8] % 1M | Нет | WS адаптер, `is_responding` флаг, `clean_for_voice()` |
 | Voice V2 (Pipecat) | voice_pipecat_daily.py | 8_000_000 + md5[:8] % 1M | Нет | SofiaPipelineProcessor → stream_voice_response(), `sanitize_for_tts()`, Yandex TTS |
@@ -108,7 +114,7 @@ Stage-guard также встроен в `sofia_radist_gateway.py`: `radist_send
 
 ### Конфиги
 
-- `config/source_objects.py`: маппинг объектов. `atlantis`: keywords `[атлантис, atlantis, #ATL]`, context из `objects/atlantis_context.md`, `prompt_addon` = не запрашивать контакты
+- `config/source_objects.py`: маппинг объектов. `atlantis`: keywords `[атлантис, atlantis, #ATL]`, context из `objects/atlantis_context.md`, `prompt_addon` = не запрашивать контакты. `rizalta` (с 29.04, коммит `9947721d`): keywords `[ризалта, rizalta, rizalta resort]` (узкие — без `белокуриха` чтобы не false-match'нуть на упоминание города), context из `objects/rizalta_context.md`, без `prompt_addon` (механизм DEV-only). RIZALTA — **исключительно инвестиционный продукт**, личное проживание собственника не предусмотрено (см. карточку, обновлено `4d79a8ae`).
 - `config/radist_config.py`: API ключи, connection_id → channel mapping (Max=80024, TG=80200), DEV_MODE, webhook port 5002/5001
 - `yandex_tts.py`: REST v1, PCM 48kHz, чанки по 250 символов, голоса alena/marina
 - `yandex_stt.py`: gRPC v3 streaming, protos в yandex_proto/, модель general:rc
@@ -193,6 +199,7 @@ Stage-guard также встроен в `sofia_radist_gateway.py`: `radist_send
 | YANDEX_STT_EOU_MODE | — | — | **high** на voice VPS (Phase 2D, 17.04). default = conservative ~2240ms wait. |
 | STT_MODE | — | — | **grpc** на voice VPS (Phase 2B, 17.04). rest = REST v1 fallback. |
 | STREAM_TRANSCRIPT | — | — | **true** default в dial.py (18.04). false = без realtime stream в терминале. |
+| RIZALTA_OBSERVER_ENABLED | — | **false** | **false** на момент PROD-деплоя 29.04 (приватные тесты Сергея). При false — для rizalta-сессий `notify_observer` пропускает с логом `🚫 [OBSERVER_SKIP]`. Включить обратно: `sed -i 's/false/true/' /opt/sofia-gpt/.env && systemctl restart sofia-radist`. |
 | DAILY_API_KEY | + | — | Daily WebRTC |
 | WEB_API_PORT | 8081 | 8080 | Порт web API |
 
@@ -208,6 +215,7 @@ Stage-guard также встроен в `sofia_radist_gateway.py`: `radist_send
 - `docs/STRESS_RESEARCH.md` — research ударений: ruaccent, U+0301, ElevenLabs (10.04)
 - `docs/ELEVENLABS_V3_RESEARCH.md` — research v3 vs MLv2 vs Flash, API, PVC, pricing (10.04)
 - `docs/AUDIT_ATLANTIS_2026-04-10.md` — полный аудит Атлантиса на 10.04: виджет, Telegram-бот + Тильда (ATL-flow), Radist (@SofiaOazis), Bitrix, контент, git-состояние, переход на @SofiaOazis
+- `docs/ATLANTIS_WIDGETS_STATE.md` — **справочник по двум путям привлечения на Атлантисе** (создан 28.04): форма «Получить презентацию» (Тильда → SOURCE_ID=397) и HTML-виджет «Чат с менеджером» (`widgets/atlantis_chat_widget.html` → дефолтный SOURCE_ID=504). Зафиксирована известная коллизия 60-сек окна `find_recent_atlantis_lead`. Baseline для масштабирования на новые сайты.
 - `docs/ORCHESTRATOR_RULES.md` — правила работы Claude.ai как оркестратора (роль, стиль ответов, перед спринт-контрактами, доверие к Claude Code)
 - `docs/PILOT_WORKSTATION_RUNBOOK.md` — **операторский runbook пилота холодного обзвона** (создан 21.04): 3 терминала (T1 listen_live Mac / T2 dial.py main-server / T3 scp download), состояние инфры, 6 известных особенностей (orphan AudioSocket+ExecStop, briefly-existing channels H1 fix, два UUID Asterisk, V1 concurrent assumption)
 - `SESSION_LOG.md` — последние 10 сессий (компактно)
