@@ -285,20 +285,32 @@ scp -P 2222 root@72.56.64.91:/root/.claude/projects/-opt-sofia-gpt-dev/memory/pr
 
 ### Session End (обязательно в конце каждой сессии)
 
-1. Обновить **SESSION_LOG.md** — что сделано, коммиты, файлы, ключевые метрики
-2. Обновить **BACKLOG.md** — новые задачи в P0, перенести завершённые в "Завершено"
-3. При изменении правил оркестратора — обновить **`docs/ORCHESTRATOR_RULES.md`** (этот файл попадает в контекст Claude.ai через Gitpull, см. блок выше)
-4. Обновить **memory** файлы Claude Code (`/root/.claude/projects/-opt-sofia-gpt-dev/memory/`):
-   - `project_voice_sprint_next.md` — текущий контекст спринта, что делать дальше
-   - `project_voice_vps.md` — VPS архитектура, proxy, SIP данные
-   - `user_sergey.md` — профиль пользователя
-   - `MEMORY.md` — индекс всех memory файлов
-5. Закоммитить и запушить: `git add SESSION_LOG.md BACKLOG.md CLAUDE.md docs/ORCHESTRATOR_RULES.md docs/SPRINT_TEMPLATE_v2.md && git commit && git push`
+**Обязательно обновить:**
+1. **SESSION_LOG.md** — добавить новую запись о сессии (TL;DR, коммиты, ключевые решения)
+2. **BACKLOG.md** — закрытые задачи переместить в секцию "Завершено (<дата>)", добавить новые carry-over в P0-P3
+3. **MEMORY.md** — обновить next-session starter (что было главное в этой сессии, точка входа для следующей)
 
+**Обновить если менялось по теме сессии:**
+4. **CLAUDE.md** — если менялись каналы / архитектура / env / БД / интеграции
+5. **docs/ORCHESTRATOR_RULES.md** — если появились новые правила оркестрации (стоп-поинты, паттерны принятия решений)
+6. **memory/user_sergey.md** — если появились новые наблюдения о паттернах работы Сергея
+7. **memory/project_prod_dev_drift.md** — если был деплой с расхождениями между DEV и PROD
+8. **memory/project_voice_sprint_next.md** + **memory/project_voice_vps.md** — если работали над голосом
+9. **memory/project_rizalta_text_channel.md** + **docs/ATLANTIS_WIDGETS_STATE.md** — если работали над текстовыми каналами / виджетами
+
+**Правило ротации (проверить и применить):**
+10. Если SESSION_LOG.md содержит более 5 заголовков `## ДД.ММ.ГГГГ` — самые старые сессии (всё что после 5-й сверху) перенести в SESSION_LOG_ARCHIVE.md
+11. Если в BACKLOG.md есть свежесозданная секция `## Завершено (<дата>)` — её сразу переносить в BACKLOG_ARCHIVE.md (в активном остаются только P0/P1/P2/P3)
+
+**Закоммитить и запушить:**
 ```bash
-# Скачать memory файлы (для Claude.ai контекста)
-scp -P 2222 root@72.56.64.91:/root/.claude/projects/-opt-sofia-gpt-dev/memory/*.md ~/projects_claude/Sofia/memory/
+cd /opt/sofia-gpt-dev
+git add -A
+git commit -m "session-end <дата>: <короткое описание>"
+git push
 ```
+
+После пуша — Сергей делает обычный `scp` своими 15 строками на Mac.
 
 ## Промпты для Claude Code
 
