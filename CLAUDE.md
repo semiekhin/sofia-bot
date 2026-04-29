@@ -305,7 +305,9 @@ scp -P 2222 root@72.56.64.91:/root/.claude/projects/-opt-sofia-gpt-dev/memory/pr
 **Закоммитить и запушить:**
 ```bash
 cd /opt/sofia-gpt-dev
-git add -A
+git add -u                                    # все изменения в отслеживаемых файлах
+git add <список-новых-файлов-если-есть>       # явно перечислить новые если создавались
+git status                                    # проверить что в индексе только нужное
 git commit -m "session-end <дата>: <короткое описание>"
 git push
 ```
