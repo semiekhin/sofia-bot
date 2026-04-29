@@ -34,6 +34,20 @@ SOURCE_OBJECTS = {
 
 После такого ответа Sofia не пытается продолжать квалификацию по этому витку и ждёт следующего сообщения клиента.""",
     },
+    "rizalta": {
+        "key": "rizalta",
+        "name": "RIZALTA Resort Belokurikha",
+        "short_name": "RIZALTA",
+        "city": "Алтай, Белокуриха",
+        "keywords": ["ризалта", "rizalta", "rizalta resort"],
+        "context_file": "objects/rizalta_context.md",
+        "presentation_url": "",
+        "greeting": (
+            "Рада, что заинтересовались RIZALTA! "
+            "Расскажу подробнее об апарт-отеле в Белокурихе и подберу подходящий вариант — "
+            "только задам пару вопросов."
+        ),
+    },
 }
 
 

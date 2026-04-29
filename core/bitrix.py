@@ -323,12 +323,15 @@ async def create_lead(
     source_id: str = None,
     assigned_id: int = None,
     telegram_url: str = None,
+    title_override: str | None = None,
 ) -> int | None:
     """Создать новый лид. Возвращает lead_id или None.
     По умолчанию ответственный = Sofia AI (428) на время квалификации.
+    title_override — заменяет TITLE целиком (используется для protected-лидов
+    типа RIZALTA, где TITLE должен быть строго "Тестовый лид" без префикса).
     """
     fields = {
-        "TITLE": f"AI-бот: {name}",
+        "TITLE": title_override or f"AI-бот: {name}",
         "NAME": name,
         "COMMENTS": comments,
         "SOURCE_ID": source_id or BITRIX_SOURCE_ID,
@@ -418,6 +421,29 @@ async def create_or_update_lead(
 
     # telegram_url передаём только если есть — не затираем существующее
     tg_url = telegram_url if telegram_url else None
+
+    # ════════════════════════════════════════════════════════════════════
+    # Уровень 2 guard (defense-in-depth для RIZALTA):
+    # если caller не отфильтровал rizalta-сессию через _is_radist_bitrix_session
+    # (уровень 1 сломан), payload подменяется на маркер «Тестовый лид»
+    # с тестовым телефоном 89181011091. Это сигнал call-центру «не звонить»
+    # и громкий аларм для разработчиков — уровень 1 требует починки.
+    # Дедупликация по телефону НЕ выполняется намеренно: чтобы не приклеиться
+    # к чужому существующему лиду с тем же тестовым номером.
+    # ════════════════════════════════════════════════════════════════════
+    if getattr(state, "source_object", None) == "rizalta":
+        log.error(
+            "🚨 [BITRIX_RIZALTA_LEAK] caller-level guard не сработал, "
+            "payload подменён: TITLE='Тестовый лид', PHONE='89181011091'. "
+            "Уровень 1 guard в _is_radist_bitrix_session сломан — расследовать."
+        )
+        return await create_lead(
+            name="Тестовый лид",
+            comments=comments,
+            phone="89181011091",
+            telegram_url=tg_url,
+            title_override="Тестовый лид",
+        )
 
     if lead_id:
         await update_lead(

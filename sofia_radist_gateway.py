@@ -82,8 +82,12 @@ OBSERVER_CHAT_ID = os.getenv("OBSERVER_CHAT_ID")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 
 
-async def get_or_create_topic(phone: str, user_name: str) -> int:
-    """Получает или создаёт тему для клиента в группе наблюдателей"""
+async def get_or_create_topic(
+    phone: str, user_name: str, source_object: str | None = None
+) -> int:
+    """Получает или создаёт тему для клиента в группе наблюдателей.
+    source_object — если задан, добавляется как тег в имя темы:
+    "Иван Петров · rizalta" — чтобы наблюдатели визуально различали объекты."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
 
@@ -96,7 +100,10 @@ async def get_or_create_topic(phone: str, user_name: str) -> int:
 
     # Создаём новую тему
     display_name = user_name if user_name and user_name != phone else phone
-    topic_name = f"{display_name}"
+    if source_object:
+        topic_name = f"{display_name} · {source_object}"
+    else:
+        topic_name = f"{display_name}"
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/createForumTopic"
     payload = {"chat_id": OBSERVER_CHAT_ID, "name": topic_name[:128]}  # Лимит Telegram
@@ -130,15 +137,23 @@ async def get_or_create_topic(phone: str, user_name: str) -> int:
 
 
 async def notify_observer(
-    channel: str, phone: str, user_name: str, direction: str, message: str
+    channel: str,
+    phone: str,
+    user_name: str,
+    direction: str,
+    message: str,
+    source_object: str | None = None,
 ):
-    """Отправляет копию сообщения в тему клиента в группе наблюдателей"""
+    """Отправляет копию сообщения в тему клиента в группе наблюдателей.
+    source_object — если задан, при первом сообщении тема создаётся с тегом
+    источника (см. get_or_create_topic). На существующую тему не влияет —
+    тема создаётся один раз и не переименовывается."""
     if not OBSERVER_CHAT_ID or not TELEGRAM_BOT_TOKEN:
         return
 
     # Получаем или создаём тему для этого клиента
     topic_key = phone if phone else user_name
-    thread_id = await get_or_create_topic(topic_key, user_name)
+    thread_id = await get_or_create_topic(topic_key, user_name, source_object)
 
     emoji = CHANNEL_EMOJI.get(channel, "📨")
 
@@ -379,10 +394,21 @@ def save_radist_lead_id(user_id: int, lead_id: int):
     conn.close()
 
 
-def _is_radist_bitrix_session(user_id: int) -> bool:
-    """Битрикс-интеграция только для сессий с source_object (ATL и др.)."""
+def _get_source_object(user_id: int) -> str | None:
+    """Читает state.source_object для user_id или None."""
     state = state_manager.get_state(user_id)
-    return bool(getattr(state, "source_object", None))
+    return getattr(state, "source_object", None)
+
+
+def _is_radist_bitrix_session(user_id: int) -> bool:
+    """Битрикс-интеграция включена для сессий с source_object,
+    КРОМЕ source_object='rizalta' (для RIZALTA Bitrix отключён by design —
+    менеджеры заносят лиды вручную). Возвращает True только если source_object
+    задан И не равен 'rizalta'."""
+    source = _get_source_object(user_id)
+    if source == "rizalta":
+        return False
+    return bool(source)
 
 
 def _get_radist_user_name(user_id: int) -> str:
@@ -532,6 +558,11 @@ async def _radist_finalize_timeout(
                 await finalize_lead(DB_PATH, final_lead_id)
         except Exception as e:
             logging.warning(f"⚠️ [RADIST BITRIX] finalize_timeout error: {e}")
+    elif _get_source_object(user_id) == "rizalta":
+        log(
+            f"🚫 [BITRIX_SKIP] source=rizalta function=radist_finalize_timeout "
+            f"user_id={user_id}"
+        )
 
     log(f"⏱️ [TIMEOUT] {finish_type} для user_key={user_key}, user_id={user_id}")
 
@@ -599,7 +630,14 @@ async def radist_send_reminder(
                 reminder_text,
             )
             log(f"⏰ [RADIST] Напоминание → {user_name}")
-            await notify_observer(channel, phone, user_name, "out", reminder_text)
+            await notify_observer(
+                channel,
+                phone,
+                user_name,
+                "out",
+                reminder_text,
+                source_object=_get_source_object(user_id),
+            )
 
         radist_reminder_sent[user_key] = True
 
@@ -739,7 +777,14 @@ async def process_incoming_message(
     )
 
     # Отправляем в Observer (входящее)
-    await notify_observer(channel, phone, user_name, "in", user_message)
+    await notify_observer(
+        channel,
+        phone,
+        user_name,
+        "in",
+        user_message,
+        source_object=_get_source_object(user_id),
+    )
 
     # Получаем историю
     history = get_history(channel, chat_id, limit=100)
@@ -785,7 +830,14 @@ async def process_incoming_message(
         log(f"{emoji} [{channel.upper()}] → {user_name}: {response[:50]}...")
 
         # Отправляем в Observer (исходящее)
-        await notify_observer(channel, phone, user_name, "out", response)
+        await notify_observer(
+            channel,
+            phone,
+            user_name,
+            "out",
+            response,
+            source_object=_get_source_object(user_id),
+        )
 
 
 async def generate_response(
@@ -901,7 +953,14 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
         save_message(
             channel, connection_id, chat_id, contact_id, phone, "user", combined_message
         )
-        await notify_observer(channel, phone, user_name, "in", combined_message)
+        await notify_observer(
+            channel,
+            phone,
+            user_name,
+            "in",
+            combined_message,
+            source_object=_get_source_object(user_id),
+        )
 
     # ════════════════════════════════════════════════════════════════════════
     # Guard: manager_active — София молчит
@@ -946,7 +1005,14 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
         success = await send_message(connection_id, chat_id, response)
         if success:
             log(f"{emoji} [{channel.upper()}] → {user_name}: {response[:50]}...")
-            await notify_observer(channel, phone, user_name, "out", response)
+            await notify_observer(
+                channel,
+                phone,
+                user_name,
+                "out",
+                response,
+                source_object=_get_source_object(user_id),
+            )
 
         # ════════════════════════════════════════════════════════════════
         # Bitrix: meeting_agreed → финализация
@@ -998,6 +1064,11 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
                         await finalize_lead(DB_PATH, final_lead_id)
             except Exception as e:
                 logging.warning(f"⚠️ [RADIST BITRIX] create_or_update error: {e}")
+        elif _get_source_object(user_id) == "rizalta":
+            log(
+                f"🚫 [BITRIX_SKIP] source=rizalta function=radist_callback "
+                f"user_id={user_id}"
+            )
 
         # ════════════════════════════════════════════════════════════════
         # Таймеры (если диалог не финализирован)
