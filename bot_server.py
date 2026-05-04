@@ -71,6 +71,10 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 ADMIN_CHAT_ID = int(os.getenv("ADMIN_CHAT_ID", "512319063"))
 OBSERVER_CHAT_ID = int(os.getenv("OBSERVER_CHAT_ID", "-5206139579"))
 
+# Временное отключение трансляции в Observer-группу (для тестов внешним лицам).
+# Включить обратно: BOT_OBSERVER_ENABLED=true в .env + systemctl restart sofia-gpt.
+BOT_OBSERVER_ENABLED = os.getenv("BOT_OBSERVER_ENABLED", "false").lower() == "true"
+
 # Модель OpenAI
 MODEL_MODE = os.getenv("MODEL_MODE", "gpt-5.2")
 # v3.0: LLM-Planner
@@ -935,6 +939,9 @@ async def notify_bot_observer(
     bot, telegram_user_id: int, user_name: str, role: str, content: str
 ):
     """Отправляет копию сообщения в группу наблюдателей."""
+    if not BOT_OBSERVER_ENABLED:
+        log("🚫 [BOT_OBSERVER_SKIP] reason=disabled_by_env")
+        return
     if not OBSERVER_CHAT_ID:
         return
 
