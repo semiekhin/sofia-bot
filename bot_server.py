@@ -75,6 +75,10 @@ OBSERVER_CHAT_ID = int(os.getenv("OBSERVER_CHAT_ID", "-5206139579"))
 # Включить обратно: BOT_OBSERVER_ENABLED=true в .env + systemctl restart sofia-gpt.
 BOT_OBSERVER_ENABLED = os.getenv("BOT_OBSERVER_ENABLED", "false").lower() == "true"
 
+# Изоляция от Битрикс CRM (для тестов внешним лицам).
+# Включить обратно: BOT_BITRIX_ENABLED=true в .env + systemctl restart sofia-gpt.
+BOT_BITRIX_ENABLED = os.getenv("BOT_BITRIX_ENABLED", "false").lower() == "true"
+
 # Модель OpenAI
 MODEL_MODE = os.getenv("MODEL_MODE", "gpt-5.2")
 # v3.0: LLM-Planner
@@ -166,6 +170,8 @@ def clear_bitrix_lead_id(user_id: int):
 
 def _is_bitrix_session(user_id: int) -> bool:
     """Битрикс-интеграция только для сессий с source_object (ATL и др.)."""
+    if not BOT_BITRIX_ENABLED:
+        return False
     state = state_manager.get_state(user_id)
     return bool(getattr(state, "source_object", None))
 
@@ -1285,7 +1291,7 @@ async def cmd_start(update, context: ContextTypes.DEFAULT_TYPE):
         clear_bitrix_lead_id(user_id)
 
     # Привязка к существующему лиду из Тильды (только для Атлантиса)
-    if source_object and source_object.get("key") == "atlantis":
+    if BOT_BITRIX_ENABLED and source_object and source_object.get("key") == "atlantis":
         try:
             lead_data = await find_recent_atlantis_lead()
             if lead_data:
