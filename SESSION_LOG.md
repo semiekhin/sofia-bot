@@ -1,6 +1,96 @@
 # SESSION_LOG — Последние сессии
 
-> 📁 **Архив старых сессий:** [SESSION_LOG_ARCHIVE.md](SESSION_LOG_ARCHIVE.md) (сессии до 19.04.2026 продолжение). Если нужен контекст по старым сессиям — читать оттуда.
+> 📁 **Архив старых сессий:** [SESSION_LOG_ARCHIVE.md](SESSION_LOG_ARCHIVE.md). Если нужен контекст по старым сессиям — читать оттуда.
+
+## 05.05.2026 — ATLANTIS-виджет: read-only аудит первого касания + ATLANTIS_ADDON_INFRA_PORTBACK + новый prompt_addon
+
+### TL;DR
+
+Длинная сессия закрыла давний P0 `ATLANTIS_ADDON_INFRA_PORTBACK` (висел в backlog с 15.04, отложен 28-29.04 при RIZALTA-деплое). Структурно: (1) read-only аудит «как именно виджет-Sofia ломает логику Атлантиса» — реконструкция первого касания виджет-клиента vs Тильда-клиент vs `/start` без объекта, 8 точек расхождения с file:line; (2) портбэк ветки `if obj_config.get("prompt_addon"): system_prompt += ...` из DEV `core/pipeline.py:267-268` в PROD `core/pipeline.py:206-207`; (3) полная переработка текста `prompt_addon` в `config/source_objects.py` обоих репо — с «контакт уже получен через форму» (фактически ложно для виджет-клиента) на новый текст 3464 байт под виджет+Тильда одновременно. PROD-коммит `f3213406` без push (by-design), DEV-коммит `25d81351` запушен. 5 рестартов (sofia-radist + sofia-web-api + sofia-gpt + sofia-radist-dev + sofia-web-api-dev) — 0 ERROR/Traceback в журналах за 2 минуты после.
+
+### Хронология коммитов
+
+| # | Репо | SHA | Subject |
+|--:|------|------|---------|
+| 1 | PROD | `f3213406` | feat(atlantis): rewrite prompt_addon for widget-driven qualification flow (без push by-design) |
+| 2 | DEV | `25d81351` | feat(atlantis): rewrite prompt_addon for widget-driven qualification flow (push origin/main) |
+
+### Sprint 1 — ATLANTIS_WIDGET_BEHAVIOR_AUDIT_v1 (read-only)
+
+Аудит реконструировал что происходит с момента когда prefilled `«Здравствуйте! Помогите подобрать квартиру в АК "Атлантис".»` приходит на webhook Радиста до отправки первого ответа Sofia клиенту. Сравнение с двумя контрольными сценариями: Тильда-клиент (тот же канал, prefilled про «отправьте презентацию», `find_recent_atlantis_lead` возвращает реальный лид) и `@humanAINeural_bot /start` без объекта.
+
+**Trifecta-таблица** (8 критических шагов × 3 сценария с file:line):
+
+- `state.source_object`: виджет=`atlantis` (`sofia_radist_gateway.py:906-912`), Тильда=`atlantis`, /start=`None` (`bot_server.py:1271-1282`).
+- Bitrix-вызов: виджет→`find_recent_atlantis_lead → None` (нет лида от формы) → `create_lead` с `SOURCE_ID=504` дефолтный, не 397; Тильда→`find_recent_atlantis_lead → {id, assigned}` → `set_lead_assigned(428)` + `update_lead`; /start→пропуск.
+- Force-routing на репликах 1-2 (`core/pipeline.py:176-183`): виджет=ДА (`source_object` есть, `user_msg_count≤2`), Тильда=ДА, /start=НЕТ (Analyzer работает).
+- `state.materials_request_count`: виджет=0 (текст «помогите подобрать» — не запрос материалов), Тильда=1 (extractor `wants_materials=true` на «отправьте презентацию» → `message_processor.py:81-84` → state_summary показывает «⚠️ БЫЛ 1 ОТКАЗ ОТ СОЗВОНА» уже на 1-й реплике).
+- system_prompt: виджет/Тильда получают object_context (`core/pipeline.py:259-266`) + presentation_url + (DEV) prompt_addon с «контакт уже получен» — для виджета это **фактически ложно** (контакта в Bitrix нет).
+
+**Прогноз первых 4 реплик виджет-Sofia** (по сборке промпта без живого LLM-вызова): высокая вероятность что Sofia вываливает презентацию на 1-й реплике (object_context + presentation_url инжектятся принудительно), упоминает Крым/цены, ведёт квалификацию по чек-листу. Низкая вероятность запроса контакта (prompt_addon явно запрещает). Уровень уверенности — средняя для содержания, высокая для механики (force-routing GREETING + RAG-query константа `"приветствие клиент с сайта интерес к объекту"`).
+
+**8 точек расхождения с базовой логикой /start** (key findings):
+1. Force-routing на репликах 1-2 — RAG жёстко GREETING с константной query, не адаптируется к смыслу prefilled.
+2. Object_context инжектируется (полная карточка `atlantis_context.md` с ценами 16.8/20.7/22.8 млн).
+3. Инструкция «При запросе презентации — отправь эту ссылку клиенту» — слово «подобрать» в prefilled может быть LLM-интерпретировано как запрос материалов.
+4. **prompt_addon «контакт уже получен» — для виджет-клиента ложно** (find_recent_atlantis_lead → None, телефон не приходил).
+5. Отсутствие Bitrix-привязки на старте (лид создаётся только при finalize, риск коллизии 60-сек окна с чужим ATL-лидом).
+6. user_name fallback на `phone` (часто пуст у Telegram Business) → state_summary без имени.
+7. В radist-пути нет статического greeting (всегда LLM-generated).
+8. `user_name` нигде не передаётся в системный промпт — Sofia может не обратиться по имени.
+
+Сергей подтвердил аудит живым smoke 04.05 (виджет вываливает цены, прыгает к презентации, не запрашивает контакт нормально).
+
+### Sprint 2 — ATLANTIS_ADDON_INFRA_PORTBACK + новый prompt_addon
+
+**STOP #1 (investigate_first):** md5 четырёх файлов (PROD/DEV pipeline.py + source_objects.py), 4 snapshots в `/tmp/*before_atl_addon_20260505_230514`, точка вставки в PROD pipeline.py — между `:205` (`)` после presentation_url) и `:207` (комментарий was_offline), отступ 12 пробелов; точка вставки в PROD source_objects.py — между `:20` (`"greeting": ...`) и `:21` (закрывающая `},`), отступ 8 пробелов. Voice-pipeline `stream_voice_response` `:350-358` намеренно НЕ тронут (вне scope).
+
+**STOP #2 (drafting):** Сергей дал финальный текст addon целиком (1 сообщение) — 6 блоков:
+1. КОНТЕКСТ ВХОДА — два пути (Тильда/виджет), не предполагать «контакт получен», Атлантис как стартовая точка а не клетка.
+2. ПЕРВАЯ РЕПЛИКА — без цен/УТП/локации, образец дословный.
+3. ВЕДЕНИЕ ДИАЛОГА — обычный чек-лист (цель→бюджет→оплата→стадия→локация→ЛПР→созвон), факты карточки реактивно.
+4. ПРЕЗЕНТАЦИЯ — 4 случая отправки PDF (созвон-бонус / отказ от созвона / тупик / прямая просьба).
+5. ЗАПРОС КОНТАКТА — телефон в финале, ник только для письменной коммуникации.
+6. SAFETY-RAIL (политика/СВО/юр/мошенничество) — сохранён дословно из старого addon.
+
+Принципиальное архитектурное решение: addon применяется к **обоим путям** одинаково (виджет + Тильда). Ранее DEV-addon делал ложное предположение «контакт уже получен» — для Тильды это работало случайно (лид с телефоном уже создан webhook-формой), для виджета было фактически неверным. Новый текст не предполагает контакт ни для одного пути — Тильда-клиент в худшем случае ещё раз подтвердит телефон, что не ломает воронку.
+
+**STOP #3 (DEV-деплой):** sofia-radist-dev + sofia-web-api-dev перезапущены, health-чеки 5002/8081 ok, журнал 0 ERROR.
+
+**PROD-деплой:** sofia-radist → sofia-web-api → sofia-gpt последовательно, `is-active` после каждого, журналы за 2 минуты — 0 ERROR/Traceback/Exception, health-чеки 5001/8080 ok, sofia-gpt получил Telegram getMe/deleteWebhook без ошибок. Pre-commit black прошёл на DEV.
+
+### Финальные md5 после сессии
+
+| Файл | до сессии | после сессии |
+|---|---|---|
+| `/opt/sofia-gpt/core/pipeline.py` | `872769a8d4...` | `8511e83f9e...` |
+| `/opt/sofia-gpt-dev/core/pipeline.py` | `e5c7af2e95...` | `e5c7af2e95...` (НЕ тронут) |
+| `/opt/sofia-gpt/config/source_objects.py` | `c6cd1b13e1...` | `4e8308fd15...` |
+| `/opt/sofia-gpt-dev/config/source_objects.py` | `3529d24e13...` | `89ae82f2eb...` |
+
+DEV/PROD-тексты `prompt_addon` побайтно идентичны (3464 байт, проверено через runtime-импорт обоих модулей).
+
+### Уроки
+
+1. **Read-only аудит-сценариев перед изменением промпта.** Перед прикосновением к коду Сергей запросил 3-сценарный диф с прогнозом первых 4 реплик. Аудит за 30 минут вывел 8 конкретных точек расхождения с file:line. Без этого шага мы бы не поняли что **prompt_addon применяется к обоим путям** (виджет+Тильда) и что текст должен быть нейтрален относительно «контакт получен/не получен» — иначе для виджета он системно врёт.
+2. **Дословный портбэк DEV-образца, не «упрощение».** Acceptance criterion #1 формально требовал «одна строка с условием», но DEV-образец — это **две строки** (`if obj_config.get("prompt_addon"):` + `system_prompt += f"..."`). Не схлопывал в один-лайнер — Сергей подтвердил «двухстрочный паттерн = правильный портбэк». Принцип: при копировании готового образца из работающей среды — копировать побайтно, схлопывания/упрощения = новый источник риска.
+3. **Идентичность DEV/PROD-текста addon — runtime-проверка через импорт обоих модулей.** Перед коммитом сравнили `len()` + строковое равенство prompt_addon из обоих SOURCE_OBJECTS через двойной `importlib.import_module`. Это сильнее чем `md5sum` файла (файлы могут различаться по black-форматированию, but значение dict-ключа должно совпадать побайтно).
+4. **Наблюдение: voice-pipeline `stream_voice_response` имеет второй блок инжекции object_context+presentation_url** (`core/pipeline.py:350-358` в PROD, аналогично в DEV). Туда `prompt_addon` не пробрасывается — voice использует отдельный compact `_get_object_context()`. Если Atlantis когда-нибудь вернётся в голос (сейчас по CLAUDE.md «Голоса для Atlantis НЕ существует») — нужно отдельное решение должен ли voice-промпт получать addon. P3 backlog, не блокер.
+
+### Открыто в следующую сессию
+
+- **Сергей делает live smoke** виджет-flow через `t.me/m/Fiw3ldhkN2My`. Ожидаемое: первая реплика без цен/Крыма, обычная квалификация без вываливания фактов, PDF не приходит на 1-й–2-й реплике, в финале запрашивает телефон. Если совпало — `ATLANTIS_ADDON_INFRA_PORTBACK` закрыт окончательно. Если расхождение — итерация по тексту addon (L0 rollback или новый коммит с правкой только текста, инфра-часть остаётся).
+- **Тильда-flow regression check** — через `t.me/m/QinKZEsTNmRi` пройти диалог, убедиться что Sofia здоровается мягко, идёт по чек-листу, в конце предлагает созвон. Особое внимание: не сломалось ли поведение «уже подтверждённого контакта» (теперь Sofia может ещё раз спросить телефон в финале — это by design, не баг).
+- **`config/source_objects.py` PROD без black-форматирования** — известный косметический drift, отложен. Не блокер.
+
+### Snapshots
+
+- `/tmp/pipeline.py.prod.before_atl_addon_20260505_230514` (17483 байт)
+- `/tmp/pipeline.py.dev.before_atl_addon_20260505_230514` (57904 байт)
+- `/tmp/source_objects.py.prod.before_atl_addon_20260505_230514` (3218 байт)
+- `/tmp/source_objects.py.dev.before_atl_addon_20260505_230514` (5493 байт)
+
+---
 
 ## 28-29.04.2026 — RIZALTA в текстовом канале: регистрация, двухуровневая защита от Bitrix, деплой в PROD, investment-only позиционирование
 
@@ -471,69 +561,6 @@ Speed=1.2 дал улучшение на live TTS, но **не** на cached gre
 **Read-only подтверждение:** 0 write-операций на VPS в post-mortem фазе. Все snapshots 20.04 (pipeline/voice_asterisk/greeting_rizalta.pcm × 3/pjsip.conf) живут в `/tmp` до ребута как страховка L1 rollback.
 
 ---
-
-## 19.04.2026 — CLAUDE.md разгрузка + BITRIX stage-guard (инцидент Елены)
-
-### TL;DR
-
-3 DEV-коммита + 1 PROD-деплой. Начали с разгрузки документации, закончили закрытием инцидента 19.04 где Sofia трижды перезаписала ASSIGNED менеджера.
-
-- **CLAUDE_MD_SPLIT_v1** (`af11212f`) — CLAUDE.md 57k → 22k (−60 %). Вынесено: «Уроки из ошибок» (36 прецедентов) → `docs/LESSONS_LEARNED.md` (23.8k), voice-архитектура (AudioSocket/Silero/Yandex/Phase1/auto-hangup/MixMonitor/VOICE_PROMPT_MODE) → `docs/VOICE_ARCHITECTURE.md` (14.6k). Summary-блоки с ссылками + scp-команды в Gitpull.
-- **BITRIX_LEAD_RESCUE** (разведка) — лид 266638 Elena, +79124753743 (Radist Telegram @Ofira666, SOURCE_ID=397 Atlantis). Sofia трижды финализировала лид через `set_lead_assigned(24932) + BP 152` несмотря на ручной перехват менеджером (ASSIGNED 19622). **Root cause:** Bitrix webhook ONCRMLEADUPDATE не настроен — за 14 дней доступных логов 0 hit на `/api/bitrix/webhook`, `manager_active` ни разу не установился. Endpoint полностью живой (HTTPS 200, Let's Encrypt, nginx proxy в sofia-api.conf, UFW 443 open, POST идентичен на localhost и снаружи). Мяч на стороне Bitrix — нужна подписка от Stetsenko.
-- **BITRIX_STAGE_GUARD_v1** (DEV `441dec63`, PROD `7e08e9a6`) — решение инцидента: pull-проверка STATUS_ID перед критичными операциями вместо polling webhook. Функция `get_lead_status(lead_id) -> str | None` (fail-safe: None при любой ошибке API). Встроена в 3 точки: `finalize_lead` (единая точка для всех каналов), `radist_send_reminder` (2 свежих вызова — перед отправкой и перед финализацией после sleep), `_radist_finalize_timeout`. Skip-ветка: `find_user_id_by_lead` → `set_manager_active(True)` → log `[FINALIZE_SKIP|REMINDER_SKIP|TIMEOUT_SKIP]` → return. `update_lead` не проверяет (безопасная операция, только COMMENTS).
-
-### Хронология коммитов
-
-| # | Репо | SHA | Subject |
-|--:|------|------|---------|
-| 1 | DEV | `af11212f` | chore(docs): split CLAUDE.md — extract lessons and voice architecture |
-| 2 | DEV | `441dec63` | feat(bitrix): stage-based manager protection via get_lead_status |
-| 3 | PROD | `7e08e9a6` | feat(bitrix): stage-based manager protection via get_lead_status (format-patch из `441dec63`) |
-
-### Инцидент — таймлайн лида 266638 (MSK, 19.04)
-
-| Время | Событие |
-|-------|---------|
-| 09:15:38 | Тильда создала лид 266638, ASSIGNED=428 |
-| 09:15:50 | Sofia привязала radist user -42262997, save original=428 |
-| 09:16–09:24 | 4 сообщения клиента + ответы Sofia (студии до 20 млн) |
-| 10:24:06 | Sofia напоминание #1 «Elena, не забыли про меня?» |
-| **10:39:07** | **finalize #1** → ASSIGNED=24932, BP 152 (workflow `69e4869b`) |
-| 11:49 | Клиент вернулся «Нет не интересно» → Sofia ответ |
-| **11:49:09** | **finalize #2** → ASSIGNED=24932, BP 152 (`69e49705`) |
-| 11:50–11:52 | Клиент ещё 2 сообщения, Sofia отвечает |
-| 12:52:01 | Sofia напоминание #2 |
-| **13:07:02** | **finalize #3** → ASSIGNED=24932, BP 152 (`69e4a947`) |
-| 13:15:31 | Bitrix MOVED_BY_ID=454 (робот BP) |
-| 13:19:31 | Менеджер 19622 взял лид, DATE_MODIFY final |
-
-### Ключевые архитектурные паттерны (закрепились)
-
-- **Два независимых слоя защиты от перезаписи менеджера** — (1) push: Bitrix webhook ONCRMLEADUPDATE → `set_manager_active(True)` в web_api.py webhook handler (не работает сейчас — подписка не настроена); (2) pull: `get_lead_status` перед `finalize_lead`/reminder/timeout (деплоили сегодня). Webhook-слой оставлен in-place для будущей defense in depth когда Stetsenko настроит подписку.
-- **Fail-safe по умолчанию в сторону не-трогать** — при любой ошибке API (network/timeout/bad JSON) `get_lead_status` возвращает None, caller трактует None как «не NEW» → skip финализации. Приоритет: тишина лучше перезаписи менеджера.
-- **Проверка свежая не кешированная** — вторая проверка в `radist_send_reminder` перед finalize после 15-минутного sleep делается отдельным API-вызовом (не реюз первой). Стадия могла поменяться за время ожидания.
-- **Split-deploy дисциплина на CLAUDE.md** — разгружали в 2 docs-файла, оставили summary-блоки с явной ссылкой «Полный текст: docs/FILENAME.md». 36 уроков сохранены дословно с SHA/UUID/датами, не перефразированы.
-
-### Обнаруженные побочные проблемы
-
-- Hard-coded `BITRIX_BASE_URL` fallback в `core/bitrix.py:25-28` с устаревшим токеном — работает только при `load_dotenv`. Для живых сервисов ok, ad-hoc скрипты могут silent-fail-safe. P2.
-- Сервисы не используют systemd `EnvironmentFile=`, .env грузится внутри Python. Работает, но менее прозрачно. P2.
-- PROD origin/main отстаёт на 10 локальных коммитов (by-design, никогда не пушится). Стоит audit-спринт для сверки состава. P3.
-- `restore_assigned` в `core/bitrix.py` — dead code, нигде не вызывается. Со stage-guard концептуально не нужен. P3.
-- `_radist_finalize_timeout` skip-ветка делает early return внутри `_is_radist_bitrix_session` блока, зеркально очищая `radist_reminder_tasks/sent` pops (как в финальной секции функции).
-
-### Deploy details
-
-- **DEV commit сmoke**: `get_lead_status(266638)` → `"18"` ✓ (совпадает с разведкой Bitrix STATUS_ID=18).
-- **PROD deploy**: format-patch clean apply (md5 базы DEV vs PROD совпадал 1:1), 3 сервиса перезапущены (sofia-gpt + sofia-web-api + sofia-radist), 0 ERROR за 2 минуты после рестарта, /api/health HTTP 200, /api/bitrix/webhook HTTP 200.
-- **Snapshots L1 rollback**: `/tmp/core_bitrix.prod.before_stage_guard_20260419_115517` + `/tmp/sofia_radist_gateway.prod.before_stage_guard_20260419_115517`.
-
-### Docs Updates
-
-- `docs/LESSONS_LEARNED.md` — новый файл, 36 уроков 21.03–18.04 с полным дословным сохранением.
-- `docs/VOICE_ARCHITECTURE.md` — новый файл, полная voice-архитектура с диаграммой серверов.
-- `CLAUDE.md` — разгружен с 57k до 22k, summary-блоки на обе новые docs-страницы, Gitpull обновлён (scp для новых файлов).
-- **Не обновлялись**: `ORCHESTRATOR_RULES.md` (не было новых правил), memory-файлы (не было значимых профильных изменений).
 
 ---
 

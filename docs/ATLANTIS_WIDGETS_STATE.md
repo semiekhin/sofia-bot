@@ -80,11 +80,13 @@
 
 ## Известные ограничения и тонкости
 
-### 🔴 Atlantis-addon в PROD не работает
+### ✅ Atlantis-addon в PROD работает (с 05.05.2026)
 
-**Любые специфичные правила Atlantis из `prompt_addon` в production не работают.** Sofia в PROD-канале (Radist) не получает Atlantis-specific инструкций — работает только общий промпт + RAG. **Это касается обоих путей A и B**, как только клиент попадает к Sofia.
+**`ATLANTIS_ADDON_INFRA_PORTBACK` закрыт 05.05** коммитами PROD `f3213406` + DEV `25d81351`. В PROD `core/pipeline.py:206-207` есть ветка `if obj_config.get("prompt_addon"): system_prompt += f"\n\n{obj_config['prompt_addon']}"`, в `config/source_objects.py` обоих репо у atlantis-объекта присутствует ключ `prompt_addon` (3464 байт, тексты идентичны).
 
-Технически: в PROD `config/source_objects.py` ключа `prompt_addon` нет, в PROD `core/pipeline.py` нет ветки `if obj_config.get("prompt_addon")`. Открытая задача — `ATLANTIS_ADDON_INFRA_PORTBACK` (BACKLOG.md, P0).
+**Текст addon применяется к обоим путям A и B одинаково.** Принципиальное решение 05.05: addon нейтрален относительно «контакт получен/не получен» — Тильда-клиент в худшем случае ещё раз подтверждает телефон в финале, виджет-клиент проходит штатный финал воронки с запросом телефона. 6 блоков: КОНТЕКСТ ВХОДА (два пути) / ПЕРВАЯ РЕПЛИКА без цен и УТП / ВЕДЕНИЕ ДИАЛОГА по обычному чек-листу / ПРЕЗЕНТАЦИЯ (PDF) — 4 случая отправки в финале / ЗАПРОС КОНТАКТА — телефон, ник только для письменной коммуникации / SAFETY-RAIL (политика/СВО/юр/мошенничество).
+
+**Голосовой `stream_voice_response` НЕ затронут** (`core/pipeline.py:350-358` PROD имеет свой блок инжекции object_context+presentation_url, addon туда не пробрасывается). Atlantis в голос не используется — если когда-нибудь вернётся, нужно отдельное решение. P3 backlog.
 
 ### Telegram Business Link `t.me/m/XXX` против `t.me/USER?text=`
 

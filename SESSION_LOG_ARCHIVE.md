@@ -1,9 +1,73 @@
 # SESSION_LOG_ARCHIVE — Архив сессий до 2026-04-19 (до полудня)
 
-> 📁 **Это архив старых сессий** SESSION_LOG.md, выгруженный 2026-04-29.
+> 📁 **Это архив старых сессий** SESSION_LOG.md, выгруженный 2026-04-29 (последнее обновление 2026-05-05).
 > Активный лог последних 5 сессий: [SESSION_LOG.md](SESSION_LOG.md).
 > Записи в архиве сохранены as-is, в исходном порядке (свежее сверху).
-> 21 сессия с 30.03 по 19.04 (продолжение).
+
+## 19.04.2026 — CLAUDE.md разгрузка + BITRIX stage-guard (инцидент Елены)
+
+### TL;DR
+
+3 DEV-коммита + 1 PROD-деплой. Начали с разгрузки документации, закончили закрытием инцидента 19.04 где Sofia трижды перезаписала ASSIGNED менеджера.
+
+- **CLAUDE_MD_SPLIT_v1** (`af11212f`) — CLAUDE.md 57k → 22k (−60 %). Вынесено: «Уроки из ошибок» (36 прецедентов) → `docs/LESSONS_LEARNED.md` (23.8k), voice-архитектура (AudioSocket/Silero/Yandex/Phase1/auto-hangup/MixMonitor/VOICE_PROMPT_MODE) → `docs/VOICE_ARCHITECTURE.md` (14.6k). Summary-блоки с ссылками + scp-команды в Gitpull.
+- **BITRIX_LEAD_RESCUE** (разведка) — лид 266638 Elena, +79124753743 (Radist Telegram @Ofira666, SOURCE_ID=397 Atlantis). Sofia трижды финализировала лид через `set_lead_assigned(24932) + BP 152` несмотря на ручной перехват менеджером (ASSIGNED 19622). **Root cause:** Bitrix webhook ONCRMLEADUPDATE не настроен — за 14 дней доступных логов 0 hit на `/api/bitrix/webhook`, `manager_active` ни разу не установился. Endpoint полностью живой (HTTPS 200, Let's Encrypt, nginx proxy в sofia-api.conf, UFW 443 open, POST идентичен на localhost и снаружи). Мяч на стороне Bitrix — нужна подписка от Stetsenko.
+- **BITRIX_STAGE_GUARD_v1** (DEV `441dec63`, PROD `7e08e9a6`) — решение инцидента: pull-проверка STATUS_ID перед критичными операциями вместо polling webhook. Функция `get_lead_status(lead_id) -> str | None` (fail-safe: None при любой ошибке API). Встроена в 3 точки: `finalize_lead` (единая точка для всех каналов), `radist_send_reminder` (2 свежих вызова — перед отправкой и перед финализацией после sleep), `_radist_finalize_timeout`. Skip-ветка: `find_user_id_by_lead` → `set_manager_active(True)` → log `[FINALIZE_SKIP|REMINDER_SKIP|TIMEOUT_SKIP]` → return. `update_lead` не проверяет (безопасная операция, только COMMENTS).
+
+### Хронология коммитов
+
+| # | Репо | SHA | Subject |
+|--:|------|------|---------|
+| 1 | DEV | `af11212f` | chore(docs): split CLAUDE.md — extract lessons and voice architecture |
+| 2 | DEV | `441dec63` | feat(bitrix): stage-based manager protection via get_lead_status |
+| 3 | PROD | `7e08e9a6` | feat(bitrix): stage-based manager protection via get_lead_status (format-patch из `441dec63`) |
+
+### Инцидент — таймлайн лида 266638 (MSK, 19.04)
+
+| Время | Событие |
+|-------|---------|
+| 09:15:38 | Тильда создала лид 266638, ASSIGNED=428 |
+| 09:15:50 | Sofia привязала radist user -42262997, save original=428 |
+| 09:16–09:24 | 4 сообщения клиента + ответы Sofia (студии до 20 млн) |
+| 10:24:06 | Sofia напоминание #1 «Elena, не забыли про меня?» |
+| **10:39:07** | **finalize #1** → ASSIGNED=24932, BP 152 (workflow `69e4869b`) |
+| 11:49 | Клиент вернулся «Нет не интересно» → Sofia ответ |
+| **11:49:09** | **finalize #2** → ASSIGNED=24932, BP 152 (`69e49705`) |
+| 11:50–11:52 | Клиент ещё 2 сообщения, Sofia отвечает |
+| 12:52:01 | Sofia напоминание #2 |
+| **13:07:02** | **finalize #3** → ASSIGNED=24932, BP 152 (`69e4a947`) |
+| 13:15:31 | Bitrix MOVED_BY_ID=454 (робот BP) |
+| 13:19:31 | Менеджер 19622 взял лид, DATE_MODIFY final |
+
+### Ключевые архитектурные паттерны (закрепились)
+
+- **Два независимых слоя защиты от перезаписи менеджера** — (1) push: Bitrix webhook ONCRMLEADUPDATE → `set_manager_active(True)` в web_api.py webhook handler (не работает сейчас — подписка не настроена); (2) pull: `get_lead_status` перед `finalize_lead`/reminder/timeout (деплоили сегодня). Webhook-слой оставлен in-place для будущей defense in depth когда Stetsenko настроит подписку.
+- **Fail-safe по умолчанию в сторону не-трогать** — при любой ошибке API (network/timeout/bad JSON) `get_lead_status` возвращает None, caller трактует None как «не NEW» → skip финализации. Приоритет: тишина лучше перезаписи менеджера.
+- **Проверка свежая не кешированная** — вторая проверка в `radist_send_reminder` перед finalize после 15-минутного sleep делается отдельным API-вызовом (не реюз первой). Стадия могла поменяться за время ожидания.
+- **Split-deploy дисциплина на CLAUDE.md** — разгружали в 2 docs-файла, оставили summary-блоки с явной ссылкой «Полный текст: docs/FILENAME.md». 36 уроков сохранены дословно с SHA/UUID/датами, не перефразированы.
+
+### Обнаруженные побочные проблемы
+
+- Hard-coded `BITRIX_BASE_URL` fallback в `core/bitrix.py:25-28` с устаревшим токеном — работает только при `load_dotenv`. Для живых сервисов ok, ad-hoc скрипты могут silent-fail-safe. P2.
+- Сервисы не используют systemd `EnvironmentFile=`, .env грузится внутри Python. Работает, но менее прозрачно. P2.
+- PROD origin/main отстаёт на 10 локальных коммитов (by-design, никогда не пушится). Стоит audit-спринт для сверки состава. P3.
+- `restore_assigned` в `core/bitrix.py` — dead code, нигде не вызывается. Со stage-guard концептуально не нужен. P3.
+- `_radist_finalize_timeout` skip-ветка делает early return внутри `_is_radist_bitrix_session` блока, зеркально очищая `radist_reminder_tasks/sent` pops (как в финальной секции функции).
+
+### Deploy details
+
+- **DEV commit сmoke**: `get_lead_status(266638)` → `"18"` ✓ (совпадает с разведкой Bitrix STATUS_ID=18).
+- **PROD deploy**: format-patch clean apply (md5 базы DEV vs PROD совпадал 1:1), 3 сервиса перезапущены (sofia-gpt + sofia-web-api + sofia-radist), 0 ERROR за 2 минуты после рестарта, /api/health HTTP 200, /api/bitrix/webhook HTTP 200.
+- **Snapshots L1 rollback**: `/tmp/core_bitrix.prod.before_stage_guard_20260419_115517` + `/tmp/sofia_radist_gateway.prod.before_stage_guard_20260419_115517`.
+
+### Docs Updates
+
+- `docs/LESSONS_LEARNED.md` — новый файл, 36 уроков 21.03–18.04 с полным дословным сохранением.
+- `docs/VOICE_ARCHITECTURE.md` — новый файл, полная voice-архитектура с диаграммой серверов.
+- `CLAUDE.md` — разгружен с 57k до 22k, summary-блоки на обе новые docs-страницы, Gitpull обновлён (scp для новых файлов).
+- **Не обновлялись**: `ORCHESTRATOR_RULES.md` (не было новых правил), memory-файлы (не было значимых профильных изменений).
+
+---
 
 ## 19.04.2026 — продолжение: пилот-аудит + TTS A/B + MixMonitor эксперимент
 
