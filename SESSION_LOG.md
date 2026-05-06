@@ -2,6 +2,74 @@
 
 > 📁 **Архив старых сессий:** [SESSION_LOG_ARCHIVE.md](SESSION_LOG_ARCHIVE.md). Если нужен контекст по старым сессиям — читать оттуда.
 
+## 06.05.2026 — ATLANTIS-виджет: post-deploy polish prompt_addon (бренд + жаргон в PDF)
+
+### TL;DR
+
+Микро-итерация после live-smoke виджет-Sofia 06.05 утром (по итогам PORTBACK 05.05). Smoke прошёл правильно по логике (квалификация по чек-листу, факты карточки реактивно, контакт получен, созвон назначен, PDF в финальной точке) — но Сергей нашёл два косметических замечания в реальных репликах: (1) Sofia представилась «помощник отдела продаж Oazis Estate» — упоминание бренда агентства некорректно по контексту виджета (клиент только что был на сайте Атлантиса, агентство называть не нужно) + мешает будущему масштабированию на других заказчиков; (2) фраза отправки PDF «Накину вам презентацию» — жаргонизм с двусмысленным оттенком (может читаться как «накину сверху» = повышу цену). Решение — две точечные правки текста `prompt_addon` в `config/source_objects.py` обоих репо. Никаких изменений логики, никакого portback'а, никаких новых полей конфига.
+
+### Хронология коммитов
+
+| # | Репо | SHA | Subject |
+|--:|------|------|---------|
+| 1 | DEV | `27cb23c4` | refactor(atlantis): polish prompt_addon - drop brand mention in greeting, ban slang in PDF send. (push origin/main `d53a4a47..27cb23c4`) |
+| 2 | PROD | `a8d0921e` | refactor(atlantis): polish prompt_addon - drop brand mention in greeting, ban slang in PDF send. (без push by-design) |
+
+### Sprint — ATLANTIS_PROMPT_ADDON_POLISH_v1
+
+**Investigate (STOP #1):**
+- md5 файлов: PROD `4e8308fd152c1b65093088367c0f5c00`, DEV `89ae82f2ebe5134c469a73b7b27d2108` — **различаются** на уровне файла (известный black-cosmetic drift на функциях `detect_source/load_object_context` в PROD vs DEV, отложен).
+- md5 значения **`prompt_addon` в runtime через `importlib`**: оба `a6673db6729e0426ad5e6badb9a0820a` (3464 байт) — **идентичны побайтно**. Это правильный критерий синхронности после ATLANTIS_WIDGET_PROMPT_ADDON_v1 (05.05): на уровне поведения LLM текст совпадает, на уровне файла отличается из-за pre-existing формата.
+- Точки вставки: блок «ПЕРВАЯ РЕПЛИКА» — после образца (строка 32 DEV/PROD) перед фразой про локацию (строка 34); блок «ПРЕЗЕНТАЦИЯ (PDF)» — после пункта 4 (строка 48), перед заголовком `ЗАПРОС КОНТАКТА` (строка 50). Структура SOURCE_OBJECTS обоих репо совпадает по строкам.
+- Snapshots: `/tmp/source_objects.py.{prod,dev}.before_addon_polish_20260506_082633` (9519 / 9567 байт).
+
+**Edit (одинаковый текст в обоих репо, 4 правки = 2 блока × 2 репо):**
+
+В блок «ПЕРВАЯ РЕПЛИКА» добавлен один абзац после образца:
+```
+Не упоминай в первой реплике название агентства / бренд («Oazis Estate» и т.п.) — клиент пришёл с сайта объекта, его внимание на проекте, не на агентстве.
+```
+
+В блок «ПРЕЗЕНТАЦИЯ (PDF)» добавлен один абзац после пункта 4:
+```
+Формулируй отправку презентации нейтрально и официально: «Отправлю вам презентацию для ознакомления» / «Вот презентация Атлантиса». Не используй жаргонные обороты: «накину», «держите», «лови», «кину», «скину» — они звучат фамильярно или двусмысленно (например, «накину» читается как «повышу цену»).
+```
+
+**Деплой:**
+- Smoke load: оба assert'а прошли (`'Oazis Estate' in addon` + `'накину' in addon.lower()`), длина addon 3464 → **3920 байт** (+456, два абзаца с пустыми строками-разделителями), runtime md5 `4f08421d2e5cabd2b246b62be6fdc515` × 2 идентичны.
+- AST-syntax обоих файлов ok.
+- 5 рестартов: sofia-radist-dev + sofia-web-api-dev (DEV) + sofia-radist + sofia-web-api + sofia-gpt (PROD) — все active, 0 ERROR/Traceback/Exception в журналах за 2 минуты, 4 health-endpoint'а ok (`:5001`/`:5002`/`:8080`/`:8081`).
+- DEV pre-commit hook: flake8 + black прошли.
+- DEV push в `origin/main`: `d53a4a47..27cb23c4`.
+- PROD коммит локально без push (by-design).
+
+### Финальные md5 после сессии
+
+| Файл | до 06.05 | после 06.05 |
+|---|---|---|
+| `/opt/sofia-gpt/config/source_objects.py` | `4e8308fd15...` | `db07133816d8fcddd5193733034eb219` |
+| `/opt/sofia-gpt-dev/config/source_objects.py` | `89ae82f2eb...` | `988eac5fc588cb5ad0da857dfe1a803f` |
+| `prompt_addon` в runtime (DEV=PROD) | `a6673db672...` (3464) | `4f08421d2e5cabd2b246b62be6fdc515` (3920) |
+
+### Уроки
+
+1. **Runtime-сравнение через `importlib` сильнее md5 файла** для проверки синхронности значения dict-ключа между репозиториями с известным cosmetic drift. После 05.05 PORTBACK файловые md5 разошлись (black-нонформатирование функций PROD vs DEV), но текст addon побайтно идентичен — это корректное состояние «функционально синхронно, косметика отложена». Не путать «файлы разошлись» с «значения разошлись».
+2. **Polish после live-smoke — отдельный микро-спринт без portback'а.** Когда основная инфра уже в проде (как 05.05), косметические правки текста делаются прямой Edit в обоих репо без новых файлов / env / конфига. Минимально-достаточное решение по `<anti_overengineering>`.
+3. **Расширенная формулировка из контракта vs пример в go-сообщении.** Сергей дал в `<task>` подробный текст с 5 запрещёнными словами + объяснением «накину = повышу цену», а в go-подтверждении упомянул «например... без слов "накину", "держите", "лови" и подобных» — короче. Применил расширенную формулировку из контракта (она шире, явнее) — Сергей подтвердил «согласен».
+
+### Открыто в следующую сессию
+
+- **Live smoke виджет-Sofia 06.05** через `t.me/m/Fiw3ldhkN2My` — Сергей сверяет: (a) первая реплика без слов «Oazis Estate» / без упоминания агентства, (b) фраза отправки PDF нейтральная без 5 запрещённых слов. Если оба пункта чисты — итерация закрыта окончательно. При расхождении — L0 rollback или новая микро-правка формулировки.
+- **Carry-over P3:** в PROD `core/pipeline.py:350-358` `stream_voice_response` всё ещё имеет второй блок инжекции `object_context+presentation_url`, в который addon **не пробрасывается**. Atlantis в голос не используется — если когда-нибудь вернётся, новые запреты на бренд/жаргон тоже не дойдут до voice-промпта. Не блокер.
+- **Carry-over from 05.05 cosmetic drift:** PROD `config/source_objects.py` всё ещё не black-форматирован (drift на `detect_source`/`load_object_context`). Backlog P2 «chore(format): backport black on source_objects.py from dev to prod» остаётся открытым.
+
+### Snapshots
+
+- `/tmp/source_objects.py.prod.before_addon_polish_20260506_082633` (9519 байт)
+- `/tmp/source_objects.py.dev.before_addon_polish_20260506_082633` (9567 байт)
+
+---
+
 ## 05.05.2026 — ATLANTIS-виджет: read-only аудит первого касания + ATLANTIS_ADDON_INFRA_PORTBACK + новый prompt_addon
 
 ### TL;DR
@@ -438,129 +506,3 @@ Pacing-фикс убрал проглатывания/дропы, но оста�
 - **docs/VOICE_ARCHITECTURE.md** — блок «Pacing fix (20.04)» после таймингов с объяснением асимметрии
 
 ---
-
-## 20.04.2026 (session 2, вечер) — RIZALTA v4.3, speed A/B (1.1→1.0→1.2), codec recon
-
-### TL;DR
-
-После утреннего pacing-фикса прошла вторая серия спринтов: (A) RIZALTA промпт v4.3 с ценами + порогом входа + фактологическими правками, (B) A/B эксперимент TTS speed 1.1→1.0→1.2 с регенерацией cached greeting трижды, (C) синхронизация hardcoded greeting text в `voice_asterisk.py` с v4.3, (D) разведка SIP codec negotiation через Telphin — вывод: G.722 недоступен на уровне провайдера, Stage 2 отменён. Итог: **speed=1.2 зафиксирован** как оптимальный (на live-речи субъективное улучшение), greeting-артефакты остались — требуют отдельного диагностического спринта.
-
-### Хронология коммитов (DEV)
-
-| # | SHA | Subject |
-|--:|------|---------|
-| 1 | `0cedd8f0` | feat(voice): RIZALTA v4.3 — pricing + entry threshold + fact corrections |
-| 2 | `e8cbd0b6` | fix(voice): sync hardcoded greeting with v4.3 prompt (remove 'окупаемостью') |
-
-### Sprint B — RIZALTA v4.3 (pricing + entry threshold)
-
-- `VOICE_SYSTEM_PROMPT_RIZALTA` в `core/pipeline.py` (lines 646-842), md5 `583a977df…` → `e5c7af2e9…`
-- Убрано из canonical pitch + 3 few-shot примеров: «окупаемостью от семи лет»
-- Добавлено: «Минимальная цена апартамента — пятнадцать миллионов рублей за двадцать два квадратных метра», «Минимальный вход в сделку — четыре миллиона семьсот тысяч рублей»
-- Snapshot: `/tmp/pipeline.py.before_v43_20260420_174825` (VPS)
-- Задеплоено через scp DEV→VPS, sofia-voice restart, live-звонок подтвердил
-
-### Sprint C/E — YANDEX_TTS_SPEED A/B (1.1→1.0→1.2)
-
-- **Baseline** `YANDEX_TTS_SPEED=1.1` (код default, в .env не было): `greeting_rizalta.pcm` 198318 B, 12.39s, md5 `8e553237…`
-- **Speed=1.0** (Sprint C): добавлена строка `YANDEX_TTS_SPEED=1.0` в `/opt/sofia-voice/.env`, PCM регенерирован нативным импортом `voice_asterisk` (скрипт `/tmp/regen_greeting_speed10.py`, использует `synthesize_tts_yandex` + `add_ssml_breaks` из hot path — zero drift). Результат: 205006 B, 12.81s, md5 `fe60bf5d…`. **Non-linear time-stretching** — ожидалось ~13.6s (+10%), получили +3.4%
-- **Greeting sync v4.3** (Sprint D): в `voice_asterisk.py:668` заменил hardcoded literal — убрал «и окупаемостью от семи лет», поставил «в год». После регенерации: 181972 B, 11.37s, md5 `e0e97036…`. Snapshot: `/tmp/voice_asterisk.py.before_greeting_v43_20260420_191636`
-- **Speed=1.2** (Sprint E): `YANDEX_TTS_SPEED=1.2` в .env, регенерация: 150206 B, 9.39s, md5 `44d25194…`. Сжатие −17.4% от speed=1.0 (против ожидания −16.7% — близко к линейному в эту сторону)
-- **Ear-validation Сергея:** speed=1.2 на live-речи даёт субъективное улучшение (меньше «тягучести»), на cached greeting артефакты остались стабильными на всех трёх значениях speed
-
-### Sprint F — SIP codec recon (Stage 1, Stage 2 отменён)
-
-- Текущая конфигурация `/etc/asterisk/pjsip.conf` VPS: `disallow=all; allow=alaw; allow=ulaw`. Snapshot: `/tmp/pjsip.conf.before_codec_20260420_164536` (md5 `c52386700b…`)
-- `pjsip set logger on` → 2 тестовых звонка Сергея → `pjsip set logger off`
-- **Telphin INVITE offer (идентичен в обоих звонках):**
-  ```
-  m=audio <port> RTP/AVP 8 0 101
-  a=rtpmap:8 PCMA/8000    ← alaw
-  a=rtpmap:0 PCMU/8000    ← ulaw
-  a=rtpmap:101 telephone-event/8000
-  ```
-- **G.722 Telphin не offerит.** Asterisk в 200 OK зеркалит тот же порядок, согласован **alaw** (первый общий).
-- `core show translation`: slin16→g722 фактически быстрее (6000μs) чем slin16→alaw/ulaw (14500μs), но это неприменимо — G.722 нет в offerе
-- **Вывод:** переключение alaw↔ulaw — косметика, оба 64 kbit/s PCM 8 kHz, одна и та же психоакустика G.711. HD-звук через Telphin невозможен без изменений на стороне провайдера. Это **fundamental limit** PSTN через Telphin — документируется и принимается
-- **Stage 2 отменён** (перестановка кодеков в pjsip.conf) — нет данных, что это улучшит качество. Снапшот оставлен в /tmp как страховка, rollback не требуется
-
-### Ключевые архитектурные паттерны (закрепились)
-
-- **Read-only разведка как первый этап двухэтапного спринта** — Sprint F разделили на «разведка» (логи SDP через `pjsip set logger`) и «модификация». После разведки решение было отменить модификацию. Спринт не закрыт как «выполнен» — закрыт как «проверено, оказался no-op». Разведочный этап сэкономил правку pjsip.conf, которая дала бы 0 эффекта
-- **Native-import регенерация PCM** (`sys.path.insert + import voice_asterisk`) — использует те же `add_ssml_breaks` + `synthesize_tts_yandex` что и runtime hot path. Zero drift от production, гарантирует что cached greeting соответствует точно тому же пути синтеза что live TTS
-- **Субъективная ear-validation после объективных метрик** — speed=1.2 снижает PCM на 17.4% (объективно), но финальное решение за ухом Сергея: live улучшилось, greeting не изменился
-- **Провайдер PSTN как hard ceiling качества** — до сегодня считали что возможно договориться о HD через кодек. Оказалось: Telphin offerит только G.711 (alaw/ulaw), G.722/Opus не на столе. Потолок SIP-линии — 8kHz narrowband независимо от нашей TTS. Для HD нужна смена провайдера или переход на Over-The-Top (WebRTC/Daily) для конкретных сценариев
-
-### Обнаруженные побочные проблемы
-
-- **scp `-P 2222` port conflict** — при активном алиасе `sofia-voice` в `~/.ssh/config` (port 22) передача `-P 2222` перекрывает алиас и идёт на несуществующий порт. **Правило:** не использовать `-P 2222` вместе с алиасом `sofia-voice`
-- **SSH session timeout при load 28** — во время длинной работы на VPS произошёл session hang (auth проходил, channel_open_confirmation не приходил). Сергей рестартанул Asterisk, load упал 28→5, VPS восстановился. Причина load 28 не диагностирована (P2): либо запущенный Silero inference + ffmpeg rotation + gRPC STT race, либо disk I/O
-- **Регенерационный скрипт с hardcoded assert** — `/tmp/regen_greeting_speed10.py` содержал `assert va.YANDEX_TTS_SPEED == 1.0`, для speed=1.2 пришлось патчить через sed. Минор
-
-### Открыто в следующую сессию
-
-**🟡 «Greeting PCM playback artefacts» — почему cached звучит хуже live при идентичном transcoding**:
-
-Speed=1.2 дал улучшение на live TTS, но **не** на cached greeting. При том что транскодинг пути одинаковые (оба `_speak_pcm` → AudioSocket → G.711 alaw → Telphin). Гипотезы:
-1. **Static file artefacts при повторных воспроизведениях** — что-то в пути чтения файла/передачи чанков, чего нет в live-stream
-2. **Silence/breath между `add_ssml_breaks` гранями** генерируется детерминированно в cached, но адаптивно в live (из-за разных начальных условий SSML parser / TTS engine state)
-3. **Артефакты ре-воспроизведения PCM, сохранённого при одном прохождении TTS engine**, которые не слышны в live потому что каждый live-синтез идёт через свежий prepare chain
-4. **Физический артефакт waveform phase при 8kHz decimation** из greeting_rizalta.pcm именно — live избегает за счёт непрерывного потока
-
-**Бесплатный первый шаг диагностики:** записать через MixMonitor live-синтез того же greeting-текста без cached PCM (выключить cached-load на 1 звонок), сравнить с MixMonitor'ом звонка где греeting пришёл из cached. Если live чистый — причина в cached-path. Если оба грязные — физика 8kHz/G.711.
-
-Отдельный спринт, P1 в BACKLOG.
-
-### Deploy details
-
-- **sofia-voice**: systemctl active, последний рестарт при Sprint E speed=1.2, PID live
-- **Snapshots в /tmp** (VPS, оставлены для rollback до ребута):
-  - `pipeline.py.before_v43_20260420_174825`
-  - `greeting_rizalta.pcm.before_speed10_20260420_190137`
-  - `voice_asterisk.py.before_greeting_v43_20260420_191636`
-  - `greeting_rizalta.pcm.before_greeting_v43_20260420_191636`
-  - `greeting_rizalta.pcm.before_speed12_20260420_192339`
-  - `pjsip.conf.before_codec_20260420_164536`
-- **Финальный .env VPS:** `YANDEX_TTS_SPEED=1.2` (зафиксировано как оптимальное)
-- **Git DEV**: `0cedd8f0` + `e8cbd0b6` pushed в origin (утро), этот session-close коммит (вечер) — не пушить
-
-### Docs Updates
-
-- Этот session-close коммит — `SESSION_LOG.md` (блок session 2) + `BACKLOG.md` (новый P1). Других docs правок нет.
-
-### Sprint G — Asterisk post-mortem (incident 14:56–15:53 UTC)
-
-**Контекст:** во время вечерней серии deploy'ев (4 подряд `systemctl restart sofia-voice` на 14:55/16:02/16:17/16:24 UTC в рамках Sprint B/C/D/E) VPS вошёл в критическое состояние: Asterisk 193.9% CPU (2 ядра в полку), load 27.46, 4 stuck systemd PID в D-state. SSH timeout'ы с основного сервера в 14:55+ UTC. Ликвидация: `systemctl restart asterisk` в 15:53 UTC → load 28→5, sofia-voice сам не трогался. Разведка проведена read-only после восстановления.
-
-**Root cause — orphan AudioSocket channels:**
-- Каждый restart sofia-voice во время активного звонка → Python TCP socket (port 9090) умирает
-- Asterisk PJSIP-канал остаётся активным с работающим `AudioSocket()` dialplan app
-- `app_audiosocket.c` продолжает форвардить RTP от Telphin в dead TCP → tight retry loop с ECONNRESET
-- 4 restart'а × N одновременных звонков = несколько orphan'ов → 193% CPU, 79% sys-time
-- **Конкретные orphan'ы на момент ликвидации:** PJSIP channels `0x09` и `0x0a` (номера ниже чем у каналов 13-14 UTC — пережили 2+ deploy'ев)
-- **Factoid smoking gun:** `asterisk.service: Consumed 1h 56min 44.771s CPU time` при stop'е (2h активной CPU при общем uptime 13ч)
-- **Log silence 13:41 → 15:53 UTC (2h 12min)** — Asterisk физически не успевал флашить логи
-- **Post-restart баг сохранился:** новый orphan `00000004` в 16:50:54 UTC (уже после ликвидации) — подтверждает что root cause в архитектуре, не в конкретных каналах
-
-**Secondary — kernel PSI bug 6.8.0-110:**
-- systemd user-сессии из SSH-логинов (моих retry'ев) застревали в D-state на close() cgroup pressure trigger
-- Stack: `__x64_sys_close → __fput → kernfs_fop_release → cgroup_pressure_release → psi_trigger_destroy → kthread_stop → wait_for_completion`
-- 4 подтверждённых stuck PID (19335/19664/19820/19902), hung_task trace каждые 2 минуты
-- Не источник CPU storm'а (D-state = не потребляет CPU), но источник «13 зомби» в context'е Сергея
-- Лечение: kernel upgrade (отложено, P2 backlog)
-
-**Recon Stage 2A (safety net):**
-- Targeted hangup синтаксис: `asterisk -rx "core show channels concise" | awk -F'!' '$6=="AudioSocket" {print $1}' | xargs -I{} asterisk -rx "channel request hangup {}"` — Asterisk 20 не поддерживает `hangup like <pattern>`
-- Решение 2 файла в `/opt/sofia-voice/bin/`: `hangup_audiosocket.sh` (ExecStop хук) + `load_watchdog.sh` (cron каждые 2 мин, load>15 AND asterisk_cpu>150%, debounce 10 мин, Telegram alert опционально)
-- **Блокер Telegram alert:** `TELEGRAM_BOT_TOKEN` + `ADMIN_CHAT_ID` присутствуют в `/opt/sofia-gpt/.env` (main server), **отсутствуют** в `/opt/sofia-voice/.env` (VPS)
-
-**Deploy решения — отложено на P1:** Сергей выбрал не деплоить safety net прямо сейчас. Причины: (1) root cause понят и контролируется дисциплиной «no restart during calls», (2) ExecStop хук во время звонка обрывает активный разговор — цена для пилота неочевидна, (3) watchdog может ложно сработать если пилот выйдет за пределы экспериментальных оценок load. Вернёмся после первых пилотных звонков с реальными метриками.
-
-**Критическое операционное правило на пилот:** НЕ делать `systemctl restart sofia-voice` во время активных звонков. Если нужен hot-patch — сначала `asterisk -rx "core show channels count"`, убедиться `0 active channels`, только тогда restart. Все planned deploy'и — в окне тишины между тестерами.
-
-**Read-only подтверждение:** 0 write-операций на VPS в post-mortem фазе. Все snapshots 20.04 (pipeline/voice_asterisk/greeting_rizalta.pcm × 3/pjsip.conf) живут в `/tmp` до ребута как страховка L1 rollback.
-
----
-
----
-
