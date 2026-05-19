@@ -2,6 +2,108 @@
 
 > 📁 **Архив старых сессий:** [SESSION_LOG_ARCHIVE.md](SESSION_LOG_ARCHIVE.md). Если нужен контекст по старым сессиям — читать оттуда.
 
+## 19.05.2026 — Claude Code recon + Atlantis виджет forensics + prompt_addon commit в HEAD
+
+### TL;DR
+
+Сессия из трёх read-only/коммит-only спринтов после смены ссылки виджета на сайте Атлантиса (19.05 утром Сергей переключил `t.me/m/Fiw3ldhkN2My` → `t.me/m/QinKZEsTNmRi` — теперь идентично Тильда-форме с prefilled-текстом «Здравствуйте, отправьте презентацию АК «Атлантис»»). (1) **CLAUDE_CODE_LOCAL_RECON_v1** — инвентаризация локальной Claude Code инсталляции перед началом multi-agent workflow: версия 2.1.144 (≥ v2.1.36 для fast mode и ≥ v2.1.117 для fork — оба требования выполнены), fast mode не активирован (ни одной opt-in env-переменной), custom subagents не настроены, AGENT_TEAMS / FORK_SUBAGENT не включены. (2) **WIDGET_BITRIX_FORENSICS_v1** — пошаговая карта что происходит когда виджет-клиент кликает по новой ссылке: с явной новой ссылкой виджет теперь технически проходит ту же воронку что Тильда, но без Тильда-формы на стороне Bitrix → `find_recent_atlantis_lead` всегда вернёт `None` для виджет-юзеров, создастся новый лид с `SOURCE_ID=504` (не 397), `ASSIGNED_BY_ID=428` (Sofia AI), `TITLE="AI-бот: <name>"`. Реальный 60-сек collision-риск с чужими Тильда-лидами: 0 за последние 14 дней (16/16 `find_recent_atlantis_lead` → 0 лидов), оценка при росте виджет-трафика 1.6% средняя / 7.8% пик. (3) **PROMPT_ADDON_COMMIT_v1** — закоммитили uncommitted prompt_addon полировку в HEAD обоих репо (расширение блока «КАНАЛ ПЕРЕДАЧИ» Max/WhatsApp/TG + полировка случая 2). DEV `418b6b5f` (push), PROD `c72b6122` (без push by-design).
+
+### Хронология коммитов
+
+| # | Репо | SHA | Subject |
+|--:|------|------|---------|
+| 1 | DEV | `418b6b5f` | refactor(atlantis): prompt_addon — channel-transfer block (Max/WhatsApp/TG) + case-2 polish (push origin/main `73aed3e2..418b6b5f`) |
+| 2 | PROD | `c72b6122` | refactor(atlantis): prompt_addon — channel-transfer block (Max/WhatsApp/TG) + case-2 polish (без push by-design) |
+
+### Sprint 1 — CLAUDE_CODE_LOCAL_RECON_v1 (read-only)
+
+Перед введением multi-agent workflow Сергей попросил инвентаризовать локальную Claude Code инсталляцию: версия, Fast mode статус (важно — с 14.05.2026 fast mode переключился с Opus 4.6 на 4.7, опасность случайно включённого = x2 стоимость токенов), доступность Task tool / Subagents / Agent Teams / Fork subagents.
+
+**Ключевые находки.**
+- **Версия 2.1.144**, путь `/root/.local/bin/claude`. Удовлетворяет минимумам fast mode (v2.1.36) и fork subagent (v2.1.117).
+- **Fast mode НЕ активирован.** Ни одной opt-in env-переменной (`CLAUDE_CODE_ENABLE_OPUS_4_7_FAST_MODE`, `CLAUDE_CODE_OPUS_4_6_FAST_MODE_OVERRIDE`, `CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS`, `CLAUDE_CODE_FORK_SUBAGENT`), нет блока `env` в `~/.claude/settings.json` (там только `trustedDirectories` + `effortLevel: xhigh` — НЕ относится к fast mode), нет в `~/.claude/settings.local.json`, нет в shell profiles. Все `CLAUDE_CODE_*` переменные в окружении — служебные (`SESSION_ID`, `ENTRYPOINT`, `EXECPATH`).
+- **Custom subagents не настроены.** Ни `~/.claude/agents/`, ни `/opt/sofia-gpt-dev/.claude/agents/`, ни inline `agents:` ключа в settings. Доступны только дефолтные через `Agent` tool: `claude`, `claude-code-guide`, `Explore`, `general-purpose`, `Plan`, `statusline-setup`.
+- **Slash-команды загружаются как skills внутри интерактивной сессии**, из `claude --help` напрямую не перечисляются. Подтверждены через косвенные сигналы: `/loop` (skill в user-invocable списке), `/resume` (CLI-флаг `-r`). Не смог проверить из bash без интерактива: `/fast`, `/agents`, `/tasks`, `/config`.
+- **Multi-agent инструменты доступны** в текущей сессии через `Agent` tool с `subagent_type`, `model`, `isolation: worktree`, `run_in_background` параметрами. CLI поддерживает `--agents '<json>'` для inline-определения custom agents при запуске сессии. `claude agents` subcommand управляет background-агентами (отдельный механизм от Task-tool subagents).
+- **Cloud MCP** (Google Drive / Gmail / Calendar) — все 3 «Needs authentication», не подключены. Project-scope MCP: `enabledMcpjsonServers: ["sqlite"]`.
+
+**Побочные обнаружения.** `/opt/sofia-gpt-dev/.claude/settings.local.json` распух до 14599 байт / 249 entries в `allow`-списке (накопилось за месяцы work-around'ов permission-промптов, многие entries — сиюминутные: `kill 1378804`, конкретные `scp` пути, разовые `WAVESPEED_API_KEY=...`). Кандидат на `/fewer-permission-prompts` skill в будущей сессии. Не блокер.
+
+### Sprint 2 — WIDGET_BITRIX_FORENSICS_v1 (read-only forensics)
+
+Сергей сегодня утром поменял ссылку в виджете на сайте Атлантиса с `t.me/m/Fiw3ldhkN2My` (старая, prefilled-текст «Помогите подобрать квартиру в АК Атлантис») на `t.me/m/QinKZEsTNmRi` (новая, prefilled-текст «Здравствуйте, отправьте презентацию АК «Атлантис»» — **идентично Тильда-форме**). Цель — чтобы Sofia при первом касании виджет-клиента отправляла PDF (как делает для Тильда-клиентов) и начинала квалификацию. До этого виджет-клиент шёл в обычную квалификацию без отправки PDF. Документация (`docs/ATLANTIS_WIDGETS_STATE.md`) писалась когда текст был другой, есть подозрение что `find_recent_atlantis_lead` будет срабатывать по-другому (привязка к чужим Тильда-лидам в 60-сек окне).
+
+**Полная пошаговая карта** (16 шагов от Radist webhook до Sofia ответа, с file:line):
+1. Radist `messages.create` webhook → `handle_webhook()` (`sofia_radist_gateway.py:1125`). Парсятся phone (часто пуст), user_name, tg_username, tg_profile_link.
+2. `process_with_queue` → `process_message_wrapper` → `user_id = -(2_000_000 + chat_id)`.
+3. `detect_source(combined_message)` → matches «атлантис» в guillemets («Атлантис») → `source_object="atlantis"`, `is_first_atl=True`.
+4. **Bitrix-bind блок** (`:934-958`): `find_recent_atlantis_lead()` — фильтр `SOURCE_ID=397` за последние 60 сек, сортировка `DATE_CREATE DESC`, MSK.
+5. При найденном Тильда-лиде: `save_radist_lead_id`, `save_original_assigned`, `set_lead_assigned(428)`, `update_lead(COMMENTS, telegram_url)`.
+6. При `None`: лид будет создан позже (после первой реплики Sofia в `send_callback`).
+7. Pipeline: `source_object` + `user_msg_count ≤ 2` → Analyzer пропущен, stage=GREETING форсирован, object_context + presentation_url + prompt_addon инжектируются в system_prompt (`core/pipeline.py:194-207`).
+8. `send_callback` (`:1010-1081`): save_message, send_message, observer_ping, `create_or_update_lead`.
+
+**Три ветки виджет-клиента (с реальными SOURCE_ID/ASSIGN/TITLE):**
+
+| Сценарий | find_recent | SOURCE_ID лида | ASSIGNED (после первой реплики) | TITLE | UF_CRM_TELEGRAM |
+|----------|-------------|----------------|---------------------------------|-------|------------------|
+| Свежий клиент (phone пуст у Telegram Business) | `None` | `504` (default `BITRIX_SOURCE_ID`, в `.env` PROD не задано) | `428` → `24932` (после finalize_lead) | `AI-бот: <user_name>` | `https://t.me/<tg_username>` |
+| Повторный клиент с phone | `None`; `find_lead_by_phone` нашёл (только `STATUS_ID=NEW`) | Остаётся прежний у найденного | `update_lead` без перетирания ASSIGN | Прежний | Обновится если `telegram_url` непуст |
+| **Коллизия 60-сек** (чужой Тильда-лид) | `{id: X, assigned: Y}` (lead 397) | **Остаётся `397`** (привязка не перезаписывает SOURCE_ID) | `Y → 428` → `24932`. Original Y сохранён в `lead_assigned` | Остаётся прежний (Тильда-формат) | **ПЕРЕЗАПИШЕТСЯ** на виджет-юзера |
+
+**60-сек коллизия — реальная статистика за 14 дней:**
+- 16 вызовов `find_recent_atlantis_lead`, все 16 вернули `найдено: 0 лидов`. **0 фактических коллизий.**
+- Тильда-лидов (`SOURCE_ID=397`) ≥ 50 за 14 дней (хит page limit). Средняя плотность ~1 лид / 62 мин → P(коллизия) ≈ 1.6% средняя, 7.8% в пик (10-12 утра, наблюдались Тильда-лиды с разрывом 69 сек).
+- При росте виджет-трафика до 10-20 сессий в день в часы пик — ожидаем **0.5-1.5 false-bind в день**. При коллизии: stranger's manager «теряет» лид молча (Y сохранён в локальную таблицу, не в Bitrix), `UF_CRM_TELEGRAM` перезапишется виджет-юзером, comments попадут не те.
+
+**Реальные данные** (10 последних радист-лидов из Bitrix): 4 виджет-лида (270596 Диана, 270552 Юля, 270220 sergey_7in, 269534 Изосина) — все `SOURCE_ID=504`, `TITLE="AI-бот: ..."`, `UF_CRM_TELEGRAM=t.me/<username>`, без phone. Старые Тильда-лиды (268062, 268056, 266992 и т.д.) — `SOURCE_ID=397`, real-manager ASSIGN (174264, 77598, 84940), phone из формы. Лиды 270854 / 270858 удалены из Bitrix вручную, но остались в `radist_leads` как привязка к призраку (если эти user_id напишут снова — `update_lead` тихо упадёт, на следующей итерации та же ошибка).
+
+**🔴 Главная новая риск-зона после смены ссылки.** Конфликт в `prompt_addon`:
+- Блок `ПЕРВАЯ РЕПЛИКА`: «Даже если клиент в первой реплике сам пишет «расскажите про Атлантис» — отвечай мягко и переходи к квалификации.»
+- Блок `ПРЕЗЕНТАЦИЯ (PDF)`: «Случай 4 — Клиент прямо попросил презентацию.»
+
+Для нового prefilled-текста «Здравствуйте, **отправьте презентацию** АК «Атлантис»» — это **буквальный случай 4**, но одновременно **первое сообщение**. Эти два правила в прямом конфликте, поведение LLM непредсказуемо: может отправить ссылку сразу (правильно по интенции замены ссылки), может начать квалификацию (по букве правила «ПЕРВАЯ РЕПЛИКА»). Из кода нельзя предсказать — это поведение `gpt-5.2` на неоднозначном промпте. Требуется live-smoke Сергеем и, скорее всего, точечная правка `prompt_addon` чтобы разрешить конфликт (например: «исключение из правила ПЕРВАЯ РЕПЛИКА — если клиент в первом сообщении прямо просит презентацию, см. ПРЕЗЕНТАЦИЯ Случай 4»).
+
+### Sprint 3 — PROMPT_ADDON_COMMIT_v1
+
+Forensics-спринт выявил что `config/source_objects.py` в обоих репо имеет **НЕзакоммиченные** изменения поверх HEAD (расширение блока «ЗАПРОС КОНТАКТА И КАНАЛ ПЕРЕДАЧИ» + полировка случая 2 «отказ от созвона»). Runtime уже работает по working tree (Python подгружает с диска), но HEAD не содержит этой правки — любой `git checkout` или re-deploy откатит работающее поведение.
+
+**Investigate (STOP #1):** diff DEV vs PROD working tree показал расхождение **только в helper-функциях** `detect_source()` (`:119-124`) и `load_object_context()` (`:137-141`) — DEV black-форматирован (двойные кавычки, многострочный `re.sub`, blank lines), PROD не форматирован (одинарные кавычки, однострочный `re.sub`). **`prompt_addon` текст байт-в-байт идентичен в обоих репо** — это известный ambient cosmetic drift, в этот коммит не лезет. Diff каждого working tree против HEAD — 44 строки, ИДЕНТИЧНЫ в DEV и PROD (одна и та же правка `prompt_addon`).
+
+**Сергей дал «go»** + одну минор-правку: опечатку «експерт» → «эксперт» в commit body исправить перед коммитом.
+
+**Deploy.** `git add config/source_objects.py` (явный путь, untracked не затронуты) → commit в обоих репо. DEV pre-commit hook (`flake8 + black --check`) прошёл без замечаний (`All done! ✨ 🍰 ✨ 1 file would be left unchanged.`). DEV push → `73aed3e2..418b6b5f main → main`. PROD коммит локально без push (`origin push=no_push` by-design). Содержимое source_objects.py не менялось — md5 до = md5 после в каждом репо (DEV `7482de1b…`, PROD `cf5a543a…`).
+
+### Финальные md5 после сессии
+
+| Файл | DEV | PROD |
+|------|-----|------|
+| `config/source_objects.py` | `7482de1bd18f0d39ff7639247ba31021` | `cf5a543ad888e9466d284d68be2916c0` |
+
+(разные md5 — ambient black-drift на helper-функциях, остаётся как был; `prompt_addon` идентичен побайтно)
+
+### Уроки
+
+1. **STOP-poin при unexpected drift между DEV/PROD спасает от коммита разных вещей.** Контракт запросил «если diff DEV vs PROD оказался содержательным — НЕ предлагать коммит». Diff формально был (4 строки на helper-функциях), но не касался `prompt_addon`. Правильный ответ — остановиться, показать структуру расхождения (где именно отличается, относится ли к scope), и дать оркестратору решить. Сергей подтвердил `go` за минуту после остановки. Молчаливое продолжение коммита (даже если drift косметический) — нарушение скоупа, любая будущая правка ambient-drift'а должна идти отдельным sprint'ом.
+
+2. **Forensics-перед-фиксом для каналов с известной конфигурацией риска.** При смене ссылки виджета Сергей не пошёл сразу править prompt_addon под новый flow — сначала запросил полную карту что технически происходит с новым prefilled-текстом, какие три ветки (свежий / повторный / коллизия), какие SOURCE_ID/ASSIGN/TITLE проставятся в каждой, какие реальные данные за 14 дней говорят про collision-risk. Принципиальное открытие forensics'а — конфликт «ПЕРВАЯ РЕПЛИКА vs Случай 4» в prompt_addon, который существует независимо от смены ссылки, но **активируется именно прямой формулировкой «отправьте презентацию»** в первом сообщении. Без forensics его бы не заметили — он не лежит на поверхности.
+
+3. **Pre-commit hook ловит формальные ошибки до push, но не семантику.** DEV-коммит `418b6b5f` прошёл `flake8 + black --check` чисто. Хорошо. Но опечатку «експерт» в commit body это не поймало (body коммит-сообщения хук не проверяет). Поймал Сергей на STOP-point. Правило для исполнителя: после автоматических проверок ещё раз глазами пройтись по commit message целиком, особенно по русскоязычным фрагментам.
+
+### Открыто в следующую сессию
+
+- 🔴 **Live smoke виджет-Sofia на новой ссылке** — Сергей делает первое реальное обращение через `t.me/m/QinKZEsTNmRi` (или находит первого реального клиента). Что критично проверить: (a) отправит ли Sofia PDF на первой реплике (по Случаю 4), или начнёт квалификацию (по букве «ПЕРВАЯ РЕПЛИКА»). Если PDF → конфликт de-facto разрешён в пользу Случая 4, можно не править. Если квалификация без PDF — нужна точечная правка `prompt_addon` (одно предложение-исключение в блоке ПЕРВАЯ РЕПЛИКА). (b) Создаётся ли лид с `SOURCE_ID=504` и `ASSIGNED_BY_ID=428` — проверить через `crm.lead.get` после первого клиента. (c) Нет ли неожиданной 60-сек коллизии — `journalctl -u sofia-radist | grep find_recent_atlantis_lead` после звонка.
+- 🟡 **Carry-over: мёртвые лиды 270854/270858 в `radist_leads` PROD** — записи живут как привязка к удалённым из Bitrix лидам. Если те user_id (`-42772202` Lena Volgina, `-42772545` polina) напишут снова, `update_lead` тихо упадёт. Очистка: `DELETE FROM radist_leads WHERE bitrix_lead_id IN (270854, 270858);`. P3, не блокер.
+- 🟡 **Carry-over: `find_lead_by_phone` STATUS_ID=NEW only** (`core/bitrix.py:198`) — повторный клиент с закрытым/конвертированным предыдущим лидом не распознаётся как повторный, появится дубликат. By-design, но для виджет-юзеров без phone дедупликация не работает в принципе. P2 если нужно нормально дедуплицировать виджет-клиентов по telegram username.
+- 🟢 **Ambient cosmetic drift `detect_source/load_object_context`** — DEV black-форматирован, PROD нет. Существует с 05.05+, в этой сессии не тронут. Можно отдельным sprint'ом `black config/source_objects.py` в PROD + commit (без push автоматом).
+- 🟢 **Multi-agent workflow готов к запуску** — инфра Claude Code 2.1.144 поддерживает (`Agent` tool, `--agents` CLI-флаг, `claude agents` subcommand для background). Fast mode и AGENT_TEAMS можно включить точечно env-переменными когда понадобится — сейчас правильно что выключены (избегаем случайной x2 стоимости).
+
+### Snapshots
+
+Нет новых снапшотов — read-only спринты + только коммит-операции, содержимое файлов не менялось. Старые `/tmp/source_objects.py.{prod,dev}.before_atl_funnel_20260508_*` оставлены как L1 страховка от 8 мая.
+
+---
+
 ## 06.05.2026 — ATLANTIS-виджет: post-deploy polish prompt_addon (бренд + жаргон в PDF)
 
 ### TL;DR
@@ -335,174 +437,3 @@ Carry-over на следующую сессию: (1) Telphin autodial — ждё
 
 ---
 
-## 20.04.2026 — pacing fix + локализация проглатывания слогов в голосе
-
-### TL;DR
-
-Длинная сессия от 05:46 MSK. **Главное достижение: локализован и починен корневой источник проглатывания слогов в голосовом канале Sofia** — AudioSocket buffer overflow из-за `asyncio.sleep(0.018)` pacing против 20ms playback rate. Fix асимметричный: `_speak_pcm=0.020` / `_speak=0.019` (компенсация ~1ms event loop overhead от параллельных gRPC STT + Silero inference в активном разговоре). Подтверждено математически (correlation greeting-source vs MixMonitor 0.034 → 0.987) и ушами Сергея на silent + активных тестовых звонках. 2 коммита в origin DEV, PROD не тронут (voice-компонентов в `/opt/sofia-gpt/` нет).
-
-Остался один открытый вопрос для следующей сессии — «склейки внутри слов» (шероховатость на стыках слогов, не связана с overflow). Бесплатная диагностика через уже скачанные A/B файлы.
-
-### Хронология коммитов
-
-| # | Репо | SHA | Subject |
-|--:|------|------|---------|
-| 1 | DEV | `8f3eeaf0` | feat(voice): pacing fix _speak 0.018→0.019, _speak_pcm 0.018→0.020 |
-| 2 | DEV | `7f65fadd` | docs(voice): document pacing fix 20.04 |
-
-### VPS апгрейд 1→2 vCPU (Timeweb Premium NVMe)
-
-- Апгрейд с 1 vCPU до **2 vCPU, 4 GB RAM** на Premium NVMe тарифе (~1000₽/мес). `nproc=2`, load 0.00, RAM 3.2 GB free после boot — аппаратно система в норме
-- Гипотеза из 19.04 «1 vCPU = главный bottleneck» **не подтвердилась** — проглатывания слогов сохранились после апгрейда на silent test звонке. Аппаратная конкуренция CPU оказалась ложным следом
-
-### CHUNK-инструментация `_speak` (коммит в `/opt/sofia-voice/` на VPS, DEV-only)
-
-- Добавлено per-chunk timing логирование в `_speak` Yandex-branch: uuid + chunk_idx + offset + t_before_us + send_dur_us + sleep_actual_us + sleep_overrun_us, плюс ⚠️ SLEEP_OVERRUN warning при overrun >10ms
-- Snapshot: `/tmp/voice_asterisk.py.before_instr_20260420_041752` на VPS (md5 `d677c89c9a9242f3ff923350954abde3`)
-- sofia-voice рестартован, тестовый звонок Сергея `8ad55f5b` (171с, 11 TTS реплик, 4373 CHUNK-строк)
-
-### Первый неверный вывод: «Python-уровень чист, виновник downstream»
-
-Анализ CHUNK-timing звонка `8ad55f5b`:
-- sleep_overrun median 947us, p99 2147us, max 3510us — **0 overrun >10ms** на 4373 интервала
-- send_dur median 75us, max 458us — socket.send никогда не блокируется
-- Inter-chunk gap медиана 19 114us, max 21 697us — стабильно
-- Позиция в реплике не выделяется (first_10 avg 905us, mid 955us, last_5 1039us)
-
-Вывод (D): «Python-уровень pacing стабилен. Проблема не в asyncio/socket. Копать в RTP/Telfin/Asterisk transcoding». **Оказалось неверно.**
-
-### `docs/VOICE_TECH_STACK_FULL.md` написан Claude Code
-
-Исчерпывающая техническая документация voice pipeline: 49KB, 10 разделов + 2 приложения (навигация по коду + diagnostic команды), ASCII-диаграмма end-to-end, 19 шагов pipeline от SIP INVITE до звука клиента, 25 параметров с `file:line` ссылками, таблица 27 файлов. Коммит в итоговом session-close (bundle с pacing-fix).
-
-### TTS A/B матрица `TTS_AB_MATRIX_v1` — расширена для `8ad55f5b`
-
-- 12 WAV через прямой curl на Yandex TTS API (baseline alena 8k / alena 48k→soxr→8k / jane 8k × 4 фразы). Плюс MixMonitor звонка `8ad55f5b`
-- Все 12 curl-файлов звучат чисто, **Yandex TTS подтверждённо исключён** как источник проглатываний
-- scp-команда: `scp -P 2222 'root@72.56.64.91:/tmp/pilot_recordings_18_04/call_8ad55f5b_*' ~/projects_claude/Sofia/pilot_recordings_18_04/`
-
-### Silent test `b3cd88c8` — критическое наблюдение
-
-- Сергей молчал 65 секунд. **Услышал проглатывания в greeting** (вступительная фраза)
-- Greeting идёт через `_speak_pcm` из статичного файла `greeting_rizalta.pcm` (198318 bytes, 12.4s audio). Одна и та же волна на каждом звонке
-- **Значит проглатывания детерминированы** — не связаны с нагрузкой, STT, LLM, параллельными процессами. Чисто воспроизводимый дефект pipeline `_speak_pcm → AudioSocket → Asterisk → MixMonitor`
-- `_speak_pcm` не был инструментирован → 0 CHUNK-строк для этого UUID
-
-### Прямое сравнение `greeting_source` vs `greeting_via_mixmon`
-
-Побайтовый dropout-анализ MixMonitor WAV первых 13с vs оригинальный PCM-файл:
-- **Correlation 0.034** — паттерн громко-тихо радикально расходится
-- **209 loud→silent dropout-окон** 10ms (greeting RMS >1500, mixmon RMS <200)
-- 277 attenuation >5× в тех же участках
-- Сергей подтвердил ушами: в `greeting_via_mixmon.wav` слышны проглатывания, в `greeting_source.wav` — чистое аудио
-
-**Вывод:** дефект вносится **внутри** Asterisk pipeline — между `_speak_pcm` и MixMonitor. Кандидаты: наш pacing / AudioSocket app overflow / Asterisk core routing
-
-### Гипотеза overflow 18ms pacing vs 20ms playback — подтверждена
-
-- `frame_size=320B` = **20ms audio** (8kHz slin16)
-- `asyncio.sleep(0.018)` между чанками → wall_per_chunk ~19.1ms против playback 20ms
-- Накопление: 900us overflow × 50 chunks/sec = **45ms excess/sec**. За 12s greeting = **540ms лишних чанков** в AudioSocket buffer
-- Asterisk сбрасывает overflow → **209 dropout-окон** = физически потерянные фреймы, не наши digital artefacts
-
-### Симметричный фикс 0.018→0.020 — только половина решения
-
-- Правка в трёх местах: `_speak_pcm:1032`, `_speak:1096` (Yandex), `_speak:1139` (ElevenLabs legacy symmetry)
-- Snapshot: `/tmp/voice_asterisk.py.before_pacing_20260420_064354`
-- **Silent test v2 `1efe792f` — греeting ЧИСТЫЙ:** correlation 0.987 (было 0.034), **0 dropouts** (было 209), Сергей на слух подтвердил
-- **Активный разговор `5a46a58f` — «практически каждое слово нестабильное»:** wall_per_chunk стал 20 985us vs audio 20 000us = **5% underrun**. За 10s реплики накапливается **519ms отставания**, Asterisk buffer опустошается, слышны stutter'ы. 3 dropout-дипа в первой TTS-реплике t=18.7s/19.2s/23.1s
-
-### Асимметричный фикс `_speak=0.019 / _speak_pcm=0.020` — финал
-
-Причина асимметрии: event loop overhead. В активном `_speak` параллельно работают Silero VAD inference + gRPC STT stream receive + inbound frame processing — добавляют ~855us на каждый chunk-цикл. В `_speak_pcm` нагрузки нет, overhead ~610us.
-
-Целевая формула: `sleep + event_loop_overhead + send_dur ≈ 20 000us` (идеальное попадание в audio rate).
-- `_speak`: 19 000 (sleep) + 855 (overhead) + 117 (send) = **19 972us** ≈ 20ms ✓
-- `_speak_pcm`: 20 000 + 610 + 100 = 20 710us (чуть больше, но без конкурентной нагрузки не слышно)
-
-Snapshot: `/tmp/voice_asterisk.py.before_asym_20260420_070119` на VPS.
-
-Контрольный звонок `dff69ac4` (126.2с, 7 TTS реплик через `_speak`, 3395 чанков):
-
-| Reply | chunks | audio_ms | wall_ms | excess | per-chunk_us |
-|-------|--------|----------|---------|--------|--------------|
-| 0 | 542 | 10 840 | 10 829 | **−11 ms** | 19 980 |
-| 1 | 1162 | 23 240 | 23 238 | **−1.6 ms** | 19 999 |
-| 2 | 1012 | 20 240 | 20 225 | −15.4 ms | 19 985 |
-
-Inter-chunk gap median = **20 000us ровно**. 0 gaps >22ms. 0 dropouts в MixMonitor на TTS-репликах.
-
-**Вердикт Сергея:** «Проглатывание небольшое было только одно во вступительной фразе. Больше проглатываний не было, но есть ощущение склейки внутри слов».
-
-### Сводка «Три прогона pacing»
-
-| Pacing | wall_per_chunk | Inter-chunk max | Greeting dropouts | TTS-реплики |
-|--------|----------------|-----------------|-------------------|-------------|
-| **18ms** (до фикса) | 19 113 us — 4% overflow | 21.7 ms | 209 | 2 проглатывания / 11 реплик |
-| **20ms symm.** | 20 985 us — 5% underrun | 22.3 ms | 0 | «каждое слово нестабильно» |
-| **19/20 asym** (финал) | 19 980 us — 0.1% | 21.5 ms | 0 | 0 проглатываний |
-
-### Коммит, снятие инструментации, push
-
-- Снята CHUNK-инструментация из `_speak` (~20 строк per-chunk timing logs — временная была)
-- Snapshot: `/tmp/voice_asterisk.py.before_cleanup_20260420_071727` на VPS
-- `8f3eeaf0` feat(voice): pacing fix + remove CHUNK instrumentation — git diff только 3 строки `0.018 → 0.020/0.019/0.019`, ни residuals от инструментации
-- `7f65fadd` docs(voice): document pacing fix 20.04 — VOICE_TECH_STACK_FULL.md (новый файл, 49KB) + VOICE_ARCHITECTURE.md (+2 строки)
-- **PROD не тронут** — `/opt/sofia-gpt/` не содержит `voice_asterisk.py`/`yandex_stt_grpc.py`/voice-файлов (подтверждено двумя независимыми grep'ами). Voice stack эксклюзивно на VPS sofia-voice (live) + git origin DEV
-
-### Ключевые архитектурные паттерны (закрепились)
-
-- **Детерминированность дефекта = локализуется через silent test.** Клиент молчит → нет нагрузки, нет STT, нет LLM — если дефект воспроизводится, он в pipeline `_speak_pcm → AudioSocket → Asterisk`. В активном звонке 11 компонентов работают одновременно, фильтр не даёт найти виновника. В silent test — 1 компонент. Переход с «активный звонок с инструментацией» на «silent test с curl-сравнением» сократил диагностику с 2 часов до 20 минут
-- **Байтовая корреляция source vs MixMonitor** — объективный инструмент для dropouts в audio pipeline. Результат 0.034 vs 0.987 даёт однозначный ответ без прослушивания Сергеем. Применимо везде где есть «проходит ли сигнал через промежуточный буфер без потерь»
-- **Асимметричный фикс под разные режимы одного паттерна** оправдан когда разница event loop overhead measurable (600us vs 850us). Не рефакторинг — две цифры вместо одной
-- **«Дешёвая диагностика перед любой правкой кода» снова прошла** — A/B через curl (30 мин) сразу исключил Yandex TTS, сэкономил 2 дня на inline-48kHz refactoring
-
-### Обнаруженные побочные проблемы
-
-- **VPS `/opt/sofia-voice/` не git-tracked.** Правки напрямую на VPS (как делали сегодня snapshot-backup'ами) живут без истории. Workflow-риск: если не синхронизировать в DEV после каждой правки, следующий DEV→VPS scp деплой молча перезапишет. Сегодня синхронизировал финальное состояние в коммите `8f3eeaf0` — корректно. **P2 backlog:** либо правила «воссегда сначала DEV, потом scp», либо git init на VPS с remote в origin
-- **yandex_stt_grpc.py и dial.py** идентичны DEV и VPS — drift отсутствует (хороший signal)
-- **Silent-test звонок `b3cd88c8` показал одно небольшое проглатывание во вступительной фразе** даже с 20ms в `_speak_pcm`. Причина: greeting total=12856ms на 12.4s audio = 3.5% underrun за 12 секунд. Оставлено как acceptable (на слух редко и не мешает); если критично — можно `_speak_pcm=0.019` но риск вернуть overflow
-
-### Открыто в следующую сессию
-
-**🟡 «Склейки внутри слов»** (carry-over из 20.04):
-
-Pacing-фикс убрал проглатывания/дропы, но осталась шероховатость на стыках слогов в TTS-репликах. Не dropouts (нули не появляются), а artefacts waveform phase.
-
-**Бесплатный первый шаг** — Сергей прослушивает уже скачанные A/B файлы на Mac:
-- `~/projects_claude/Sofia/pilot_recordings_18_04/call_8ad55f5b_reply5_baseline.wav` (Alena 8kHz production)
-- `call_8ad55f5b_reply5_48k.wav` (Alena 48kHz → soxr → 8kHz)
-- `call_8ad55f5b_reply5_jane.wav` (другой голос, тот же текст)
-- то же для `reply8_*`
-
-**3 возможных исхода:**
-
-1. **48k чище** → Sprint Contract на inline `48kHz→soxr` в `synthesize_tts_yandex` (+150мс latency, правка ~20 строк)
-2. **Все одинаковые** → физика 8kHz канала PSTN/G.711. В этом стеке не улучшить. Accept as-is
-3. **jane чище** → `YANDEX_TTS_VOICE=jane` env-переключатель (бесплатно), но ребрендинг голоса Sofia
-
-Дополнительно можно проверить: `speed=1.0` vs текущий `1.1` (time compression артефакты в TTS).
-
-**🟢 Второй заход пилота** (после подтверждения фикса живыми звонками):
-- Сергей делает 2-3 живых звонка с фиксом, подтверждает качество
-- Зовём тестеров (5-6 × 5-6 звонков) для продолжения пилота
-- Собираем 20+ записей с чистым pacing для финальной валидации RIZALTA
-- Если всё ок — RIZALTA готов к реальному обзвону
-
-### Deploy details
-
-- **sofia-voice**: systemctl active, последний рестарт 07:18 UTC после cleanup CHUNK-инструментации, PID 9266
-- **Snapshots в /tmp** (VPS, оставлены для rollback до ребута):
-  - `voice_asterisk.py.before_instr_20260420_041752` (md5 `d677c89c9a9242f3ff923350954abde3`) — pre-instrumentation
-  - `voice_asterisk.py.before_pacing_20260420_064354` (md5 `f3104a07d799aaf9e31e5371ec4a75c6`) — pre-20ms fix
-  - `voice_asterisk.py.before_asym_20260420_070119` — pre-19/20 asymmetric
-  - `voice_asterisk.py.before_cleanup_20260420_071727` (md5 `dd3d2ad9562bf5d579486d25447317a2`) — pre-cleanup CHUNK instr
-- **Финальный md5 на VPS:** `ae958c66d79797ab439b14be1d162d0b`
-- **Git DEV**: `8f3eeaf0` feat + `7f65fadd` docs, pushed в origin
-
-### Docs Updates
-
-- **docs/VOICE_TECH_STACK_FULL.md** (новый, 49KB) — полный технический стек от SIP до клиента. 10 разделов, 19 шагов pipeline, 25 параметров с `file:line` ссылками, diagnostic команды, навигация по коду
-- **docs/VOICE_ARCHITECTURE.md** — блок «Pacing fix (20.04)» после таймингов с объяснением асимметрии
-
----

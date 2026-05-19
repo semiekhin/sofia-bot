@@ -1,10 +1,182 @@
-# SESSION_LOG_ARCHIVE — Архив сессий до 2026-04-20
+# SESSION_LOG_ARCHIVE — Архив сессий
 
-> 📁 **Это архив старых сессий** SESSION_LOG.md, выгруженный 2026-04-29 (последнее обновление 2026-05-06).
+> 📁 **Это архив старых сессий** SESSION_LOG.md, выгруженный 2026-04-29 (последнее обновление 2026-05-19 — ротация 20.04.2026 утренней сессии после добавления 19.05.2026).
 > Активный лог последних 5 сессий: [SESSION_LOG.md](SESSION_LOG.md).
 > Записи в архиве сохранены as-is, в исходном порядке (свежее сверху).
 
-## 20.04.2026 (session 2, вечер) — RIZALTA v4.3, speed A/B (1.1→1.0→1.2), codec recon
+## 20.04.2026 — pacing fix + локализация проглатывания слогов в голосе
+
+### TL;DR
+
+Длинная сессия от 05:46 MSK. **Главное достижение: локализован и починен корневой источник проглатывания слогов в голосовом канале Sofia** — AudioSocket buffer overflow из-за `asyncio.sleep(0.018)` pacing против 20ms playback rate. Fix асимметричный: `_speak_pcm=0.020` / `_speak=0.019` (компенсация ~1ms event loop overhead от параллельных gRPC STT + Silero inference в активном разговоре). Подтверждено математически (correlation greeting-source vs MixMonitor 0.034 → 0.987) и ушами Сергея на silent + активных тестовых звонках. 2 коммита в origin DEV, PROD не тронут (voice-компонентов в `/opt/sofia-gpt/` нет).
+
+Остался один открытый вопрос для следующей сессии — «склейки внутри слов» (шероховатость на стыках слогов, не связана с overflow). Бесплатная диагностика через уже скачанные A/B файлы.
+
+### Хронология коммитов
+
+| # | Репо | SHA | Subject |
+|--:|------|------|---------|
+| 1 | DEV | `8f3eeaf0` | feat(voice): pacing fix _speak 0.018→0.019, _speak_pcm 0.018→0.020 |
+| 2 | DEV | `7f65fadd` | docs(voice): document pacing fix 20.04 |
+
+### VPS апгрейд 1→2 vCPU (Timeweb Premium NVMe)
+
+- Апгрейд с 1 vCPU до **2 vCPU, 4 GB RAM** на Premium NVMe тарифе (~1000₽/мес). `nproc=2`, load 0.00, RAM 3.2 GB free после boot — аппаратно система в норме
+- Гипотеза из 19.04 «1 vCPU = главный bottleneck» **не подтвердилась** — проглатывания слогов сохранились после апгрейда на silent test звонке. Аппаратная конкуренция CPU оказалась ложным следом
+
+### CHUNK-инструментация `_speak` (коммит в `/opt/sofia-voice/` на VPS, DEV-only)
+
+- Добавлено per-chunk timing логирование в `_speak` Yandex-branch: uuid + chunk_idx + offset + t_before_us + send_dur_us + sleep_actual_us + sleep_overrun_us, плюс ⚠️ SLEEP_OVERRUN warning при overrun >10ms
+- Snapshot: `/tmp/voice_asterisk.py.before_instr_20260420_041752` на VPS (md5 `d677c89c9a9242f3ff923350954abde3`)
+- sofia-voice рестартован, тестовый звонок Сергея `8ad55f5b` (171с, 11 TTS реплик, 4373 CHUNK-строк)
+
+### Первый неверный вывод: «Python-уровень чист, виновник downstream»
+
+Анализ CHUNK-timing звонка `8ad55f5b`:
+- sleep_overrun median 947us, p99 2147us, max 3510us — **0 overrun >10ms** на 4373 интервала
+- send_dur median 75us, max 458us — socket.send никогда не блокируется
+- Inter-chunk gap медиана 19 114us, max 21 697us — стабильно
+- Позиция в реплике не выделяется (first_10 avg 905us, mid 955us, last_5 1039us)
+
+Вывод (D): «Python-уровень pacing стабилен. Проблема не в asyncio/socket. Копать в RTP/Telfin/Asterisk transcoding». **Оказалось неверно.**
+
+### `docs/VOICE_TECH_STACK_FULL.md` написан Claude Code
+
+Исчерпывающая техническая документация voice pipeline: 49KB, 10 разделов + 2 приложения (навигация по коду + diagnostic команды), ASCII-диаграмма end-to-end, 19 шагов pipeline от SIP INVITE до звука клиента, 25 параметров с `file:line` ссылками, таблица 27 файлов. Коммит в итоговом session-close (bundle с pacing-fix).
+
+### TTS A/B матрица `TTS_AB_MATRIX_v1` — расширена для `8ad55f5b`
+
+- 12 WAV через прямой curl на Yandex TTS API (baseline alena 8k / alena 48k→soxr→8k / jane 8k × 4 фразы). Плюс MixMonitor звонка `8ad55f5b`
+- Все 12 curl-файлов звучат чисто, **Yandex TTS подтверждённо исключён** как источник проглатываний
+- scp-команда: `scp -P 2222 'root@72.56.64.91:/tmp/pilot_recordings_18_04/call_8ad55f5b_*' ~/projects_claude/Sofia/pilot_recordings_18_04/`
+
+### Silent test `b3cd88c8` — критическое наблюдение
+
+- Сергей молчал 65 секунд. **Услышал проглатывания в greeting** (вступительная фраза)
+- Greeting идёт через `_speak_pcm` из статичного файла `greeting_rizalta.pcm` (198318 bytes, 12.4s audio). Одна и та же волна на каждом звонке
+- **Значит проглатывания детерминированы** — не связаны с нагрузкой, STT, LLM, параллельными процессами. Чисто воспроизводимый дефект pipeline `_speak_pcm → AudioSocket → Asterisk → MixMonitor`
+- `_speak_pcm` не был инструментирован → 0 CHUNK-строк для этого UUID
+
+### Прямое сравнение `greeting_source` vs `greeting_via_mixmon`
+
+Побайтовый dropout-анализ MixMonitor WAV первых 13с vs оригинальный PCM-файл:
+- **Correlation 0.034** — паттерн громко-тихо радикально расходится
+- **209 loud→silent dropout-окон** 10ms (greeting RMS >1500, mixmon RMS <200)
+- 277 attenuation >5× в тех же участках
+- Сергей подтвердил ушами: в `greeting_via_mixmon.wav` слышны проглатывания, в `greeting_source.wav` — чистое аудио
+
+**Вывод:** дефект вносится **внутри** Asterisk pipeline — между `_speak_pcm` и MixMonitor. Кандидаты: наш pacing / AudioSocket app overflow / Asterisk core routing
+
+### Гипотеза overflow 18ms pacing vs 20ms playback — подтверждена
+
+- `frame_size=320B` = **20ms audio** (8kHz slin16)
+- `asyncio.sleep(0.018)` между чанками → wall_per_chunk ~19.1ms против playback 20ms
+- Накопление: 900us overflow × 50 chunks/sec = **45ms excess/sec**. За 12s greeting = **540ms лишних чанков** в AudioSocket buffer
+- Asterisk сбрасывает overflow → **209 dropout-окон** = физически потерянные фреймы, не наши digital artefacts
+
+### Симметричный фикс 0.018→0.020 — только половина решения
+
+- Правка в трёх местах: `_speak_pcm:1032`, `_speak:1096` (Yandex), `_speak:1139` (ElevenLabs legacy symmetry)
+- Snapshot: `/tmp/voice_asterisk.py.before_pacing_20260420_064354`
+- **Silent test v2 `1efe792f` — греeting ЧИСТЫЙ:** correlation 0.987 (было 0.034), **0 dropouts** (было 209), Сергей на слух подтвердил
+- **Активный разговор `5a46a58f` — «практически каждое слово нестабильное»:** wall_per_chunk стал 20 985us vs audio 20 000us = **5% underrun**. За 10s реплики накапливается **519ms отставания**, Asterisk buffer опустошается, слышны stutter'ы. 3 dropout-дипа в первой TTS-реплике t=18.7s/19.2s/23.1s
+
+### Асимметричный фикс `_speak=0.019 / _speak_pcm=0.020` — финал
+
+Причина асимметрии: event loop overhead. В активном `_speak` параллельно работают Silero VAD inference + gRPC STT stream receive + inbound frame processing — добавляют ~855us на каждый chunk-цикл. В `_speak_pcm` нагрузки нет, overhead ~610us.
+
+Целевая формула: `sleep + event_loop_overhead + send_dur ≈ 20 000us` (идеальное попадание в audio rate).
+- `_speak`: 19 000 (sleep) + 855 (overhead) + 117 (send) = **19 972us** ≈ 20ms ✓
+- `_speak_pcm`: 20 000 + 610 + 100 = 20 710us (чуть больше, но без конкурентной нагрузки не слышно)
+
+Snapshot: `/tmp/voice_asterisk.py.before_asym_20260420_070119` на VPS.
+
+Контрольный звонок `dff69ac4` (126.2с, 7 TTS реплик через `_speak`, 3395 чанков):
+
+| Reply | chunks | audio_ms | wall_ms | excess | per-chunk_us |
+|-------|--------|----------|---------|--------|--------------|
+| 0 | 542 | 10 840 | 10 829 | **−11 ms** | 19 980 |
+| 1 | 1162 | 23 240 | 23 238 | **−1.6 ms** | 19 999 |
+| 2 | 1012 | 20 240 | 20 225 | −15.4 ms | 19 985 |
+
+Inter-chunk gap median = **20 000us ровно**. 0 gaps >22ms. 0 dropouts в MixMonitor на TTS-репликах.
+
+**Вердикт Сергея:** «Проглатывание небольшое было только одно во вступительной фразе. Больше проглатываний не было, но есть ощущение склейки внутри слов».
+
+### Сводка «Три прогона pacing»
+
+| Pacing | wall_per_chunk | Inter-chunk max | Greeting dropouts | TTS-реплики |
+|--------|----------------|-----------------|-------------------|-------------|
+| **18ms** (до фикса) | 19 113 us — 4% overflow | 21.7 ms | 209 | 2 проглатывания / 11 реплик |
+| **20ms symm.** | 20 985 us — 5% underrun | 22.3 ms | 0 | «каждое слово нестабильно» |
+| **19/20 asym** (финал) | 19 980 us — 0.1% | 21.5 ms | 0 | 0 проглатываний |
+
+### Коммит, снятие инструментации, push
+
+- Снята CHUNK-инструментация из `_speak` (~20 строк per-chunk timing logs — временная была)
+- Snapshot: `/tmp/voice_asterisk.py.before_cleanup_20260420_071727` на VPS
+- `8f3eeaf0` feat(voice): pacing fix + remove CHUNK instrumentation — git diff только 3 строки `0.018 → 0.020/0.019/0.019`, ни residuals от инструментации
+- `7f65fadd` docs(voice): document pacing fix 20.04 — VOICE_TECH_STACK_FULL.md (новый файл, 49KB) + VOICE_ARCHITECTURE.md (+2 строки)
+- **PROD не тронут** — `/opt/sofia-gpt/` не содержит `voice_asterisk.py`/`yandex_stt_grpc.py`/voice-файлов (подтверждено двумя независимыми grep'ами). Voice stack эксклюзивно на VPS sofia-voice (live) + git origin DEV
+
+### Ключевые архитектурные паттерны (закрепились)
+
+- **Детерминированность дефекта = локализуется через silent test.** Клиент молчит → нет нагрузки, нет STT, нет LLM — если дефект воспроизводится, он в pipeline `_speak_pcm → AudioSocket → Asterisk`. В активном звонке 11 компонентов работают одновременно, фильтр не даёт найти виновника. В silent test — 1 компонент. Переход с «активный звонок с инструментацией» на «silent test с curl-сравнением» сократил диагностику с 2 часов до 20 минут
+- **Байтовая корреляция source vs MixMonitor** — объективный инструмент для dropouts в audio pipeline. Результат 0.034 vs 0.987 даёт однозначный ответ без прослушивания Сергеем. Применимо везде где есть «проходит ли сигнал через промежуточный буфер без потерь»
+- **Асимметричный фикс под разные режимы одного паттерна** оправдан когда разница event loop overhead measurable (600us vs 850us). Не рефакторинг — две цифры вместо одной
+- **«Дешёвая диагностика перед любой правкой кода» снова прошла** — A/B через curl (30 мин) сразу исключил Yandex TTS, сэкономил 2 дня на inline-48kHz refactoring
+
+### Обнаруженные побочные проблемы
+
+- **VPS `/opt/sofia-voice/` не git-tracked.** Правки напрямую на VPS (как делали сегодня snapshot-backup'ами) живут без истории. Workflow-риск: если не синхронизировать в DEV после каждой правки, следующий DEV→VPS scp деплой молча перезапишет. Сегодня синхронизировал финальное состояние в коммите `8f3eeaf0` — корректно. **P2 backlog:** либо правила «воссегда сначала DEV, потом scp», либо git init на VPS с remote в origin
+- **yandex_stt_grpc.py и dial.py** идентичны DEV и VPS — drift отсутствует (хороший signal)
+- **Silent-test звонок `b3cd88c8` показал одно небольшое проглатывание во вступительной фразе** даже с 20ms в `_speak_pcm`. Причина: greeting total=12856ms на 12.4s audio = 3.5% underrun за 12 секунд. Оставлено как acceptable (на слух редко и не мешает); если критично — можно `_speak_pcm=0.019` но риск вернуть overflow
+
+### Открыто в следующую сессию
+
+**🟡 «Склейки внутри слов»** (carry-over из 20.04):
+
+Pacing-фикс убрал проглатывания/дропы, но осталась шероховатость на стыках слогов в TTS-репликах. Не dropouts (нули не появляются), а artefacts waveform phase.
+
+**Бесплатный первый шаг** — Сергей прослушивает уже скачанные A/B файлы на Mac:
+- `~/projects_claude/Sofia/pilot_recordings_18_04/call_8ad55f5b_reply5_baseline.wav` (Alena 8kHz production)
+- `call_8ad55f5b_reply5_48k.wav` (Alena 48kHz → soxr → 8kHz)
+- `call_8ad55f5b_reply5_jane.wav` (другой голос, тот же текст)
+- то же для `reply8_*`
+
+**3 возможных исхода:**
+
+1. **48k чище** → Sprint Contract на inline `48kHz→soxr` в `synthesize_tts_yandex` (+150мс latency, правка ~20 строк)
+2. **Все одинаковые** → физика 8kHz канала PSTN/G.711. В этом стеке не улучшить. Accept as-is
+3. **jane чище** → `YANDEX_TTS_VOICE=jane` env-переключатель (бесплатно), но ребрендинг голоса Sofia
+
+Дополнительно можно проверить: `speed=1.0` vs текущий `1.1` (time compression артефакты в TTS).
+
+**🟢 Второй заход пилота** (после подтверждения фикса живыми звонками):
+- Сергей делает 2-3 живых звонка с фиксом, подтверждает качество
+- Зовём тестеров (5-6 × 5-6 звонков) для продолжения пилота
+- Собираем 20+ записей с чистым pacing для финальной валидации RIZALTA
+- Если всё ок — RIZALTA готов к реальному обзвону
+
+### Deploy details
+
+- **sofia-voice**: systemctl active, последний рестарт 07:18 UTC после cleanup CHUNK-инструментации, PID 9266
+- **Snapshots в /tmp** (VPS, оставлены для rollback до ребута):
+  - `voice_asterisk.py.before_instr_20260420_041752` (md5 `d677c89c9a9242f3ff923350954abde3`) — pre-instrumentation
+  - `voice_asterisk.py.before_pacing_20260420_064354` (md5 `f3104a07d799aaf9e31e5371ec4a75c6`) — pre-20ms fix
+  - `voice_asterisk.py.before_asym_20260420_070119` — pre-19/20 asymmetric
+  - `voice_asterisk.py.before_cleanup_20260420_071727` (md5 `dd3d2ad9562bf5d579486d25447317a2`) — pre-cleanup CHUNK instr
+- **Финальный md5 на VPS:** `ae958c66d79797ab439b14be1d162d0b`
+- **Git DEV**: `8f3eeaf0` feat + `7f65fadd` docs, pushed в origin
+
+### Docs Updates
+
+- **docs/VOICE_TECH_STACK_FULL.md** (новый, 49KB) — полный технический стек от SIP до клиента. 10 разделов, 19 шагов pipeline, 25 параметров с `file:line` ссылками, diagnostic команды, навигация по коду
+- **docs/VOICE_ARCHITECTURE.md** — блок «Pacing fix (20.04)» после таймингов с объяснением асимметрии
+
+---
+
+
 
 ### TL;DR
 
