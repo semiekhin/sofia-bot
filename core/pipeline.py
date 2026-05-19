@@ -121,6 +121,10 @@ class PipelineResult:
 # OpenAI client — инициализируется лениво
 _client: Optional[OpenAI] = None
 
+# Модели для текстового пути (env-переключатель для миграции gpt-5.2 → gpt-5.4)
+ANALYZER_MODEL = os.getenv("OPENAI_MODEL_ANALYZER", "gpt-5.2")
+GENERATOR_MODEL = os.getenv("OPENAI_MODEL_GENERATOR", "gpt-5.2")
+
 
 def _get_client() -> OpenAI:
     global _client
@@ -213,12 +217,23 @@ async def run_pipeline(
             log.info(f"🧠 [{tag}] Analyzer запрос...")
             analyzer_response = await asyncio.to_thread(
                 client.responses.create,
-                model="gpt-5.2",
+                model=ANALYZER_MODEL,
                 instructions=ANALYZER_PROMPT,
                 input=analyzer_input,
                 **({"reasoning": {"effort": "medium"}} if not voice_mode else {}),
                 max_output_tokens=1000,
             )
+            try:
+                u = analyzer_response.usage
+                log.info(
+                    f"[USAGE] component=analyzer model={ANALYZER_MODEL} user={user_id} "
+                    f"input={u.input_tokens} output={u.output_tokens} "
+                    f"cached={getattr(getattr(u, 'input_tokens_details', None), 'cached_tokens', 0) or 0} "
+                    f"reasoning={getattr(getattr(u, 'output_tokens_details', None), 'reasoning_tokens', 0) or 0} "
+                    f"total={u.total_tokens}"
+                )
+            except Exception as e:
+                log.warning(f"[USAGE] component=analyzer failed to log: {e}")
             analyzer_text = analyzer_response.output_text or ""
             json_match = re.search(r"\{[^}]+\}", analyzer_text, re.DOTALL)
             if json_match:
@@ -284,7 +299,7 @@ async def run_pipeline(
         log.info(f"🔄 [{tag}] Generator запрос для {user_name}...")
         response = await asyncio.to_thread(
             client.responses.create,
-            model="gpt-5.2",
+            model=GENERATOR_MODEL,
             instructions=system_prompt,
             input=messages,
             **({"reasoning": {"effort": "high"}} if not voice_mode else {}),
@@ -292,10 +307,17 @@ async def run_pipeline(
         )
         answer = response.output_text or ""
 
-        log.info(
-            f"📏 [{tag}] Generator: len={len(answer)}, "
-            f"output_tokens={getattr(response.usage, 'output_tokens', '?')}"
-        )
+        try:
+            u = response.usage
+            log.info(
+                f"[USAGE] component=generator model={GENERATOR_MODEL} user={user_id} "
+                f"input={u.input_tokens} output={u.output_tokens} "
+                f"cached={getattr(getattr(u, 'input_tokens_details', None), 'cached_tokens', 0) or 0} "
+                f"reasoning={getattr(getattr(u, 'output_tokens_details', None), 'reasoning_tokens', 0) or 0} "
+                f"total={u.total_tokens}"
+            )
+        except Exception as e:
+            log.warning(f"[USAGE] component=generator failed to log: {e}")
 
         # Проверка обрезки (пропускаем для voice — короткие ответы ложно срабатывают)
         if not voice_mode:
