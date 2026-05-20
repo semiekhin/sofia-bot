@@ -451,7 +451,7 @@ REMINDER_PHRASES = [
 ]
 
 TIMEOUT_NO_RESPONSE = 15 * 60  # Сценарий А: 15 мин без ответа после первого сообщения
-TIMEOUT_REMINDER = 60 * 60  # Сценарий Б: 60 мин → напоминание
+TIMEOUT_REMINDER = int(os.getenv("REMINDER_TIMEOUT_MIN", "15")) * 60  # Сценарий Б (env)
 TIMEOUT_AFTER_REMINDER = 15 * 60  # Сценарий Б: +15 мин после напоминания → финализация
 
 
