@@ -11,6 +11,7 @@ from aiohttp import web
 import json
 import logging
 import random
+from collections import deque
 from datetime import datetime
 import sqlite3
 import os
@@ -444,6 +445,12 @@ def _get_radist_history_for_bitrix(channel: str, chat_id: int, limit: int = 100)
 
 radist_reminder_tasks = {}  # {user_key: asyncio.Task}
 radist_reminder_sent = {}  # {user_key: True}
+
+# Дедупликация дублей webhook от Radist по message_id
+# (Radist иногда шлёт один и тот же webhook несколько раз — каждый дубль
+#  запускал бы свой Extractor). set для O(1)-проверки + deque для FIFO-чистки.
+_processed_message_ids = set()
+_processed_message_order = deque()
 
 REMINDER_PHRASES = [
     "{name}, продолжим общение?",
@@ -1137,6 +1144,19 @@ async def handle_webhook(request):
             event_data = data.get("event", {})
             message = event_data.get("message", {})
             chat = event_data.get("chat", {})
+
+            # Дедупликация дублей webhook по message_id (ДО запуска обработки)
+            msg_id = message.get("message_id")
+            if msg_id:
+                if msg_id in _processed_message_ids:
+                    log(f"♻️ [DEDUP] msg_id={msg_id} уже обработан, пропускаем")
+                    return web.json_response({"status": "ok", "dedup": True})
+                _processed_message_ids.add(msg_id)
+                _processed_message_order.append(msg_id)
+                if len(_processed_message_ids) > 1000:
+                    for _ in range(500):
+                        old_id = _processed_message_order.popleft()
+                        _processed_message_ids.discard(old_id)
 
             # Определяем канал по connection_id
             connection_id = event_data.get("connection_id")
