@@ -1019,18 +1019,37 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
                 user_id, {"materials_request_count": new_count}
             )
             log(f"📊 [{channel.upper()}] materials_request_count → {new_count}")
+        # [SPLIT]: Generator может разбить ответ на 2 сообщения
+        # (например PDF-презентация + квалификационный вопрос). При наличии
+        # маркера шлём части по очереди с паузой 2с; в БД — одним блоком.
+        if "[SPLIT]" in response:
+            parts = [p.strip() for p in response.split("[SPLIT]") if p.strip()]
+        else:
+            parts = [response]
+        clean_response = "\n\n".join(parts)
         save_message(
-            channel, connection_id, chat_id, contact_id, phone, "assistant", response
+            channel,
+            connection_id,
+            chat_id,
+            contact_id,
+            phone,
+            "assistant",
+            clean_response,
         )
-        success = await send_message(connection_id, chat_id, response)
+        success = True
+        for i, part in enumerate(parts):
+            if i > 0:
+                await asyncio.sleep(2.0)
+            ok = await send_message(connection_id, chat_id, part)
+            success = success and ok
         if success:
-            log(f"{emoji} [{channel.upper()}] → {user_name}: {response[:50]}...")
+            log(f"{emoji} [{channel.upper()}] → {user_name}: {clean_response[:50]}...")
             await notify_observer(
                 channel,
                 phone,
                 user_name,
                 "out",
-                response,
+                clean_response,
                 source_object=_get_source_object(user_id),
             )
 
