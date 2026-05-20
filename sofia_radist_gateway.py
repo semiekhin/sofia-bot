@@ -972,7 +972,9 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
     # Получаем историю
     history = get_history(channel, chat_id, limit=100)
 
-    # Обработка через message_processor
+    # Обработка через message_processor.
+    # count_materials=False: инкремент materials_request_count откладываем
+    # до send_callback (cancel-restart не должен накручивать счётчик при rerun).
     result = await process_message(
         user_id=user_id,
         user_name=user_name,
@@ -980,7 +982,9 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
         history=history,
         state_manager=state_manager,
         channel=channel,
+        count_materials=False,
     )
+    wants_materials = bool(result.get("wants_materials"))
 
     # Если WAIT — не отвечаем
     if result["skip_response"]:
@@ -999,6 +1003,15 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
     # Callback для отправки (вызывается после проверки очереди)
     async def send_callback():
         await save_user_and_notify()
+        # Отложенный инкремент materials_request_count: один раз за
+        # доставленный ход (см. process_message count_materials=False).
+        if wants_materials:
+            fresh = state_manager.get_state(user_id)
+            new_count = (fresh.materials_request_count or 0) + 1
+            state_manager.update_state(
+                user_id, {"materials_request_count": new_count}
+            )
+            log(f"📊 [{channel.upper()}] materials_request_count → {new_count}")
         save_message(
             channel, connection_id, chat_id, contact_id, phone, "assistant", response
         )

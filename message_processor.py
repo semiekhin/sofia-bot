@@ -22,7 +22,8 @@ async def process_message(
     message: str,
     history: list,
     state_manager,
-    channel: str = "telegram"
+    channel: str = "telegram",
+    count_materials: bool = True,
 ) -> dict:
     """
     Обработка сообщений v3.0: Extractor → State → Signals.
@@ -77,8 +78,11 @@ async def process_message(
         state_manager.update_state(user_id, signal_updates)
     
     # 6. Счётчик отказов от созвона (на основе Extractor)
-    #    Нужен для state_summary → Генератор видит "БЫЛ 1 ОТКАЗ ОТ СОЗВОНА"
-    if client_state.wants_materials:
+    #    Нужен для state_summary → Генератор видит "БЫЛ 1 ОТКАЗ ОТ СОЗВОНА".
+    #    count_materials=False — инкремент откладывается до send_callback
+    #    (Radist cancel-restart: иначе rerun накручивает счётчик). Флаг
+    #    wants_materials возвращается ниже для отложенного инкремента.
+    if client_state.wants_materials and count_materials:
         new_count = (client_state.materials_request_count or 0) + 1
         state_manager.update_state(user_id, {"materials_request_count": new_count})
         log(f"📊 [{channel}] materials_request_count → {new_count}")
@@ -88,5 +92,6 @@ async def process_message(
     
     return {
         "client_state": client_state,
-        "skip_response": False
+        "skip_response": False,
+        "wants_materials": bool(client_state.wants_materials),
     }
