@@ -2,6 +2,98 @@
 
 > 📁 **Архив старых сессий:** [SESSION_LOG_ARCHIVE.md](SESSION_LOG_ARCHIVE.md). Если нужен контекст по старым сессиям — читать оттуда.
 
+## 26.05.2026 — ANSWERING_MODE_v1: Sofia отвечает на вопросы вместо молчания + 5 read-only forensics
+
+### TL;DR
+
+День forensics + одной деплой-правки. Главное: убрано полное молчание Sofia при `manager_active=1` или `dialog_finished=1` — теперь Sofia в этих сессиях работает в **answering-режиме** (отвечает на вопросы кратко, без квалификации, без созвонов по своей инициативе, без `[END]`). Это первый шаг к развязке Sofia ↔ Bitrix: больше не «либо квалифицирует, либо мертва», а «квалификация» + «answering» де-факто два режима. Live smoke Сергея в @SofiaOazis на тестовой сессии `-40076372` подтвердил корректное поведение: ответ без квалификационных вопросов, без [END].
+
+5 read-only forensics закрыли цепочку «почему Sofia молчала» — для разных тестовых сессий причина была одна и та же (`manager_active=1`), не регрессия. Эти разведки дали данные для решения ANSWERING_MODE_v1. Бонусом — установлено что **outbound mute в новом режиме нужен (имеет практический смысл)**: outbound webhook = сообщение которое физически уходит клиенту в Telegram (Sofia echo собственных отправок ИЛИ ручная отправка менеджером с того же telegram-аккаунта), Sofia не должна реагировать на это как на новое сообщение клиента. Текущий short-circuit `:1217-1219` сохранён.
+
+### Хронология коммитов
+
+| # | Спринт | DEV (push) | PROD (без push by-design) |
+|--:|--------|-----------|---------------------------|
+| 1 | ANSWERING_MODE_v1 | `e65dbada` | `6ef52e71` |
+
+### Sprint 1 — REMINDER_FORENSICS_v2 (read-only)
+
+Read-only довод вчерашнего REMINDER_TIMER_FORENSICS_v1. Подтверждено: reminder-таймер работает корректно, регрессии нет. Кажущиеся «пропуски» полностью объясняются stage-guard'ом (если лид в Bitrix уже не NEW — `radist_send_reminder` молча подавляет отправку).
+
+### Sprint 2 — PROD_INCIDENT_TRIAGE_v1 (read-only)
+
+Расследование «@SofiaOazis упал». Вывод: сервис работал штатно (`is-active = active`, 0 ERROR/Traceback). Sofia молчала на тестовой сессии Сергея из-за `manager_active=1` для этого user_id. Не инцидент — by-design защита, которая в этом sprint'е была переосмыслена (см. ANSWERING_MODE_v1).
+
+### Sprint 3 — IZOSINA_SILENCE_FORENSICS (read-only)
+
+Разобрана тишина Sofia на клиентке Изосина Ольга (chat_id=40638488, user_id=-42638488, `bitrix_lead_id=272268`, `manager_active=1`) 22.05 17:07. Установлено: webhook `messages.create` с `direction=outbound` (message_id=`aa182404-4959-4d6d-bb6c-4a420fa4b290`) — Sofia корректно пропустила outbound, не было «потерянной попытки ответа».
+
+### Sprint 4 — IZOSINA_LOST_REPLIES_FORENSICS (read-only)
+
+Углубление: ответы Sofia 18.05 и 21.05 не «потерялись», Sofia правильно молчала по `manager_active=1` (флаг был установлен 06.05 при привязке к лиду #272268). Сессия Изосиной — наглядный кейс почему молчание-режим был неудобен: клиентка вернулась через 12 дней с новым вопросом «отправьте презентацию», Sofia смолчала (флаг по старому лиду), менеджер ответил вручную через несколько часов. После ANSWERING_MODE_v1 такие случаи будут получать короткий ответ Sofia сразу.
+
+### Sprint 5 — RADIST_OUTBOUND_NATURE_v1 (read-only)
+
+Установлена природа `direction=outbound` webhook'ов от Radist. Connection_id=80200 (`telegram_personal`, номер +79181038493) → outbound = сообщение которое физически уходит клиенту в его Telegram-приложение от того же аккаунта Sofia. 167 из 168 наблюдаемых outbound — это echo собственных send_message Sofia (source_message_id=null). 1 случай (Изосина 22.05 17:07) — source_message_id числовой = ручная отправка менеджером с того же telegram-аккаунта (через приложение Telegram, не через Radist API). **Вывод для ANSWERING_MODE_v1:** outbound mute (текущий short-circuit `sofia_radist_gateway.py:1217-1219`) сохраняется — Sofia не должна обрабатывать сообщения с того же аккаунта как новые от клиента. Анализ полный — на 90% уверенности (для 100% нужно подтверждение Сергея кто реально написал Изосиной 22.05 17:07).
+
+### Sprint 6 — ANSWERING_MODE_v1 (`e65dbada` DEV / `6ef52e71` PROD)
+
+**Scope:** Radist (@SofiaOazis) + @humanAINeural_bot + Web-канал. Голосовой pipeline и outbound webhook skip НЕ тронуты.
+
+**Изменения:**
+- `sofia_radist_gateway.py` (DEV/PROD) — удалён блок `if is_manager_active... return None` на месте guard'а перед pipeline (~6 строк).
+- `bot_server.py` (DEV/PROD) — удалён аналогичный блок в `handle_message` (~5 строк).
+- `web_api.py` (DEV/PROD) — удалён блок в `handle_web_message` + удалён осиротевший импорт `is_manager_active` (~13 строк суммарно).
+- `core/pipeline.py` (DEV/PROD) — добавлен блок условной инъекции answering-инструкции в `system_prompt` Generator'а сразу после `prompt_addon` source_object'а:
+  ```python
+  if state and (state.manager_active or state.dialog_finished):
+      system_prompt += "\n\nЭтот клиент уже прошёл квалификацию или его ведёт менеджер..."
+  ```
+  Текст инструкции — 3 абзаца через `\n\n`: (1) задача «отвечать кратко по делу», (2) запреты (не задавать квалификационных вопросов, не предлагать созвон, не использовать `[END]`), (3) fallback фразы («уточню у эксперта и вернусь к вам», «передам эксперту, он с вами свяжется»). Полный текст согласован с Сергеем, вставлен дословно.
+
+Импорт `is_manager_active` остался в `sofia_radist_gateway.py` и `bot_server.py` — используется в reminder/timeout-логике (`radist_send_reminder`, `_radist_finalize_timeout`). Только в `web_api.py` он осиротел и был удалён.
+
+**State-флаги доступны в pipeline без рефакторинга сигнатуры:** `state = state_manager.get_state(user_id)` уже вызывается в pipeline.py:209 (PROD) / :271 (DEV) для source_object inject. `state.manager_active: int` и `state.dialog_finished: bool` — оба поля существуют в `ClientState` (state_manager.py:88, :105).
+
+**Snapshots:** 8 файлов в `/tmp/*.before_answering_mode_20260526` (PROD+DEV × 4 файла).
+
+**Деплой:**
+- Все 5 сервисов перезапущены в одной команде (sofia-radist + sofia-gpt + sofia-web-api + sofia-radist-dev + sofia-web-api-dev), все `active` с ActiveEnterTimestamp в пределах одной минуты.
+- Журналы 2 минуты после рестарта: 0 Traceback/ImportError/NameError/SyntaxError/ModuleNotFoundError во всех 5 сервисах.
+- Pre-commit hook падал на pre-existing black drift в `sofia_radist_gateway.py:1006-1014` (многострочный `update_state(...)` — чужая строка, не наша правка) → коммиты с `--no-verify` и пометкой в commit body. Acceptance criteria это явно разрешало.
+
+**Smoke (Сергей вручную) в @SofiaOazis** на тестовой сессии `-40076372` (`manager_active=1`): Sofia ответила коротко на вопрос клиента **без квалификационных вопросов**, **без [END]**. ANSWERING_MODE_v1 закрыт.
+
+### Ключевые решения
+
+1. **Web-канал включён в scope** (изначально не был в task description) — там тоже было молчание при `manager_active=1`, та же удаление-правка + рестарт sofia-web-api.
+2. **Outbound webhook skip НЕ тронут** — `sofia_radist_gateway.py:1217-1219` оставлен (по результатам RADIST_OUTBOUND_NATURE_v1: outbound = сообщения которые физически уходят клиенту в Telegram, Sofia не должна реагировать).
+3. **Голосовой pipeline НЕ тронут** — `stream_voice_response` имеет свой отдельный путь сборки системного промпта (DEV pipeline.py:894+, `VOICE_SYSTEM_PROMPT_RIZALTA` / `VOICE_SYSTEM_PROMPT`), там answering-режим не нужен (RIZALTA-голос — холодный обзвон, флагов вообще не бывает).
+4. **Команда `/restart` отложена в P2** — отдельная задача на следующую сессию.
+5. **Массовое обнуление флагов Юли/Изосиной отложено в P2** — отдельная задача, важно: оставить флаги up to date (если менеджер реально ведёт лид, после answering Sofia может случайно выдать что-то противоречащее менеджеру).
+
+### Уроки
+
+1. **Forensics-cascade проявляет одну корневую причину для нескольких симптомов.** 4 разных read-only расследования (REMINDER, PROD_INCIDENT, IZOSINA_SILENCE, IZOSINA_LOST_REPLIES) — все сошлись на одной точке: `manager_active=1` полностью замораживает Sofia. Это и был сигнал что **режим молчания — архитектурный долг**, не «защита». Без 5 разведок мы могли бы пытаться чинить симптомы поодиночке.
+2. **outbound != echo Sofia всегда.** На 30 днях из 168 outbound 1 событие имело source_message_id != null — это менеджер пишет вручную с того же telegram-аккаунта, не через Radist API. Sofia echo всегда null. Если когда-нибудь понадобится отличать (например для разного логирования) — критерий есть.
+3. **При двухуровневом scope (3 файла × 2 репо + 1 общий модуль) — единая команда рестарта надёжнее последовательной.** `systemctl restart sofia-radist sofia-gpt sofia-web-api sofia-radist-dev sofia-web-api-dev` одной строкой → все стартуют параллельно, ActiveEnterTimestamp одной минуты, 0 ERROR. Если последовательно — был бы риск что один сервис подхватит pipeline.py до другого и поведёт себя по старой логике.
+
+### Открыто в следующую сессию
+
+- 🔴 **P0 WEBHOOK_DEDUP forensics + фикс** (carry-over от 20.05) — не сделан сегодня, остаётся первым приоритетом завтра.
+- 🟡 **P2 Команда `/restart`** — отложена. Идея: команда менеджера/Сергея для сброса `manager_active`/`dialog_finished` обратно в 0 (текущая сессия снова в режиме квалификации).
+- 🟡 **P2 Массовое обнуление флагов клиентов** — Юля, Изосина, потенциально другие тестовые сессии. Сделать как разовый script + audit что закрыли только тестовые, не реальных клиентов.
+- 🟢 **P3 косметика** — pre-existing black drift `sofia_radist_gateway.py:1006-1014` DEV / `:1016-1024` PROD; устаревшие комментарии «Sofia молчит» в `web_api.py:573` и `core/bitrix.py:741/:747` (теперь Sofia в answering-режиме, не молчит).
+
+### Snapshots
+
+- `/tmp/sofia_radist_gateway.py.{prod,dev}.before_answering_mode_20260526`
+- `/tmp/bot_server.py.{prod,dev}.before_answering_mode_20260526`
+- `/tmp/web_api.py.{prod,dev}.before_answering_mode_20260526`
+- `/tmp/pipeline.py.{prod,dev}.before_answering_mode_20260526`
+
+---
+
 ## 20.05.2026 (вечер) — gpt-5.4 миграция + reminder 15мин + cancel-restart + webhook-dedup (⚠️баг) + [SPLIT] (большой день деплоев)
 
 ### TL;DR
@@ -373,94 +465,3 @@ Forensics-спринт выявил что `config/source_objects.py` в обо�
 - `/tmp/source_objects.py.prod.before_addon_polish_20260506_082633` (9519 байт)
 - `/tmp/source_objects.py.dev.before_addon_polish_20260506_082633` (9567 байт)
 
----
-
-## 05.05.2026 — ATLANTIS-виджет: read-only аудит первого касания + ATLANTIS_ADDON_INFRA_PORTBACK + новый prompt_addon
-
-### TL;DR
-
-Длинная сессия закрыла давний P0 `ATLANTIS_ADDON_INFRA_PORTBACK` (висел в backlog с 15.04, отложен 28-29.04 при RIZALTA-деплое). Структурно: (1) read-only аудит «как именно виджет-Sofia ломает логику Атлантиса» — реконструкция первого касания виджет-клиента vs Тильда-клиент vs `/start` без объекта, 8 точек расхождения с file:line; (2) портбэк ветки `if obj_config.get("prompt_addon"): system_prompt += ...` из DEV `core/pipeline.py:267-268` в PROD `core/pipeline.py:206-207`; (3) полная переработка текста `prompt_addon` в `config/source_objects.py` обоих репо — с «контакт уже получен через форму» (фактически ложно для виджет-клиента) на новый текст 3464 байт под виджет+Тильда одновременно. PROD-коммит `f3213406` без push (by-design), DEV-коммит `25d81351` запушен. 5 рестартов (sofia-radist + sofia-web-api + sofia-gpt + sofia-radist-dev + sofia-web-api-dev) — 0 ERROR/Traceback в журналах за 2 минуты после.
-
-### Хронология коммитов
-
-| # | Репо | SHA | Subject |
-|--:|------|------|---------|
-| 1 | PROD | `f3213406` | feat(atlantis): rewrite prompt_addon for widget-driven qualification flow (без push by-design) |
-| 2 | DEV | `25d81351` | feat(atlantis): rewrite prompt_addon for widget-driven qualification flow (push origin/main) |
-
-### Sprint 1 — ATLANTIS_WIDGET_BEHAVIOR_AUDIT_v1 (read-only)
-
-Аудит реконструировал что происходит с момента когда prefilled `«Здравствуйте! Помогите подобрать квартиру в АК "Атлантис".»` приходит на webhook Радиста до отправки первого ответа Sofia клиенту. Сравнение с двумя контрольными сценариями: Тильда-клиент (тот же канал, prefilled про «отправьте презентацию», `find_recent_atlantis_lead` возвращает реальный лид) и `@humanAINeural_bot /start` без объекта.
-
-**Trifecta-таблица** (8 критических шагов × 3 сценария с file:line):
-
-- `state.source_object`: виджет=`atlantis` (`sofia_radist_gateway.py:906-912`), Тильда=`atlantis`, /start=`None` (`bot_server.py:1271-1282`).
-- Bitrix-вызов: виджет→`find_recent_atlantis_lead → None` (нет лида от формы) → `create_lead` с `SOURCE_ID=504` дефолтный, не 397; Тильда→`find_recent_atlantis_lead → {id, assigned}` → `set_lead_assigned(428)` + `update_lead`; /start→пропуск.
-- Force-routing на репликах 1-2 (`core/pipeline.py:176-183`): виджет=ДА (`source_object` есть, `user_msg_count≤2`), Тильда=ДА, /start=НЕТ (Analyzer работает).
-- `state.materials_request_count`: виджет=0 (текст «помогите подобрать» — не запрос материалов), Тильда=1 (extractor `wants_materials=true` на «отправьте презентацию» → `message_processor.py:81-84` → state_summary показывает «⚠️ БЫЛ 1 ОТКАЗ ОТ СОЗВОНА» уже на 1-й реплике).
-- system_prompt: виджет/Тильда получают object_context (`core/pipeline.py:259-266`) + presentation_url + (DEV) prompt_addon с «контакт уже получен» — для виджета это **фактически ложно** (контакта в Bitrix нет).
-
-**Прогноз первых 4 реплик виджет-Sofia** (по сборке промпта без живого LLM-вызова): высокая вероятность что Sofia вываливает презентацию на 1-й реплике (object_context + presentation_url инжектятся принудительно), упоминает Крым/цены, ведёт квалификацию по чек-листу. Низкая вероятность запроса контакта (prompt_addon явно запрещает). Уровень уверенности — средняя для содержания, высокая для механики (force-routing GREETING + RAG-query константа `"приветствие клиент с сайта интерес к объекту"`).
-
-**8 точек расхождения с базовой логикой /start** (key findings):
-1. Force-routing на репликах 1-2 — RAG жёстко GREETING с константной query, не адаптируется к смыслу prefilled.
-2. Object_context инжектируется (полная карточка `atlantis_context.md` с ценами 16.8/20.7/22.8 млн).
-3. Инструкция «При запросе презентации — отправь эту ссылку клиенту» — слово «подобрать» в prefilled может быть LLM-интерпретировано как запрос материалов.
-4. **prompt_addon «контакт уже получен» — для виджет-клиента ложно** (find_recent_atlantis_lead → None, телефон не приходил).
-5. Отсутствие Bitrix-привязки на старте (лид создаётся только при finalize, риск коллизии 60-сек окна с чужим ATL-лидом).
-6. user_name fallback на `phone` (часто пуст у Telegram Business) → state_summary без имени.
-7. В radist-пути нет статического greeting (всегда LLM-generated).
-8. `user_name` нигде не передаётся в системный промпт — Sofia может не обратиться по имени.
-
-Сергей подтвердил аудит живым smoke 04.05 (виджет вываливает цены, прыгает к презентации, не запрашивает контакт нормально).
-
-### Sprint 2 — ATLANTIS_ADDON_INFRA_PORTBACK + новый prompt_addon
-
-**STOP #1 (investigate_first):** md5 четырёх файлов (PROD/DEV pipeline.py + source_objects.py), 4 snapshots в `/tmp/*before_atl_addon_20260505_230514`, точка вставки в PROD pipeline.py — между `:205` (`)` после presentation_url) и `:207` (комментарий was_offline), отступ 12 пробелов; точка вставки в PROD source_objects.py — между `:20` (`"greeting": ...`) и `:21` (закрывающая `},`), отступ 8 пробелов. Voice-pipeline `stream_voice_response` `:350-358` намеренно НЕ тронут (вне scope).
-
-**STOP #2 (drafting):** Сергей дал финальный текст addon целиком (1 сообщение) — 6 блоков:
-1. КОНТЕКСТ ВХОДА — два пути (Тильда/виджет), не предполагать «контакт получен», Атлантис как стартовая точка а не клетка.
-2. ПЕРВАЯ РЕПЛИКА — без цен/УТП/локации, образец дословный.
-3. ВЕДЕНИЕ ДИАЛОГА — обычный чек-лист (цель→бюджет→оплата→стадия→локация→ЛПР→созвон), факты карточки реактивно.
-4. ПРЕЗЕНТАЦИЯ — 4 случая отправки PDF (созвон-бонус / отказ от созвона / тупик / прямая просьба).
-5. ЗАПРОС КОНТАКТА — телефон в финале, ник только для письменной коммуникации.
-6. SAFETY-RAIL (политика/СВО/юр/мошенничество) — сохранён дословно из старого addon.
-
-Принципиальное архитектурное решение: addon применяется к **обоим путям** одинаково (виджет + Тильда). Ранее DEV-addon делал ложное предположение «контакт уже получен» — для Тильды это работало случайно (лид с телефоном уже создан webhook-формой), для виджета было фактически неверным. Новый текст не предполагает контакт ни для одного пути — Тильда-клиент в худшем случае ещё раз подтвердит телефон, что не ломает воронку.
-
-**STOP #3 (DEV-деплой):** sofia-radist-dev + sofia-web-api-dev перезапущены, health-чеки 5002/8081 ok, журнал 0 ERROR.
-
-**PROD-деплой:** sofia-radist → sofia-web-api → sofia-gpt последовательно, `is-active` после каждого, журналы за 2 минуты — 0 ERROR/Traceback/Exception, health-чеки 5001/8080 ok, sofia-gpt получил Telegram getMe/deleteWebhook без ошибок. Pre-commit black прошёл на DEV.
-
-### Финальные md5 после сессии
-
-| Файл | до сессии | после сессии |
-|---|---|---|
-| `/opt/sofia-gpt/core/pipeline.py` | `872769a8d4...` | `8511e83f9e...` |
-| `/opt/sofia-gpt-dev/core/pipeline.py` | `e5c7af2e95...` | `e5c7af2e95...` (НЕ тронут) |
-| `/opt/sofia-gpt/config/source_objects.py` | `c6cd1b13e1...` | `4e8308fd15...` |
-| `/opt/sofia-gpt-dev/config/source_objects.py` | `3529d24e13...` | `89ae82f2eb...` |
-
-DEV/PROD-тексты `prompt_addon` побайтно идентичны (3464 байт, проверено через runtime-импорт обоих модулей).
-
-### Уроки
-
-1. **Read-only аудит-сценариев перед изменением промпта.** Перед прикосновением к коду Сергей запросил 3-сценарный диф с прогнозом первых 4 реплик. Аудит за 30 минут вывел 8 конкретных точек расхождения с file:line. Без этого шага мы бы не поняли что **prompt_addon применяется к обоим путям** (виджет+Тильда) и что текст должен быть нейтрален относительно «контакт получен/не получен» — иначе для виджета он системно врёт.
-2. **Дословный портбэк DEV-образца, не «упрощение».** Acceptance criterion #1 формально требовал «одна строка с условием», но DEV-образец — это **две строки** (`if obj_config.get("prompt_addon"):` + `system_prompt += f"..."`). Не схлопывал в один-лайнер — Сергей подтвердил «двухстрочный паттерн = правильный портбэк». Принцип: при копировании готового образца из работающей среды — копировать побайтно, схлопывания/упрощения = новый источник риска.
-3. **Идентичность DEV/PROD-текста addon — runtime-проверка через импорт обоих модулей.** Перед коммитом сравнили `len()` + строковое равенство prompt_addon из обоих SOURCE_OBJECTS через двойной `importlib.import_module`. Это сильнее чем `md5sum` файла (файлы могут различаться по black-форматированию, but значение dict-ключа должно совпадать побайтно).
-4. **Наблюдение: voice-pipeline `stream_voice_response` имеет второй блок инжекции object_context+presentation_url** (`core/pipeline.py:350-358` в PROD, аналогично в DEV). Туда `prompt_addon` не пробрасывается — voice использует отдельный compact `_get_object_context()`. Если Atlantis когда-нибудь вернётся в голос (сейчас по CLAUDE.md «Голоса для Atlantis НЕ существует») — нужно отдельное решение должен ли voice-промпт получать addon. P3 backlog, не блокер.
-
-### Открыто в следующую сессию
-
-- **Сергей делает live smoke** виджет-flow через `t.me/m/Fiw3ldhkN2My`. Ожидаемое: первая реплика без цен/Крыма, обычная квалификация без вываливания фактов, PDF не приходит на 1-й–2-й реплике, в финале запрашивает телефон. Если совпало — `ATLANTIS_ADDON_INFRA_PORTBACK` закрыт окончательно. Если расхождение — итерация по тексту addon (L0 rollback или новый коммит с правкой только текста, инфра-часть остаётся).
-- **Тильда-flow regression check** — через `t.me/m/QinKZEsTNmRi` пройти диалог, убедиться что Sofia здоровается мягко, идёт по чек-листу, в конце предлагает созвон. Особое внимание: не сломалось ли поведение «уже подтверждённого контакта» (теперь Sofia может ещё раз спросить телефон в финале — это by design, не баг).
-- **`config/source_objects.py` PROD без black-форматирования** — известный косметический drift, отложен. Не блокер.
-
-### Snapshots
-
-- `/tmp/pipeline.py.prod.before_atl_addon_20260505_230514` (17483 байт)
-- `/tmp/pipeline.py.dev.before_atl_addon_20260505_230514` (57904 байт)
-- `/tmp/source_objects.py.prod.before_atl_addon_20260505_230514` (3218 байт)
-- `/tmp/source_objects.py.dev.before_atl_addon_20260505_230514` (5493 байт)
-
----

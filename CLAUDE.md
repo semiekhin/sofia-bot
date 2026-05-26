@@ -82,7 +82,7 @@ Post-mortem 20.04 вечер: инцидент 14:56–15:53 UTC (Asterisk 193% 
 - `get_lead_status(lead_id) -> str | None` — pull-проверка STATUS_ID через `crm.lead.get`. Fail-safe: None при любой ошибке API → caller трактует как не-NEW → skip финализации (тишина лучше перезаписи менеджера).
 - `find_recent_atlantis_lead()`: последний лид с SOURCE_ID=397
 - Webhook (`/api/bitrix/webhook`): если `ASSIGNED_BY_ID != 428` → `manager_active=1`. **Defense in depth**: подписка ONCRMLEADUPDATE у Bitrix пока не настроена (P2 backlog, Stetsenko), stage-guard — основной механизм защиты.
-- `is_manager_active()` / `set_manager_active()`: флаг перехвата, София молчит во всех каналах.
+- `is_manager_active()` / `set_manager_active()`: флаг перехвата менеджером. **С 26.05 (ANSWERING_MODE_v1, DEV `e65dbada` / PROD `6ef52e71`):** при `manager_active=1` Sofia больше **не молчит**, а переходит в **answering-режим** — отвечает на конкретные вопросы клиента кратко по делу, без квалификации, без созвонов по своей инициативе, без `[END]`. Применяется условной инъекцией в `core/pipeline.py` в `system_prompt` Generator'а: `if state and (state.manager_active or state.dialog_finished): system_prompt += <answering text>`. То же самое для `dialog_finished=1` (после `[END]` Sofia остаётся доступной для ответа на возвратные вопросы клиента). Затронуты все три текстовых канала — Radist (`sofia_radist_gateway.py`), @humanAINeural_bot (`bot_server.py`), Web (`web_api.py`). Голосовой pipeline и outbound webhook skip (`sofia_radist_gateway.py:1217-1219`) не тронуты.
 
 Stage-guard также встроен в `sofia_radist_gateway.py`: `radist_send_reminder` (2 свежих вызова — перед отправкой + перед finalize после sleep) и `_radist_finalize_timeout`.
 
