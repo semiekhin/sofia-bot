@@ -1516,12 +1516,6 @@ async def handle_message(update, context: ContextTypes.DEFAULT_TYPE):
 
     log(f"📩 {user_name}: {user_message}")
 
-    # Проверка перехвата менеджером — София молчит
-    if is_manager_active(DB_PATH, user_id):
-        log(f"🛑 [TG] manager_active=1 для user_id={user_id}, София молчит")
-        save_message(chat_id, user_id, user_name, "user", user_message, processed=1)
-        return
-
     # Приветствия
     is_greeting = user_message.lower().strip() in [
         "привет",

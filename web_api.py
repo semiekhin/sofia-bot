@@ -42,7 +42,6 @@ from core.bitrix import (
     save_lead_id_for_session,
     get_session_id_by_user_id,
     find_user_id_by_lead,
-    is_manager_active,
     finalize_lead,
     set_lead_assigned,
     set_manager_active,
@@ -285,18 +284,6 @@ async def generate_response(user_id, user_message, user_name, channel="web"):
 
 
 async def handle_web_message(user_id, user_name, message, session_id=None):
-    # Проверяем перехват менеджером
-    if is_manager_active(DB_PATH, user_id):
-        log.info(f"🛑 [WEB] manager_active=1 для user_id={user_id}, Sofia молчит")
-        save_message(
-            chat_id=user_id,
-            user_id=user_id,
-            user_name=user_name,
-            role="user",
-            content=message,
-        )
-        return None
-
     save_message(
         chat_id=user_id,
         user_id=user_id,

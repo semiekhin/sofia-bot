@@ -969,13 +969,6 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
             source_object=_get_source_object(user_id),
         )
 
-    # ════════════════════════════════════════════════════════════════════════
-    # Guard: manager_active — София молчит
-    # ════════════════════════════════════════════════════════════════════════
-    if is_manager_active(DB_PATH, user_id):
-        log(f"🛑 [{channel.upper()}] manager_active=1 для user_id={user_id}, молчим")
-        return {"response": None, "send_callback": save_user_and_notify}
-
     # Получаем историю
     history = get_history(channel, chat_id, limit=100)
 
