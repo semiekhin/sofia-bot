@@ -97,7 +97,7 @@ SOURCE_OBJECTS = {
         "city": "Алтай, Белокуриха",
         "keywords": ["ризалта", "rizalta", "rizalta resort"],
         "context_file": "objects/rizalta_context.md",
-        "presentation_url": "",
+        "presentation_url": "https://api.atlantis-invest.ru/objects/presentation_RIZALTA.pdf",
         "greeting": (
             "Рада, что заинтересовались RIZALTA! "
             "Расскажу подробнее об апарт-отеле в Белокурихе и подберу подходящий вариант — "
