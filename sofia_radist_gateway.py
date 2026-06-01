@@ -62,6 +62,10 @@ LOG_PATH = "sofia_radist.log"
 # State Manager
 state_manager = StateManager(DB_PATH)
 
+# Whitelist команды /restart (полный сброс состояния для повторного теста):
+# Сергей, Изосина Ольга, Юля Смм. Только эти user_id могут сбрасывать сессию.
+RESTART_WHITELIST = {-40076372, -42638488, -40927660}
+
 # Logging
 logging.basicConfig(
     level=logging.INFO,
@@ -901,6 +905,30 @@ async def process_message_wrapper(combined_message: str, context: dict) -> dict:
     if user_key in radist_reminder_tasks:
         radist_reminder_tasks[user_key].cancel()
     radist_reminder_sent.pop(user_key, None)
+
+    # ════════════════════════════════════════════════════════════════════════
+    # Команда /restart — полный сброс состояния для повторного теста.
+    # Только whitelisted user_id (тестеры/руководство). Не-whitelisted →
+    # сообщение идёт дальше в обычный pipeline (без утечки команды).
+    # ════════════════════════════════════════════════════════════════════════
+    if combined_message.strip() == "/restart" and user_id in RESTART_WHITELIST:
+        state_manager.reset_state(user_id)
+        _conn = sqlite3.connect(DB_PATH)
+        _conn.execute(
+            "DELETE FROM radist_messages WHERE channel = ? AND chat_id = ?",
+            (channel, chat_id),
+        )
+        _conn.execute("DELETE FROM radist_leads WHERE user_id = ?", (user_id,))
+        _conn.commit()
+        _conn.close()
+        log(f"♻️ [{channel.upper()}] /restart — полный сброс состояния user {user_id}")
+
+        async def restart_callback():
+            await send_message(
+                connection_id, chat_id, "Сессия сброшена, можем начать заново 🙂"
+            )
+
+        return {"response": "[restart]", "send_callback": restart_callback}
 
     # ════════════════════════════════════════════════════════════════════════
     # Source routing: распознаём объект из первого сообщения
